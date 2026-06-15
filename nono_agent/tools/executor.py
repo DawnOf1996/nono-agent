@@ -102,6 +102,33 @@ class StreamingToolExecutor:
                 for task in done:
                     result = await task
                     yield result
+                # abort 后取消剩余任务，避免已取消的查询仍在后台执行工具
+                if context.signal.aborted:
+                    for t in pending:
+                        t.cancel()
+                    # 等待取消完成，收集已取消的结果
+                    for t in pending:
+                        try:
+                            result = await t
+                            yield result
+                        except asyncio.CancelledError:
+                            # 从 task name 提取 block id
+                            name = t.get_name()  # tool:{name}:{id}
+                            parts = name.split(":")
+                            block_id = parts[2] if len(parts) >= 3 else ""
+                            block_name = parts[1] if len(parts) >= 2 else ""
+                            yield ToolExecutionResult(
+                                result=ToolResult(
+                                    tool_use_id=block_id,
+                                    content="Tool execution cancelled.",
+                                    is_error=True,
+                                    tool_name=block_name,
+                                ),
+                                tool_use_id=block_id,
+                                tool_name=block_name,
+                                was_cancelled=True,
+                            )
+                    break  # 退出 while pending
 
         # 顺序工具: 逐一执行，每个结果检查取消信号
         for block in sequential_blocks:
@@ -168,7 +195,11 @@ class StreamingToolExecutor:
         # 3. 检查权限（有写副作用的工具需要用户授权）
         needs_permission = tool.should_prompt_for_permission(block.input, context)
         if needs_permission:
-            allowed = await context.check_permission(block.name, block.input)
+            try:
+                allowed = await context.check_permission(block.name, block.input)
+            except (EOFError, KeyboardInterrupt):
+                # 用户在权限提示中按了 Ctrl+C / Ctrl+D → 视为拒绝
+                allowed = False
             if not allowed:
                 return ToolExecutionResult(
                     result=ToolResult(
@@ -181,6 +212,20 @@ class StreamingToolExecutor:
                     tool_name=block.name,
                     permission_denied=True,
                 )
+
+        # 3.5 权限等待期间可能触发了 abort（Ctrl+C），重新检查
+        if context.signal.aborted:
+            return ToolExecutionResult(
+                result=ToolResult(
+                    tool_use_id=block.id,
+                    content="Tool execution cancelled.",
+                    is_error=True,
+                    tool_name=block.name,
+                ),
+                tool_use_id=block.id,
+                tool_name=block.name,
+                was_cancelled=True,
+            )
 
         # 4. 执行工具
         try:
