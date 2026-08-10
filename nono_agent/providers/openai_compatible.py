@@ -1,7 +1,13 @@
-"""通用 OpenAI 兼容 Provider 实现。
+"""通用 OpenAI Chat Completions 兼容 Provider。
 
 适配所有使用 OpenAI Chat Completions 协议的第三方厂商，
 通过 base_url + api_key + extra_body 配置即可接入，无需编写新 Provider。
+
+协议矩阵中的位置：
+- Chat Completions 兼容（本文件，adapter="openai"）
+- Anthropic Messages 兼容 → messages_compatible（规划）
+- Responses 兼容 → responses_compatible（规划）
+详见 docs/ROADMAP.md §2.6。
 
 支持的厂商（示例）：
 - MiniMax (https://api.minimax.chat/v1)

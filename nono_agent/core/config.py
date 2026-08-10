@@ -24,13 +24,13 @@ def _gen_session_id() -> str:
 class ProviderConfig(BaseModel):
     """LLM Provider 初始化配置 —— 用于创建 Provider 实例。
 
-    配置驱动适配器选择：
-    - adapter: 显式指定 API 协议类型（"openai" / "anthropic" / "responses"）
+    配置驱动适配器选择（原厂 vs 兼容，见 docs/ROADMAP.md §2.6）：
+    - adapter: anthropic | messages_compatible | openai | responses | responses_compatible
     - extra_body: 每次请求时深度合并到请求体中的额外参数
     
     用法示例::
 
-        # MiniMax-M3 通过 OpenAI 兼容 API
+        # MiniMax 通过 OpenAI Chat Completions 兼容 API
         ProviderConfig(
             model_id="MiniMax-M3",
             adapter="openai",
@@ -38,10 +38,13 @@ class ProviderConfig(BaseModel):
             base_url="https://api.minimax.chat/v1",
             extra_body={"reasoning_split": True},
         )
+
+        # 非原厂 Anthropic Messages 兼容网关（规划：adapter="messages_compatible"）
+        # ProviderConfig(model_id="...", adapter="messages_compatible", base_url="...")
     """
 
     model_id: str                              # 模型 ID（如 "claude-sonnet-4-20250514"）
-    adapter: str | None = None                 # API 协议类型: "openai" | "anthropic" | "responses"
+    adapter: str | None = None                 # API 协议: anthropic | messages_compatible | openai | responses | responses_compatible
     api_key: str = ""                          # API 密钥
     base_url: str | None = None                # 自定义 API 端点（代理/厂商地址）
     extra_headers: dict[str, str] = Field(default_factory=dict)  # 额外 HTTP 头

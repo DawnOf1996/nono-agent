@@ -3,7 +3,8 @@
 架构设计：
 - TranscriptWriter: Protocol 协议类，定义 transcript 读写的标准接口
 - LocalFileTranscriptWriter: 本地 NDJSON 文件实现（默认存储后端）
-- 后续可扩展 DB / Redis / S3 等远端存储
+- 规划扩展：SQLite / PostgreSQL / MySQL、Redis、S3 等远端/共享存储
+  （实现类注入 QueryEngine；详见 docs/ROADMAP.md §2.5）
 
 差异化写入策略（对应 TS 版）：
 - User 消息：await 写入（确保 --resume 可用）
@@ -48,7 +49,7 @@ def serialize_message(msg: Message) -> dict[str, Any]:
 class TranscriptWriter(Protocol):
     """Transcript 持久化协议 —— 定义 transcript 读写的标准接口。
 
-    所有存储后端（文件、数据库、Redis 等）都必须实现此协议。
+    所有存储后端（文件、数据库、Redis、对象存储等）都必须实现此协议。
     CLI 或 Server 可在创建 QueryEngine 时显式指定实现：
 
     用法示例::
@@ -56,8 +57,8 @@ class TranscriptWriter(Protocol):
         # 默认使用本地文件存储
         engine = QueryEngine(config)
 
-        # 显式指定 Redis 存储（未来扩展）
-        engine = QueryEngine(config, transcript_writer=RedisTranscriptWriter(...))
+        # 显式指定其它后端（规划中：DB / Redis 等）
+        engine = QueryEngine(config, transcript_writer=PostgresTranscriptWriter(...))
     """
 
     async def record(self, messages: list[Message]) -> None:

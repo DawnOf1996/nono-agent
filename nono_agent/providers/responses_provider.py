@@ -1,6 +1,8 @@
-"""Responses API Provider（预留骨架）。
+"""Responses API Provider（原厂，预留骨架）。
 
-这是未来 OpenAI Responses API 集成的占位符。
+这是未来 OpenAI 原厂 Responses API 集成的占位符。
+非原厂兼容端点规划为独立的 responses_compatible（见 docs/ROADMAP.md §2.6）。
+
 与 Chat Completions API 的关键差异已在文档字符串中标注。
 """
 

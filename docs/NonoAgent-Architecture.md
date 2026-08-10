@@ -1,10 +1,31 @@
 # Nono Agent —— 核心设计理念与系统架构
 
+> **文档角色：** 描述目标架构与已落地设计。实现进度、缺口与打磨项见 [ROADMAP.md](./ROADMAP.md)。  
+> **当前版本：** `0.1.0` —— 可扩展的 Agent **运行时骨架**，不是能力齐备的 Agent 产品。
+
 ## 1. 项目概述
 
-Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 TypeScript QueryEngine 架构。它将经过验证的 Agent 设计理念（扣留-恢复机制、多层压缩管线、状态转移逻辑）重构为 Python 实现，同时在架构上做了关键改进以支持 CLI 终端交互和线上服务端 SDK 双场景。
+Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 TypeScript QueryEngine 架构。它将经过验证的 Agent 设计理念（扣留-恢复机制、多层压缩管线、状态转移逻辑）重构为 Python 实现，并在架构上支持 **CLI 终端** 与 **线上服务端 SDK** 双场景。
 
-**技术栈：** Python 3.11+ / Pydantic v2 / httpx / Anthropic SDK / OpenAI SDK / FastAPI / Rich / Typer
+**技术栈：** Python 3.12+ / Pydantic v2 / httpx / Anthropic SDK / OpenAI SDK / FastAPI / Rich / Typer
+
+### 1.1 实现状态总览
+
+| 层级 | 状态 | 说明 |
+|------|------|------|
+| 核心引擎（`QueryEngine` / `agentic_loop` / 状态机 / 恢复链） | 骨架可用 | 主路径可跑通；边界行为与打磨见 Roadmap |
+| 预处理管线 | 部分可用 | 默认 4 级；`ContextCollapse` 有实现但未进默认管线 |
+| LLM Provider | 部分可用 | 原厂 Anthropic/OpenAI + Chat Completions 兼容可用；Messages/Responses 兼容层与原厂 Responses 见 Roadmap |
+| 工具协议与执行器 | 骨架可用 | 协议/注册表/执行器在；内置工具仅为演示 |
+| Skills | **未实现** | 含 SkillTool；见 Roadmap §2.3 |
+| Rules / Plugins / Settings | **未实现** | 常驻指令、扩展包、分层配置；§1.5 / §2.2 / §2.5 / §2.6.1 |
+| Prompt Section 组装 | **未实现** | 对标 CC Prompt-Assembly；§2.0 |
+| MCP | **未实现** | tools + resources + auth；§2.4 |
+| 子 Agent 三件套 | **未实现** | AgentTool + Definition + run；§2.8 |
+| 权限模式 / Rule / denial / Hooks / Slash | **未实现** | §2.6–§2.7 |
+| 会话持久化（`TranscriptWriter`） | 骨架 | 默认本地 NDJSON；DB/Redis 等后端见 Roadmap |
+| CLI / Server 适配器 | 基本可用 | Server 目前仅 SSE（文档曾提及的 WebSocket 未实现） |
+| 可观测性 | 部分可用 | CostTracker + 日志可用；Metrics 为 No-Op 占位 |
 
 ---
 
@@ -15,7 +36,7 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 引擎只暴露一个公开 API —— `submit_message()`，返回 `AsyncGenerator[SDKMessage]`。CLI 适配器和服务端适配器消费同一个生成器，区别仅在于交付方式：
 
 - **CLI**：本地 `async for` 消费，Rich 直接渲染到终端
-- **Server**：通过 SSE/WebSocket 推送给远程 Web 客户端
+- **Server**：通过 SSE 推送给远程 Web 客户端（WebSocket 为规划能力，见 Roadmap）
 
 ```
                     ┌──────────────┐
@@ -81,66 +102,89 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 
 ## 3. 系统架构
 
-### 3.1 模块分层
+### 3.1 完整包树与职责
+
+> 目标结构 = **引擎内核（保留）+ LLM/会话（扩展）+ 工具拆分 + 扩展面（新建）**。  
+> 详细规划、迁移对照与依赖禁忌见 [ROADMAP.md §5](./ROADMAP.md)。  
+> 标记：`✅` 已有 · `🔧` 已有需扩展 · `📋` 规划 · `P2` 后期
 
 ```
 nono_agent/
-├── core/                    # 核心引擎层
-│   ├── engine.py            # QueryEngine — 顶层编排
-│   ├── loop.py              # agentic_loop — while(True) 主循环
-│   ├── config.py            # EngineConfig / QueryConfig / ProviderConfig
-│   ├── state.py             # LoopState / Transition / Terminal
-│   └── types.py             # 所有消息类型 + SDK 协议类型
 │
-├── adapters/                # 双侧适配器层
-│   ├── cli.py               # CLI 适配器（Typer + Rich）
-│   ├── server.py            # Server 适配器（FastAPI + SSE）
-│   └── testing.py           # 测试适配器
+│ ─── 引擎内核 ─────────────────────────────────────────────
+├── core/                 # ✅ QueryEngine / loop / config / state / types
+├── pipeline/             # 🔧 预处理压缩（默认 4 级；ContextCollapse 可选）
+├── recovery/             # ✅ RecoveryChain 与策略
+├── hooks/                # 🔧 引擎内 Middleware/Stop/PostSampling
+├── adapters/             # 🔧 CLI / Server(SSE) / Testing
+├── observability/        # 🔧 CostTracker / logging / metrics(占位)
+├── utils/                # 🔧 abort / tokens
 │
-├── providers/               # LLM Provider 层
-│   ├── base.py              # LLMProvider Protocol + ProviderRegistry
-│   ├── anthropic_provider.py # Anthropic Messages API
-│   ├── openai_provider.py   # OpenAI Chat Completions API
-│   ├── openai_compatible.py # 通用 OpenAI 兼容协议（MiniMax/DeepSeek 等）
-│   └── responses_provider.py# OpenAI Responses API（预留）
+│ ─── LLM 与会话 ───────────────────────────────────────────
+├── providers/            # 🔧 原厂 + compatible 协议矩阵
+├── session/              # 🔧 MessageStore + TranscriptWriter(+DB/Redis 规划)
 │
-├── pipeline/                # 预处理管线层
-│   ├── base.py              # PreprocessPipeline + PreprocessStage Protocol
-│   ├── tool_result_budget.py# 截断超长工具结果
-│   ├── snip_compact.py      # 零成本滑动窗口丢弃
-│   ├── microcompact.py      # 剥离旧 thinking + 截断长文本
-│   ├── context_collapse.py  # LLM 摘要压缩旧消息
-│   └── auto_compact.py      # 安全网（80%/95% 阈值）
+│ ─── 工具 ─────────────────────────────────────────────────
+├── tools/                # 🔧 protocol / registry / executor / context
+│   └── builtin/          # 📋 生产级工具包（替代演示 builtin.py）
 │
-├── hooks/                   # 生命周期钩子层
-│   ├── middleware.py         # MiddlewareChain — 统一生命周期钩子
-│   ├── stop_hooks.py        # StopHookExecutor — 响应校验/拦截
-│   └── post_sampling.py     # PostSamplingChain — 采样后钩子
-│
-├── recovery/                # 错误恢复层
-│   ├── chain.py             # RecoveryChain — 集中化恢复决策
-│   ├── prompt_too_long.py   # 反应式压缩 + 上下文折叠排水
-│   └── max_output_tokens.py # 输出截断恢复
-│
-├── tools/                   # 工具系统层
-│   ├── protocol.py          # Tool Protocol + ToolBase
-│   ├── registry.py          # ToolRegistry
-│   ├── executor.py          # StreamingToolExecutor / BatchToolExecutor
-│   └── context.py           # ToolUseContext + PermissionChecker
-│
-├── session/                 # 会话管理层
-│   ├── store.py             # MessageStore — 统一消息存储
-│   └── transcript.py        # TranscriptWriter Protocol + LocalFileTranscriptWriter
-│
-├── observability/           # 可观测性层
-│   ├── cost_tracker.py      # CostTracker — token 用量 + 美元费用跟踪
-│   ├── logging.py           # structlog 结构化日志
-│   └── metrics.py           # 指标收集
-│
-└── utils/                   # 工具函数层
-    ├── abort.py             # AbortController / AbortSignal
-    └── tokens.py            # Token 估算工具
+│ ─── 扩展面 ───────────────────────────────────────────────
+├── prompt/               # 📋 PromptSection + Registry + Assembler
+├── rules/                # 📋 常驻指令发现/合并（CLAUDE.md/AGENTS.md 兼容）
+├── skills/               # 📋 Skill 加载 + SkillTool
+├── plugins/              # 📋 扩展包加载（组合下层能力）
+├── commands/             # 📋 Slash MVP（无 UI）
+├── settings/             # 📋 user/project/policy/flag 合并
+├── permissions/          # 📋 Policy / Rule / denial / sandbox
+├── mcp/                  # 📋 client + tools/resources/auth 桥接
+├── agents/               # 📋 AgentTool + Definition + runner
+├── memory/               # P2 MemoryStore / memdir
+└── checkpoint/           # P2 编辑快照回滚
 ```
+
+#### 3.1.1 各包职责一览
+
+| 包 | 职责摘要 | 边界（不负责） |
+|----|----------|----------------|
+| `core/` | 编排、主循环、配置快照、状态机、消息/SDK 类型 | HTTP、具体工具、UI |
+| `pipeline/` | 调用前消息压缩各 Stage | 持久化、权限 |
+| `recovery/` | 错误分类与恢复动作 | UI、Provider 传输细节 |
+| `hooks/` | 代码级生命周期链 | 用户 `hooks.json` 加载（适配后挂入） |
+| `adapters/` | 流式交付、交互确认、AskUser/Slash 入口 | 业务工具与 Prompt 内容 |
+| `observability/` | 成本、日志、指标 | 业务决策 |
+| `utils/` | Abort、token 等无领域原语 | 领域策略 |
+| `providers/` | LLM 协议适配与路由 | 工具执行、会话存储 |
+| `session/` | 内存消息 + Transcript 多后端 | 跨会话 Memory |
+| `tools/` | Tool 协议、注册、执行、上下文 | 权限策略实现 |
+| `tools/builtin/` | Bash/Read/Edit/AskUser/LSP/Worktree 等 | MCP/Skill/Agent 桥接实现可外置再注册 |
+| `prompt/` | Section 组装、静/动态边界、优先级 | 文件发现（消费 rules/memory 视图） |
+| `rules/` | 常驻指令发现与合并 | 最终 prompt 拼接 |
+| `skills/` | Skill 包 + SkillTool | Plugin 清单格式 |
+| `plugins/` | 扩展包启停与组合注册 | 具体 Tool/Agent 业务代码 |
+| `commands/` | Slash 注册与解析 | 终端/HTTP 渲染 |
+| `settings/` | 分层配置合并单一入口 | 取代 EngineConfig 类型本身 |
+| `permissions/` | 模式、规则、denial、沙箱、Ignore | tool.execute 业务 |
+| `mcp/` | MCP 生命周期与桥接 | Tool Protocol 定义 |
+| `agents/` | 子 Agent 三件套 | Teams/Coordinator（可选 P2） |
+| `memory/` | 跨会话记忆 | 单次 transcript |
+| `checkpoint/` | 编辑回滚快照 | Git 本身 |
+
+#### 3.1.2 依赖方向
+
+```text
+adapters → core → prompt / pipeline / recovery / providers / tools / agents / session / permissions / …
+plugins  → rules / skills / mcp / agents / commands / permissions   （只组合）
+core ↛ adapters · prompt ↛ tool 执行实现
+```
+
+#### 3.1.3 迁移要点
+
+- **保留：** 内核七件套 + `providers`/`session`/`tools` 协议层  
+- **拆分：** `tools/builtin.py` → `tools/builtin/`  
+- **抽出：** `_build_system_prompt` → `prompt/`；权限闭包 → `permissions/`  
+- **新建：** 扩展面各包按 Phase 落地，旧路径可短期 re-export  
+
+项目配置目录（非 Python 包）：`.nono/{settings,rules,agents,skills,plugins,hooks.json,mcp.json,memory}/`。
 
 ### 3.2 架构总览图
 
@@ -157,7 +201,7 @@ graph TB
     end
 
     subgraph Subsystems
-        PP[PreprocessPipeline<br/>5级压缩管线]
+        PP[PreprocessPipeline<br/>默认4级压缩管线]
         MW[MiddlewareChain<br/>生命周期钩子]
         PR[ProviderRegistry<br/>LLM路由]
         TR[ToolRegistry<br/>工具注册]
@@ -168,8 +212,8 @@ graph TB
     end
 
     subgraph Session
-        MS[MessageStore<br/>消息存储]
-        TW[TranscriptWriter<br/>磁盘持久化]
+        MS[MessageStore<br/>运行时内存]
+        TW[TranscriptWriter<br/>可插拔持久化]
         CT[CostTracker<br/>成本跟踪]
     end
 
@@ -336,26 +380,35 @@ graph TB
 
 ### 4.4 预处理管线执行顺序
 
+**默认管线（`QueryEngine._create_default_pipeline`）为 4 级：**  
+`ToolResultBudget` → `SnipCompact` → `MicroCompact` → `AutoCompact`。
+
+目标完整顺序（含可选的 LLM 摘要折叠）如下；`ContextCollapse` 需注入 `summarizer` 后手动注册：
+
 ```mermaid
 graph LR
     Input[messages] --> TRB[ToolResultBudget: 截断超长工具结果]
     TRB --> SC[SnipCompact: 滑动窗口丢弃]
     SC --> MC[MicroCompact: 剥离thinking并截断]
-    MC --> CC[ContextCollapse: LLM摘要压缩]
+    MC --> CC[ContextCollapse: LLM摘要压缩 可选]
     CC --> AC[AutoCompact: 80/95%安全网]
     AC --> Output[压缩后 messages]
 ```
 
 ### 4.5 Provider 路由机制
 
+适配器按 **协议 × 原厂/兼容** 选择（兼容层用于非原厂网关，详见 [ROADMAP.md §2.6](./ROADMAP.md)）：
+
 ```mermaid
 graph TB
     Request["resolve(model_id, config)"] --> Check{config.adapter 已指定?}
 
     Check -->|Yes| AdapterMap[适配器映射]
-    AdapterMap -->|openai| OCP[OpenAICompatibleProvider]
-    AdapterMap -->|anthropic| AP[AnthropicProvider]
-    AdapterMap -->|responses| RP[ResponsesProvider]
+    AdapterMap -->|anthropic| AP[AnthropicProvider 原厂 Messages]
+    AdapterMap -->|messages_compatible| MC[MessagesCompatible 规划]
+    AdapterMap -->|openai| OCP[OpenAICompatibleProvider Chat兼容]
+    AdapterMap -->|responses| RP[ResponsesProvider 原厂占位]
+    AdapterMap -->|responses_compatible| RC[ResponsesCompatible 规划]
 
     Check -->|No| PrefixMatch{model_id 前缀匹配}
     PrefixMatch -->|claude-*| AP2[AnthropicProvider]
@@ -363,13 +416,22 @@ graph TB
     PrefixMatch -->|No match| Error[ValueError: 提示可用适配器]
 ```
 
+> 当前已注册：`anthropic` / `openai` / `responses`（后者调用即失败）。  
+> 规划注册：`messages_compatible` / `responses_compatible`。
 ---
 
 ## 5. 关键设计决策
 
 ### 5.1 消息存储：单一数据源 vs 三数组
 
-TS 版使用三个独立数组（`mutableMessages`, `messages`, `messagesForQuery`）需要复杂同步。Python 版 `MessageStore` 提供单一数据源，通过 `snapshot_after_boundary()` 为 API 调用提供视图，通过 `gc_before_boundary()` 清理压缩前旧消息。
+TS 版使用三个独立数组（`mutableMessages`, `messages`, `messagesForQuery`）需要复杂同步。Python 版拆成两层：
+
+| 层 | 组件 | 职责 |
+|----|------|------|
+| 运行时 | `MessageStore` | 进程内单一数据源；`snapshot_after_boundary()` / `gc_before_boundary()` |
+| 持久化 | `TranscriptWriter` | 跨进程可恢复；默认 `LocalFileTranscriptWriter`（NDJSON） |
+
+持久化通过 Protocol 注入，后续可替换为 **SQLite / PostgreSQL / Redis / 对象存储** 等实现，引擎与适配器无需改循环逻辑。扩展规划见 [ROADMAP.md §2.5](./ROADMAP.md)。
 
 ### 5.2 中间件链 vs 分散钩子
 
@@ -403,3 +465,14 @@ QueryEngine.__init__(
 ```
 
 所有子系统"可注入或自动创建"——不传则创建默认实例。这使得测试时可以 mock 任意子系统，生产环境中 CLI 和 Server 只需注入各自的 `PermissionChecker`。
+
+---
+
+## 7. 相关文档
+
+| 文档 | 内容 |
+|------|------|
+| [ROADMAP.md](./ROADMAP.md) | 未实现能力、打磨项、分阶段规划 |
+| [ROADMAP.md §5](./ROADMAP.md) | **完整包树、各包职责、依赖方向、迁移对照** |
+| [COMMIT.md](./COMMIT.md) | Git 提交规范（Conventional Commits） |
+| [README.md](../README.md) | 安装、快速开始、项目定位 |

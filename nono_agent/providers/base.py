@@ -4,8 +4,16 @@
 以及支持配置驱动和前缀回退两种路由模式的 ProviderRegistry。
 
 路由优先级：
-1. config.adapter 显式指定 → 按适配器类型创建（"openai" / "anthropic" / "responses"）
+1. config.adapter 显式指定 → 按适配器类型创建
 2. model_id 前缀匹配 → 向后兼容的默认行为（"claude-" → Anthropic, "gpt-" → OpenAI）
+
+适配器矩阵（原厂 vs 兼容，兼容用于非原厂网关）：
+- "anthropic"             → AnthropicProvider（Messages 原厂）
+- "messages_compatible"   → MessagesCompatibleProvider（Messages 兼容，规划中）
+- "openai"                → OpenAICompatibleProvider（Chat Completions 兼容）
+- "responses"             → ResponsesProvider（Responses 原厂，占位）
+- "responses_compatible"  → ResponsesCompatibleProvider（Responses 兼容，规划中）
+详见 docs/ROADMAP.md §2.6。
 """
 
 from __future__ import annotations
@@ -91,9 +99,11 @@ class ProviderRegistry:
     2. model_id 前缀匹配 → 向后兼容的默认行为
 
     适配器类型映射：
-    - "openai"    → OpenAICompatibleProvider（通用 OpenAI 兼容协议）
-    - "anthropic" → AnthropicProvider（Anthropic Messages 协议）
-    - "responses" → ResponsesProvider（OpenAI Responses 协议）
+    - "anthropic"            → AnthropicProvider（Messages 原厂）
+    - "messages_compatible"  → MessagesCompatibleProvider（Messages 兼容，规划中）
+    - "openai"               → OpenAICompatibleProvider（Chat Completions 兼容）
+    - "responses"            → ResponsesProvider（Responses 原厂）
+    - "responses_compatible" → ResponsesCompatibleProvider（Responses 兼容，规划中）
     """
 
     def __init__(self) -> None:
@@ -160,7 +170,9 @@ def create_default_registry() -> ProviderRegistry:
     """创建默认注册表 —— 内置 Anthropic、OpenAI 和通用 OpenAI 兼容提供商。
 
     注册两套路由：
-    1. 适配器映射（配置驱动）：adapter="openai" / "anthropic" / "responses"
+    1. 适配器映射（配置驱动）：
+       anthropic / messages_compatible / openai / responses / responses_compatible
+       （后两者与 messages_compatible 见 Roadmap；responses 现为占位）
     2. 前缀映射（向后兼容）："claude-" → Anthropic, "gpt-"/"o1"/"o3"/"o4" → OpenAI
     """
     registry = ProviderRegistry()
@@ -169,27 +181,32 @@ def create_default_registry() -> ProviderRegistry:
     # 适配器映射 —— 配置驱动路由（用户通过 config.adapter 显式指定）
     # ------------------------------------------------------------------
 
-    # Anthropic Messages API 适配器
+    # Anthropic Messages API —— 原厂
     try:
         from nono_agent.providers.anthropic_provider import AnthropicProvider
         registry.register_adapter("anthropic", AnthropicProvider)
     except ImportError:
         pass
 
-    # 通用 OpenAI 兼容适配器（适用于 MiniMax/DeepSeek/通义千问/智谱/Moonshot 等）
+    # TODO: messages_compatible —— Anthropic Messages 非原厂兼容网关
+    # registry.register_adapter("messages_compatible", MessagesCompatibleProvider)
+
+    # Chat Completions —— 通用兼容（MiniMax/DeepSeek/通义千问/智谱/Moonshot 等）
     try:
         from nono_agent.providers.openai_compatible import OpenAICompatibleProvider
         registry.register_adapter("openai", OpenAICompatibleProvider)
     except ImportError:
         pass
 
-    # OpenAI Responses API 适配器（预留）
+    # OpenAI Responses API —— 原厂（占位）
     try:
         from nono_agent.providers.responses_provider import ResponsesProvider
         registry.register_adapter("responses", ResponsesProvider)
     except ImportError:
         pass
 
+    # TODO: responses_compatible —— Responses 非原厂兼容网关
+    # registry.register_adapter("responses_compatible", ResponsesCompatibleProvider)
     # ------------------------------------------------------------------
     # 前缀映射 —— 向后兼容路由（不配置 adapter 时按 model_id 前缀自动推断）
     # ------------------------------------------------------------------
