@@ -102,15 +102,25 @@ class RulesCommand(_SimpleCommand):
 
 class SkillsCommand(_SimpleCommand):
     _name = "skills"
-    _description = "List available skills"
+    _description = "List skills, or enable/disable one (skills enable|disable <name>)"
 
     def execute(self, args: list[str], ctx: CommandContext) -> str:
         if ctx.engine is None:
             return "Skills: (no engine attached)"
+
+        if args and args[0] in ("enable", "disable") and len(args) >= 2:
+            enabled = args[0] == "enable"
+            if ctx.engine.set_skill_enabled(args[1], enabled):
+                return f"Skill '{args[1]}' {'enabled' if enabled else 'disabled'}."
+            return f"Skill '{args[1]}' not found."
+
         skills = ctx.engine.skills
         if not skills:
             return "No skills loaded."
-        lines = [f"- {s.name}: {s.description}" for s in skills]
+        lines = [
+            f"- {s.name} {'[disabled]' if not s.enabled else ''}: {s.description}"
+            for s in skills
+        ]
         return "Available skills:\n" + "\n".join(lines)
 
 

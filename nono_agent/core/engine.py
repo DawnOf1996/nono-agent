@@ -430,6 +430,14 @@ class QueryEngine:
         """清空当前会话的消息存储（/clear 命令）。"""
         self._store.replace([])
 
+    def set_skill_enabled(self, name: str, enabled: bool) -> bool:
+        """启用/禁用指定 Skill（返回是否命中）。"""
+        for skill in self._skills:
+            if skill.name == name:
+                skill.enabled = enabled
+                return True
+        return False
+
     def _parse_structured_output(self, result_text: str) -> Any:
         """配置 json_schema 时把结果文本解析为 JSON（结构化输出闭环）。
 

@@ -2,6 +2,7 @@
 
 import pytest
 
+from nono_agent.adapters.testing import create_test_engine
 from nono_agent.skills import FileSystemSkillLoader, Skill, SkillTool
 from nono_agent.tools.context import ToolUseContext
 
@@ -46,3 +47,12 @@ class TestSkillTool:
         result = await tool.execute({"skill": "nope"}, ctx)
         assert result.is_error
         assert "review" in result.content
+
+
+class TestEngineSkillToggle:
+    def test_set_skill_enabled(self):
+        engine = create_test_engine()
+        engine._skills = [Skill(name="review", description="d", content="c", source="x")]
+        assert engine.set_skill_enabled("review", False) is True
+        assert engine.skills[0].enabled is False
+        assert engine.set_skill_enabled("nope", False) is False

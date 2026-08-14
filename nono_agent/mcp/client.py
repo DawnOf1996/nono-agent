@@ -47,6 +47,9 @@ class MCPClient:
             raise MCPClientError("MCP server config requires a 'command'.")
 
         env = dict(self._config.env)
+        # 静态令牌经环境变量传给 stdio 服务器
+        if self._config.token:
+            env.setdefault("MCP_AUTH_TOKEN", self._config.token)
 
         try:
             self._proc = await asyncio.create_subprocess_exec(

@@ -19,6 +19,8 @@ class MCPServerConfig:
     transport: str = "stdio"                    # stdio | sse
     url: str | None = None                      # sse: 端点 URL
     enabled: bool = True                        # 是否启用
+    token: str | None = None                    # 静态令牌（stdio 经 env 传递 / sse 经 header）
+    headers: dict[str, str] = field(default_factory=dict)  # sse: 额外 HTTP 头
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> MCPServerConfig:
@@ -38,6 +40,12 @@ class MCPServerConfig:
             transport=str(data.get("transport", "stdio")),
             url=data.get("url"),
             enabled=bool(data.get("enabled", True)),
+            token=data.get("token"),
+            headers=(
+                {str(k): str(v) for k, v in data.get("headers", {}).items()}
+                if isinstance(data.get("headers"), dict)
+                else {}
+            ),
         )
 
 

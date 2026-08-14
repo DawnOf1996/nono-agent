@@ -19,6 +19,7 @@ from nono_agent.tools.builtin.task import TaskStore, create_task_tools
 from nono_agent.tools.builtin.todo_write import TodoWriteTool
 from nono_agent.tools.builtin.tool_search import ToolSearchTool
 from nono_agent.tools.builtin.web_fetch import WebFetchTool
+from nono_agent.tools.builtin.web_search import WebSearchTool
 from nono_agent.tools.builtin.worktree import EnterWorktreeTool, ExitWorktreeTool
 from nono_agent.tools.builtin.write import WriteFileTool
 from nono_agent.tools.protocol import ToolBase
@@ -53,6 +54,7 @@ def create_builtin_tools() -> list[ToolBase]:
         GrepTool(),
         LSTool(),
         WebFetchTool(),
+        WebSearchTool(),
         ToolSearchTool(),
         AskUserQuestionTool(),
         TodoWriteTool(),
