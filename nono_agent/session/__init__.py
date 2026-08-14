@@ -6,6 +6,7 @@ from nono_agent.session.store import MessageStore
 from nono_agent.session.transcript import (
     LocalFileTranscriptWriter,
     TranscriptWriter,
+    list_session_files,
     serialize_message,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "SQLiteTranscriptWriter",
     "TranscriptWriter",
     "create_transcript_writer",
+    "list_session_files",
     "serialize_message",
 ]

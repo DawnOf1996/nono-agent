@@ -177,6 +177,40 @@ class PluginsCommand(_SimpleCommand):
         return "Plugins:\n" + "\n".join(lines)
 
 
+class MemoryCommand(_SimpleCommand):
+    _name = "memory"
+    _description = "List persistent memories"
+
+    def execute(self, args: list[str], ctx: CommandContext) -> str:
+        if ctx.engine is None:
+            return "Memory: (no engine attached)"
+        memories = ctx.engine.memory_store.load()
+        if not memories:
+            return "No memories stored."
+        lines = [
+            f"- [{m.type or 'general'}] {m.name}: {m.content}" for m in memories
+        ]
+        return "Memories:\n" + "\n".join(lines)
+
+
+class HooksCommand(_SimpleCommand):
+    _name = "hooks"
+    _description = "List user hooks"
+
+    def execute(self, args: list[str], ctx: CommandContext) -> str:
+        from pathlib import Path
+
+        from nono_agent.hooks import UserHooksConfig
+
+        config = UserHooksConfig.from_file(Path(ctx.cwd) / ".nono" / "hooks.json")
+        if not config.hooks:
+            return "No user hooks configured (.nono/hooks.json)."
+        lines = [
+            f"- {h.event} {h.matcher or '*'} -> {h.command}" for h in config.hooks
+        ]
+        return "User hooks:\n" + "\n".join(lines)
+
+
 def create_builtin_commands(registry: object | None = None) -> list[SlashCommand]:
     """创建内置 Slash 命令列表。"""
     commands: list[SlashCommand] = [
@@ -189,6 +223,8 @@ def create_builtin_commands(registry: object | None = None) -> list[SlashCommand
         PermissionCommand(),
         McpCommand(),
         PluginsCommand(),
+        MemoryCommand(),
+        HooksCommand(),
     ]
     commands.append(HelpCommand(registry))
     return commands

@@ -4,7 +4,7 @@ import pytest
 
 from nono_agent.core.types import UserMessage
 from nono_agent.session import SQLiteTranscriptWriter, create_transcript_writer
-from nono_agent.session.transcript import LocalFileTranscriptWriter
+from nono_agent.session.transcript import LocalFileTranscriptWriter, list_session_files
 
 
 def _msg(text: str) -> UserMessage:
@@ -65,3 +65,16 @@ class TestFactory:
     def test_unknown_backend(self, tmp_path):
         with pytest.raises(ValueError):
             create_transcript_writer("redis", tmp_path / "x")
+
+
+class TestListSessionFiles:
+    def test_lists_sessions(self, tmp_path):
+        (tmp_path / "a.jsonl").write_text("line1\nline2\n")
+        (tmp_path / "b.jsonl").write_text("line1\n")
+        sessions = list_session_files(tmp_path)
+        assert {s["session_id"] for s in sessions} == {"a", "b"}
+        a = next(s for s in sessions if s["session_id"] == "a")
+        assert a["message_count"] == 2
+
+    def test_empty(self, tmp_path):
+        assert list_session_files(tmp_path / "nonexistent") == []

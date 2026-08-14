@@ -577,6 +577,18 @@ def create_cli_app() -> Any:
             )
         )
 
+    @app.command()
+    def sessions() -> None:
+        """列出本地已保存的会话（session id + 消息数）。"""
+        from nono_agent.session import list_session_files
+
+        sessions = list_session_files()
+        if not sessions:
+            print("No sessions found.")
+            return
+        for s in sessions:
+            print(f"{s['session_id']}  ({s['message_count']} messages)")
+
     return app
 
 

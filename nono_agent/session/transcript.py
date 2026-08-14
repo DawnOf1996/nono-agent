@@ -40,6 +40,35 @@ def serialize_message(msg: Message) -> dict[str, Any]:
     return {"type": getattr(msg, "type", "unknown")}
 
 
+def list_session_files(session_dir: Path | None = None) -> list[dict[str, Any]]:
+    """列出会话目录下的会话文件（id + 消息数 + 最后修改时间）。
+
+    用于 CLI ``sessions`` 命令 / Server 会话治理。
+    """
+    directory = (
+        Path(session_dir)
+        if session_dir is not None
+        else Path.home() / ".nono-agent" / "sessions"
+    )
+    if not directory.is_dir():
+        return []
+
+    sessions: list[dict[str, Any]] = []
+    for file in sorted(directory.glob("*.jsonl")):
+        try:
+            line_count = sum(1 for _ in file.open(encoding="utf-8"))
+        except OSError:
+            line_count = 0
+        sessions.append(
+            {
+                "session_id": file.stem,
+                "message_count": line_count,
+                "last_modified": file.stat().st_mtime,
+            }
+        )
+    return sessions
+
+
 # ------------------------------------------------------------------
 # Protocol 协议类
 # ------------------------------------------------------------------

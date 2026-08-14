@@ -496,6 +496,10 @@ class QueryEngine:
     def rule_loader(self) -> FileSystemRuleLoader:
         return self._rule_loader
 
+    @property
+    def memory_store(self) -> FileSystemMemoryStore:
+        return self._memory_store
+
     # ------------------------------------------------------------------
     # 会话管理
     # ------------------------------------------------------------------
