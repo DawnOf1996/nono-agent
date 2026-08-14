@@ -269,7 +269,7 @@
 | `/compact` `/clear`                       | 压缩 / 清空      | `/clear` 已完成，`/compact` 未开始 |
 | `/rules` `/skills` `/mcp` `/plugins`      | 扩展面调试        | 已完成 |
 | `/permission` `/model` `/cost` `/context` | 模式、模型、成本、上下文 | 已完成 |
-| `/memory` `/hooks`                        | P2 可后置       | 未开始 |
+| `/memory` `/hooks`                        | P2 可后置       | 已完成 |
 | Plugin 自定义 slash                          | 扩展机制         | 未开始 |
 
 
@@ -357,7 +357,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 ### 3.1 核心引擎
 
 - [ ] 预算门控：`max_budget_usd` / `task_budget` 在 loop 内真正生效并产出明确 `TerminalReason`
-- [ ] `fallback_model` 流式失败切换路径验证与测试
+- [x] `fallback_model` 流式失败切换路径验证与测试
 - [ ] abort：流式、工具执行、权限等待、AskUser 等待各阶段一致性（含竞态）
 - [ ] `MessageStore` compact boundary / tombstone / resume 边界用例补齐
 - [ ] Recovery 策略可观测：压缩节省 token、重试原因对 SDK 消费者透明
@@ -419,7 +419,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 ### 3.7 适配器
 
 - [x] CLI：去掉硬编码密钥/调试配置，改为环境变量与配置文件
-- [ ] CLI：会话列表、成本展示、工具调用可视化
+- [x] CLI：会话列表、成本展示（工具调用可视化待做）
 - [x] Server：会话 TTL、并发限制、鉴权、优雅关闭压测
 - [x] Server：可注入非文件 Transcript 后端（为 DB 多会话做准备）
 - [x] SDKMessage 对外契约稳定化（版本字段、`permission_denials`、AskUser 事件）
@@ -793,6 +793,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | Phase 3/4 推进：Server 治理（鉴权/TTL/AskUser SSE）、Output Styles section |
 | 2026-08-14 | Phase 1/2 补齐：LS/WebFetch(SSRF)/ToolSearch 工具、Slash /rules /skills /permission /mcp /plugins |
 | 2026-08-14 | 补齐：WebSearch 工具、MCP 静态 token/headers、Skills enable/disable |
+| 2026-08-14 | 补齐：fallback_model 切换、/memory /hooks slash、CLI sessions 会话列表 |
 
 
 ## 附录
