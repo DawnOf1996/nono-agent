@@ -26,7 +26,6 @@ import aiofiles
 
 from nono_agent.core.types import Message
 
-
 # ------------------------------------------------------------------
 # 共享工具函数
 # ------------------------------------------------------------------
@@ -139,7 +138,7 @@ class LocalFileTranscriptWriter:
             return []
 
         messages: list[dict[str, Any]] = []
-        async with aiofiles.open(self._session_file, "r", encoding="utf-8") as f:
+        async with aiofiles.open(self._session_file, encoding="utf-8") as f:
             async for line in f:
                 line = line.strip()
                 if line:

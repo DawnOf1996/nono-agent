@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
-from nono_agent.core.state import LoopState, TransitionReason, TerminalReason
+from nono_agent.core.state import LoopState, TerminalReason, TransitionReason
 
 logger = logging.getLogger(__name__)
 

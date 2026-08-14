@@ -19,8 +19,8 @@ from nono_agent.core.types import (
     MessageStartEvent,
     MessageStopEvent,
 )
-from nono_agent.providers.base import FallbackTriggeredError
 from nono_agent.providers._openai_utils import deep_merge
+from nono_agent.providers.base import FallbackTriggeredError
 from nono_agent.utils.tokens import estimate_messages_tokens
 
 
@@ -265,7 +265,9 @@ class AnthropicProvider:
                             raw_input = block.get("input", {})
                             if isinstance(raw_input, str):
                                 try:
-                                    block["input"] = json.loads(raw_input) if raw_input.strip() else {}
+                                    block["input"] = (
+                                        json.loads(raw_input) if raw_input.strip() else {}
+                                    )
                                 except json.JSONDecodeError:
                                     block["input"] = {}
                             elif not isinstance(raw_input, dict):

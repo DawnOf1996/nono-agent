@@ -18,20 +18,18 @@ from nono_agent.core.config import EngineConfig
 from nono_agent.core.engine import QueryEngine
 from nono_agent.core.types import (
     AssistantMessage,
-    Message,
-    StreamEvent,
     ContentBlockDeltaEvent,
     ContentBlockStartEvent,
     ContentBlockStopEvent,
+    Message,
     MessageDeltaEvent,
     MessageStartEvent,
     MessageStopEvent,
-    Usage,
+    StreamEvent,
 )
-from nono_agent.providers.base import LLMProvider, ProviderRegistry
+from nono_agent.providers.base import ProviderRegistry
 from nono_agent.tools.protocol import ToolBase
 from nono_agent.tools.registry import ToolRegistry
-
 
 # ---------------------------------------------------------------------------
 # Mock Provider —— 脚本化响应的模拟 LLM Provider
@@ -219,7 +217,7 @@ class FixtureReplayProvider:
     def _load_fixture(self) -> None:
         """从 JSON 文件加载录制的响应序列。"""
         if self._fixture_path.exists():
-            with open(self._fixture_path, "r") as f:
+            with open(self._fixture_path) as f:
                 self._responses = json.load(f)
 
     @property

@@ -1,16 +1,17 @@
 """Tests for the preprocessing pipeline."""
 
 import pytest
-from nono_agent.pipeline.base import PreprocessPipeline, PipelineContext
-from nono_agent.pipeline.tool_result_budget import ToolResultBudgetStage
-from nono_agent.pipeline.snip_compact import SnipCompactStage
-from nono_agent.pipeline.microcompact import MicroCompactStage
-from nono_agent.pipeline.auto_compact import AutoCompactStage
+
 from nono_agent.core.types import (
     AssistantMessage,
-    UserMessage,
     SystemMessage,
+    UserMessage,
 )
+from nono_agent.pipeline.auto_compact import AutoCompactStage
+from nono_agent.pipeline.base import PipelineContext, PreprocessPipeline
+from nono_agent.pipeline.microcompact import MicroCompactStage
+from nono_agent.pipeline.snip_compact import SnipCompactStage
+from nono_agent.pipeline.tool_result_budget import ToolResultBudgetStage
 
 
 def make_user_msg(text: str, tool_result: str | None = None) -> UserMessage:
@@ -124,7 +125,11 @@ class TestMicroCompactStage:
 
         # First assistant message should have thinking stripped
         old_content = result[0].message["content"]
-        thinking_blocks = [b for b in old_content if isinstance(b, dict) and b.get("type") == "thinking"]
+        thinking_blocks = [
+            b
+            for b in old_content
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
         assert len(thinking_blocks) == 0
 
 

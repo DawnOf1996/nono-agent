@@ -9,7 +9,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from nono_agent.core.types import (
     AssistantMessage,

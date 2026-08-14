@@ -176,5 +176,5 @@ class AutoCompactStage:
                 tail = raw[-max_tokens:]
                 content[i] = {
                     **block,
-                    "content": head + f"\n... [truncated] ...\n" + tail,
+                    "content": head + "\n... [truncated] ...\n" + tail,
                 }

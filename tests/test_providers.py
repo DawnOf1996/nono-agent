@@ -1,8 +1,9 @@
 """Tests for LLM providers."""
 
 import pytest
-from nono_agent.providers.base import ProviderRegistry, create_default_registry
+
 from nono_agent.adapters.testing import MockProvider
+from nono_agent.providers.base import ProviderRegistry, create_default_registry
 
 
 class TestProviderRegistry:

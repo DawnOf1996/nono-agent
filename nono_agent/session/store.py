@@ -14,13 +14,11 @@ TS 版有三个独立数组 (mutableMessages, messages, messagesForQuery)，
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from typing import Union
 
 from nono_agent.core.types import (
     AssistantMessage,
     Message,
     SystemMessage,
-    UserMessage,
 )
 
 

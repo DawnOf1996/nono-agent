@@ -7,7 +7,6 @@ API 调用耗时、工具执行耗时以及按模型分解的用量明细。
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -206,7 +205,7 @@ _ALL_PRICING: dict[str, dict[str, float]] = {
 
 def estimate_cost(usage: Usage, model: str) -> float:
     """估算单次 API 响应的 USD 成本。
-    
+
     根据模型名称匹配定价表，按 token 类型分别计费。
     未知模型返回 0.0（不报错）。
     """

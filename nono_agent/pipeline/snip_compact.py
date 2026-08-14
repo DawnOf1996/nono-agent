@@ -9,10 +9,8 @@ from __future__ import annotations
 import logging
 
 from nono_agent.core.types import (
-    AssistantMessage,
     Message,
     SystemMessage,
-    UserMessage,
 )
 from nono_agent.pipeline.base import PipelineContext
 from nono_agent.utils.tokens import (

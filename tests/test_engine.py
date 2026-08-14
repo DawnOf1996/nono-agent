@@ -1,10 +1,11 @@
 """Tests for the core engine and agentic loop."""
 
-import pytest
 import asyncio
-from nono_agent.adapters.testing import create_test_engine, MockTool
-from nono_agent.core.config import EngineConfig
-from nono_agent.core.types import SDKResultMessage, SDKAssistantMessage
+
+import pytest
+
+from nono_agent.adapters.testing import MockTool, create_test_engine
+from nono_agent.core.types import SDKResultMessage
 
 
 @pytest.fixture

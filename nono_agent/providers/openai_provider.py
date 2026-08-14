@@ -231,7 +231,7 @@ class OpenAIProvider:
 
     def normalize_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """将内部消息转换为 OpenAI Chat Completions 格式。
-        
+
         委托给 _openai_utils.normalize_openai_messages 公共实现。
         """
         return normalize_openai_messages(messages)
