@@ -1,9 +1,8 @@
-"""Responses API Provider（原厂，预留骨架）。
+"""OpenAI Responses API Provider（原厂）。
 
-这是未来 OpenAI 原厂 Responses API 集成的占位符。
-非原厂兼容端点规划为独立的 responses_compatible（见 docs/ROADMAP.md §2.6）。
-
-与 Chat Completions API 的关键差异已在文档字符串中标注。
+用 OpenAI SDK 的 ``client.responses.create(stream=True)`` 实现，
+把 Responses 流式事件映射为内部 StreamEvent 协议。
+消息格式转换见 `_responses_utils`（供原厂与兼容层复用）。
 """
 
 from __future__ import annotations
@@ -12,25 +11,47 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from nono_agent.core.config import ProviderConfig, ThinkingConfig
-from nono_agent.core.types import Message
+from nono_agent.core.types import (
+    ContentBlockDeltaEvent,
+    ContentBlockStartEvent,
+    ContentBlockStopEvent,
+    Message,
+    MessageDeltaEvent,
+    MessageStartEvent,
+    MessageStopEvent,
+)
+from nono_agent.providers._responses_utils import (
+    normalize_responses_input,
+    to_responses_tool,
+)
+from nono_agent.utils.tokens import estimate_messages_tokens
 
 
 class ResponsesProvider:
-    """OpenAI Responses API 的 LLM Provider（占位符）。
+    """OpenAI Responses API 的 LLM Provider（原厂）。"""
 
-    与 Chat Completions 的关键差异：
-    - 使用 `responses.create()` 而非 `chat.completions.create()`
-    - 支持内置工具（网页搜索、文件搜索、代码解释器）
-    - 不同的流式事件格式
-    - 支持多轮推理的响应链接
-    """
-
-    name = "responses"          # Provider 名称标识
-    supports_thinking = False   # 不支持思考模式
-    supports_tool_choice = False # 不支持自定义工具选择
+    name = "responses"
+    supports_thinking = False
+    supports_tool_choice = True
 
     def __init__(self, config: ProviderConfig | None = None) -> None:
-        self._config = config  # Provider 配置
+        self._config = config
+        self._client: Any = None
+
+    def _get_client(self) -> Any:
+        if self._client is None:
+            import openai
+
+            kwargs: dict[str, Any] = {}
+            if self._config:
+                if self._config.api_key:
+                    kwargs["api_key"] = self._config.api_key
+                if self._config.base_url:
+                    kwargs["base_url"] = self._config.base_url
+                kwargs["timeout"] = self._config.timeout
+                kwargs["max_retries"] = self._config.max_retries
+            self._client = openai.AsyncOpenAI(**kwargs)
+        return self._client
 
     async def stream(
         self,
@@ -46,22 +67,128 @@ class ResponsesProvider:
         on_streaming_fallback: Any = None,
         **kwargs: Any,
     ) -> AsyncGenerator[Message | Any, None]:
-        """通过 OpenAI Responses API 流式获取响应。
+        """通过 Responses API 流式获取响应，映射为内部 StreamEvent。"""
+        client = self._get_client()
+        input_items = normalize_responses_input(messages)
 
-        TODO: 待 Responses API 正式发布后实现。
-        """
-        raise NotImplementedError(
-            "Responses API provider is not yet implemented. "
-            "Use Chat Completions API (OpenAIProvider) instead."
+        params: dict[str, Any] = {
+            "model": model,
+            "input": input_items,
+            "stream": True,
+        }
+        if system_prompt:
+            params["instructions"] = system_prompt
+        if tools:
+            params["tools"] = [to_responses_tool(t) for t in tools]
+        if max_tokens:
+            params["max_output_tokens"] = max_tokens
+
+        yield MessageStartEvent(message={"usage": {}})
+
+        next_idx = 0
+        text_idx: dict[tuple[int, int], int] = {}   # (output_index, content_index) -> block idx
+        call_idx: dict[int, int] = {}               # output_index -> block idx
+        opened: set[int] = set()
+        saw_function_call = False
+        stop_reason: str | None = None
+        usage: dict[str, Any] = {}
+
+        async for event in client.responses.create(**params):
+            etype = getattr(event, "type", "")
+
+            if etype == "response.output_item.added":
+                item = getattr(event, "item", None)
+                oi = getattr(event, "output_index", 0)
+                itype = getattr(item, "type", None)
+                if itype == "function_call":
+                    call_idx[oi] = next_idx
+                    next_idx += 1
+                    opened.add(call_idx[oi])
+                    saw_function_call = True
+                    yield ContentBlockStartEvent(
+                        index=call_idx[oi],
+                        content_block={
+                            "type": "tool_use",
+                            "id": getattr(item, "call_id", ""),
+                            "name": getattr(item, "name", ""),
+                            "input": "",
+                        },
+                    )
+
+            elif etype == "response.content_part.added":
+                part = getattr(event, "part", None)
+                oi = getattr(event, "output_index", 0)
+                ci = getattr(event, "content_index", 0)
+                if getattr(part, "type", None) == "output_text":
+                    idx = next_idx
+                    next_idx += 1
+                    text_idx[(oi, ci)] = idx
+                    opened.add(idx)
+                    yield ContentBlockStartEvent(
+                        index=idx, content_block={"type": "text", "text": ""}
+                    )
+
+            elif etype == "response.output_text.delta":
+                oi = getattr(event, "output_index", 0)
+                ci = getattr(event, "content_index", 0)
+                text_block_idx = text_idx.get((oi, ci))
+                if text_block_idx is not None:
+                    yield ContentBlockDeltaEvent(
+                        index=text_block_idx,
+                        delta={"type": "text_delta", "text": getattr(event, "delta", "")},
+                    )
+
+            elif etype == "response.function_call_arguments.delta":
+                oi = getattr(event, "output_index", 0)
+                call_block_idx = call_idx.get(oi)
+                if call_block_idx is not None:
+                    yield ContentBlockDeltaEvent(
+                        index=call_block_idx,
+                        delta={
+                            "type": "input_json_delta",
+                            "partial_json": getattr(event, "delta", ""),
+                        },
+                    )
+
+            elif etype in ("response.content_part.done", "response.output_item.done"):
+                oi = getattr(event, "output_index", 0)
+                if etype == "response.content_part.done":
+                    ci = getattr(event, "content_index", 0)
+                    done_idx = text_idx.get((oi, ci))
+                else:
+                    done_idx = call_idx.get(oi)
+                if done_idx is not None and done_idx in opened:
+                    opened.discard(done_idx)
+                    yield ContentBlockStopEvent(index=done_idx)
+
+            elif etype == "response.completed":
+                response = getattr(event, "response", None)
+                status = getattr(response, "status", "completed")
+                if saw_function_call:
+                    stop_reason = "tool_use"
+                elif status == "completed":
+                    stop_reason = "end_turn"
+                else:
+                    stop_reason = "max_tokens"
+
+                usage_obj = getattr(response, "usage", None)
+                if usage_obj is not None:
+                    usage = {
+                        "input_tokens": getattr(usage_obj, "input_tokens", 0) or 0,
+                        "output_tokens": getattr(usage_obj, "output_tokens", 0) or 0,
+                    }
+
+        # 关闭任何仍打开的内容块
+        for idx in sorted(opened):
+            yield ContentBlockStopEvent(index=idx)
+
+        yield MessageDeltaEvent(
+            delta={"stop_reason": stop_reason}, usage=usage
         )
+        yield MessageStopEvent()
 
     def normalize_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
-        """将内部消息转换为 Responses API 格式。
-
-        TODO: 实现格式转换。
-        Responses API 使用 'input' 而非 'messages' 的消息格式。
-        """
-        raise NotImplementedError("Responses API message normalization not yet implemented.")
+        return normalize_responses_input(messages)
 
     def count_tokens(
         self,
@@ -69,7 +196,6 @@ class ResponsesProvider:
         system_prompt: str,
         tools: list[dict[str, Any]],
     ) -> int:
-        """估算 token 数。"""
-        from nono_agent.utils.tokens import estimate_messages_tokens
-
-        return estimate_messages_tokens(self.normalize_messages(messages))
+        return estimate_messages_tokens(
+            [m.message for m in messages if hasattr(m, "message")]
+        ) + len(system_prompt) // 4
