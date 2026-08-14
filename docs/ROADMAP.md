@@ -17,10 +17,10 @@
 | QueryEngine + agentic loop                      | 可用需打磨 | 主路径可用；边界/预算/取消等需加固                                |
 | Prompt Section 组装管线                             | 可用需打磨 | `prompt/` 有序 section + 静态/动态边界 + 优先级合并              |
 | 状态机 / RecoveryChain                             | 可用需打磨 | 原因枚举齐全；策略与可观测性可加强                                 |
-| 默认预处理管线（4 级）                                    | 可用需打磨 | ContextCollapse 未进默认管线                            |
+| 默认预处理管线（4 级）                                    | 可用需打磨 | ContextCollapse 可配置启用（默认 summarizer）               |
 | Anthropic / OpenAI / OpenAI-Compatible Provider | 可用需打磨 | 原厂 + Chat Completions 兼容可用                        |
 | Anthropic Messages 兼容（`messages_compatible`）    | 可用需打磨 | 非原厂 Messages 协议网关（httpx SSE）                         |
-| OpenAI Responses Provider（原厂）                   | 未开始   | 仅有占位类                                             |
+| OpenAI Responses Provider（原厂）                   | 可用需打磨 | 已实现流式事件映射（待真实 API 验证）                         |
 | Responses 兼容（`responses_compatible`）            | 未开始   | 非原厂 Responses 协议网关                                |
 | 工具协议 / Registry / Executor                      | 可用需打磨 | 三态权限决策接入 Executor                                    |
 | 内置工具                                            | 可用需打磨 | Bash/Read/Write/Edit/Glob/Grep/AskUser 可用；缺 LSP/Web/Worktree |
@@ -32,11 +32,11 @@
 | Skills（含 SkillTool）                             | 可用需打磨 | `skills/` 发现/加载 + SkillTool + Section 注入                  |
 | Plugins（扩展包）                                    | 未开始   | 可打包 Rules/Skills/Agents/Hooks/MCP                 |
 | MCP 配置与桥接                                       | 未开始   | tools + resources + auth                          |
-| 用户态 Hooks 配置                                    | 未开始   | 仅有代码内 `MiddlewareChain`                           |
+| 用户态 Hooks 配置                                    | 可用需打磨 | `hooks.json` 命令执行器（before_tool 可否决）；HTTP 执行器待做        |
 | 权限模式 + PermissionRule + denial 追踪               | 可用需打磨 | `permissions/` 策略/规则/沙箱/denial/Bash 分类；Server 默认 deny-write |
 | Slash / 运行时命令（MVP 子集）                           | 可用需打磨 | `commands/` + help/model/cost/context/clear；不对齐 CC 100+ 全量 |
 | Plan / Memory / Checkpoint / Task 生命周期          | 可用需打磨 | Plan 进出工具 + TodoWrite；Memory/Checkpoint/Task 待做          |
-| 子 Agent 三件套                                     | 未开始   | AgentTool + AgentDefinition + run 实例              |
+| 子 Agent 三件套                                     | 可用需打磨 | AgentTool + AgentDefinition + AgentRunner；worktree 隔离/后台待做   |
 | Worktree 进出工具                                   | 未开始   | §2.8 隔离的可操作面                                      |
 | Agent Teams / Coordinator                       | 未开始   | **P2 / 可选**；见 §6                                  |
 | Bridge / Remote / Cron                          | 未开始   | **默认非目标**；见 §6                                    |
@@ -282,9 +282,9 @@
 
 | 概念                  | 职责                                                              | 状态  |
 | ------------------- | --------------------------------------------------------------- | --- |
-| **AgentTool**       | 模型入口（`subagent_type`/`prompt`/model/background/cwd/`isolation`） | 未开始 |
-| **AgentDefinition** | tools 白名单、model、system prompt；多 source                          | 未开始 |
-| **run 实例**          | 独立 Engine/Store，结果回写父会话                                         | 未开始 |
+| **AgentTool**       | 模型入口（`subagent_type`/`prompt`/model/background/cwd/`isolation`） | 可用需打磨 |
+| **AgentDefinition** | tools 白名单、model、system prompt；多 source                          | 已完成 |
+| **run 实例**          | 独立 Engine/Store，结果回写父会话                                         | 已完成 |
 
 
 Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.nono/agents`）/ `plugin` / `flag`。
@@ -310,7 +310,7 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 | `messages_compatible`  | Messages         | 非原厂       | ✅   |
 | `openai`               | Chat Completions | 兼容        | ✅   |
 | （前缀 gpt-/o*）           | Chat Completions | 原厂 OpenAI | ✅   |
-| `responses`            | Responses        | 原厂        | 占位  |
+| `responses`            | Responses        | 原厂        | ✅   |
 | `responses_compatible` | Responses        | 非原厂       | 未开始 |
 
 
@@ -336,14 +336,14 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 | 项                        | 现状    | 计划                 |
 | ------------------------ | ----- | ------------------ |
-| Responses 原厂 Provider    | 占位    | 实现后供兼容层复用          |
+| Responses 原厂 Provider    | 已实现   | 待真实 API 验证后供兼容层复用    |
 | Server WebSocket         | 仅 SSE | 按需                 |
-| Metrics                  | No-Op | 最小可用               |
-| ContextCollapse 默认启用     | 需手动   | 配置开关               |
+| Metrics                  | 最小可用 | 内存 counter/histogram/gauge |
+| ContextCollapse 默认启用     | 可配置   | `context_collapse_enabled` 开关 |
 | `json_schema` 闭环         | 字段存在  | Provider + 校验      |
-| 预算硬门控                    | 字段存在  | loop 强制终止          |
+| 预算硬门控                    | 已实现   | loop 强制终止          |
 | Output Styles            | 无     | P2 可配置输出风格 section |
-| SDK `permission_denials` | 无     | 与 §2.6 一并进契约       |
+| SDK `permission_denials` | 已实现   | SDKResult 回灌 DenialTracker |
 
 
 ---
@@ -380,7 +380,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 ### 3.3 管线
 
-- [ ] 默认是否注册 ContextCollapse 的配置项
+- [x] 默认是否注册 ContextCollapse 的配置项（`context_collapse_enabled` + 默认 summarizer）
 - [ ] AutoCompact 80%/95% 阈值与模型窗口表维护
 
 
@@ -786,6 +786,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-10 | 新增 [COMMIT.md](./COMMIT.md) Git 提交规范 |
 | 2026-08-14 | Phase 0/1 落地：`permissions`/`prompt`/`rules` 包、生产级 `tools/builtin`、AskUserQuestion(CLI)、预算门控、CLI 配置外部化与密钥清理 |
 | 2026-08-14 | Phase 2 推进：Settings 分层、messages_compatible、Metrics 最小可用、Skills+SkillTool、Plan 模式工具、SQLite Transcript、Slash MVP、TodoWrite |
+| 2026-08-14 | Phase 2/3 推进：子 Agent 三件套、用户态 hooks.json、原厂 responses Provider、ContextCollapse 默认 summarizer |
 
 
 ## 附录

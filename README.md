@@ -9,13 +9,13 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 | 已有 | 尚未建成 |
 |------|----------|
 | `QueryEngine.submit_message()` 流式 API | LSP / WebFetch / Worktree 工具 |
-| Anthropic / OpenAI / OpenAI-Compatible + messages_compatible Provider | Plugins、MCP（含 Resources/Auth） |
-| 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep）+ AskUserQuestion + TodoWrite + Plan 进出 | 子 Agent 三件套 |
-| 默认 4 级上下文压缩管线 | Redis/Postgres、Memory/Checkpoint/Task |
-| Prompt Section 组装（静态/动态边界 + 优先级合并） | 原厂 responses Provider、WebSocket |
-| Rules 发现注入 + Skills（SkillTool）+ Slash MVP | 用户态 Hooks（hooks.json） |
+| Anthropic / OpenAI / Compatible + messages_compatible + responses | Plugins、MCP（含 Resources/Auth） |
+| 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep）+ AskUser + TodoWrite + Plan 进出 | responses_compatible、WebSocket |
+| 默认 4 级上下文压缩管线 + 可配置 ContextCollapse summarizer | Redis/Postgres、Memory/Checkpoint/Task |
+| Prompt Section 组装（静态/动态边界 + 优先级合并） | — |
+| Rules + Skills（SkillTool）+ 子 Agent 三件套 + Slash MVP | Agent Teams（P2 可选） |
 | 权限模式 + PermissionRule + 路径沙箱 + denial 追踪 | — |
-| Settings 分层（default/user/project/policy/flag） | — |
+| Settings 分层 + 用户态 Hooks（hooks.json） | HTTP Hooks 执行器 |
 | 工具协议、注册表、流式执行器 | — |
 | `TranscriptWriter` + NDJSON + SQLite | — |
 | CLI + Server（SSE） | — |
