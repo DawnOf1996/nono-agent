@@ -38,10 +38,35 @@ class TestRegistry:
 
 class TestMessagesCompatibleProvider:
     def test_endpoint_and_headers(self):
-        p = _make_provider()
-        assert p._endpoint() == "https://gw.example.com/anthropic/messages"
+        p = _make_provider()  # base_url 无 /v1
+        assert p._endpoint() == "https://gw.example.com/anthropic/v1/messages"
         headers = p._headers()
         assert headers["x-api-key"] == "sk-test"
+
+    def test_endpoint_with_v1(self):
+        p = MessagesCompatibleProvider(
+            ProviderConfig(
+                model_id="m",
+                adapter="messages_compatible",
+                base_url="https://api.minimaxi.com/anthropic/v1",
+            )
+        )
+        assert p._endpoint() == "https://api.minimaxi.com/anthropic/v1/messages"
+
+    def test_build_body_includes_stream(self):
+        from nono_agent.core.types import UserMessage
+
+        p = _make_provider()
+        body = p._build_body(
+            "MiniMax-M3",
+            None,
+            [UserMessage(message={"role": "user", "content": "hi"})],
+            "",
+            [],
+        )
+        assert body["stream"] is True
+        assert body["model"] == "MiniMax-M3"
+        assert body["max_tokens"] == 8192
 
     def test_normalize_messages(self):
         p = _make_provider()

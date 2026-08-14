@@ -51,7 +51,10 @@ class MessagesCompatibleProvider:
         self._extra_headers: dict[str, str] = config.extra_headers if config else {}
 
     def _endpoint(self) -> str:
-        return f"{self._base_url.rstrip('/')}/messages"
+        base = self._base_url.rstrip("/")
+        if base.endswith("/v1"):
+            return f"{base}/messages"
+        return f"{base}/v1/messages"
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -60,6 +63,29 @@ class MessagesCompatibleProvider:
             headers["authorization"] = f"Bearer {self._api_key}"
         headers.update(self._extra_headers)
         return headers
+
+    def _build_body(
+        self,
+        model: str,
+        max_tokens: int | None,
+        messages: list[Message],
+        system_prompt: str,
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """构建请求体（含 stream=True，使网关返回 SSE 流）。"""
+        body: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens or 8192,
+            "messages": normalize_anthropic_messages(messages),
+            "stream": True,
+        }
+        if system_prompt:
+            body["system"] = system_prompt
+        if tools:
+            body["tools"] = [to_anthropic_tool(t) for t in tools]
+        if self._extra_body:
+            body.update(self._extra_body)
+        return body
 
     async def stream(
         self,
@@ -76,19 +102,7 @@ class MessagesCompatibleProvider:
         **kwargs: Any,
     ) -> AsyncGenerator[Message | Any, None]:
         """通过 httpx 流式调用 Messages 兼容端点，映射为内部 StreamEvent。"""
-        api_messages = normalize_anthropic_messages(messages)
-
-        body: dict[str, Any] = {
-            "model": model,
-            "max_tokens": max_tokens or 8192,
-            "messages": api_messages,
-        }
-        if system_prompt:
-            body["system"] = system_prompt
-        if tools:
-            body["tools"] = [to_anthropic_tool(t) for t in tools]
-        if self._extra_body:
-            body.update(self._extra_body)
+        body = self._build_body(model, max_tokens, messages, system_prompt, tools)
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -102,8 +116,15 @@ class MessagesCompatibleProvider:
                         await resp.aread()
                         raise _status_error(resp.status_code, resp.text)
 
+                    current_event_type: str | None = None
                     async for line in resp.aiter_lines():
-                        if not line or not line.startswith("data:"):
+                        if not line:
+                            continue
+                        # SSE 事件类型可能在 event: 行，也可能在 data JSON 内
+                        if line.startswith("event:"):
+                            current_event_type = line[len("event:") :].strip()
+                            continue
+                        if not line.startswith("data:"):
                             continue
                         data_str = line[len("data:") :].strip()
                         if not data_str or data_str == "[DONE]":
@@ -112,6 +133,8 @@ class MessagesCompatibleProvider:
                             event = json.loads(data_str)
                         except json.JSONDecodeError:
                             continue
+                        if "type" not in event and current_event_type:
+                            event["type"] = current_event_type
 
                         mapped = self._map_event(event)
                         if mapped is not None:
