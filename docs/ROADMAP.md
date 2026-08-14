@@ -25,7 +25,7 @@
 | 工具协议 / Registry / Executor                      | 可用需打磨 | 三态权限决策接入 Executor                                    |
 | 内置工具                                            | 可用需打磨 | Bash/Read/Write/Edit/Glob/Grep/AskUser 可用；缺 LSP/Web/Worktree |
 | AskUserQuestion 通道                              | 可用需打磨 | CLI 交互回调可用；Server 回调/SSE 待 Phase 3                |
-| LSP 工具                                          | 未开始   | 对标 CC `LSPTool`                                   |
+| LSP 工具                                          | 已完成   | 对标 CC `LSPTool`（stdio 客户端 + 定义/引用/诊断）             |
 | ToolSearch / MCP Resources+Auth                 | 可用需打磨 | ToolSearch + Resources 可用；MCP Auth 待做               |
 | Settings 分层（user/project/policy）                | 可用需打磨 | `settings/` 分层合并 + 来源追踪；待接入 EngineConfig        |
 | Rules（项目/用户指令）                                  | 可用需打磨 | `rules/` 发现/合并/注入；含 `CLAUDE.md`/`AGENTS.md` 兼容        |
@@ -147,7 +147,7 @@
 | LS / Tree            | 目录列举 + Ignore                      | P1    | 已完成 |
 | WebFetch / WebSearch | 网络 + SSRF/安全策略                     | P1    | 已完成 |
 | AskUserQuestion      | 结构化提问；CLI 交互 / Server 回调或 SSE      | P0/P1 | 可用需打磨 |
-| LSP                  | 定义跳转/引用/诊断（对标 `LSPTool`）           | P1    | 未开始 |
+| LSP                  | 定义跳转/引用/诊断（对标 `LSPTool`）           | P1    | 已完成 |
 | NotebookEdit         | Jupyter（按需）                        | P2    | 未开始 |
 | ToolSearch           | 工具过多时按需检索暴露                        | P1    | 已完成 |
 | Enter/Exit Worktree  | git worktree 进出                    | P1    | 已完成 |
@@ -270,7 +270,7 @@
 | `/rules` `/skills` `/mcp` `/plugins`      | 扩展面调试        | 已完成 |
 | `/permission` `/model` `/cost` `/context` | 模式、模型、成本、上下文 | 已完成 |
 | `/memory` `/hooks`                        | P2 可后置       | 已完成 |
-| Plugin 自定义 slash                          | 扩展机制         | 未开始 |
+| Plugin 自定义 slash                          | 扩展机制         | 已完成 |
 
 
 建议：`nono_agent/commands/`。
@@ -794,6 +794,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | Phase 1/2 补齐：LS/WebFetch(SSRF)/ToolSearch 工具、Slash /rules /skills /permission /mcp /plugins |
 | 2026-08-14 | 补齐：WebSearch 工具、MCP 静态 token/headers、Skills enable/disable |
 | 2026-08-14 | 补齐：fallback_model 切换、/memory /hooks slash、CLI sessions 会话列表 |
+| 2026-08-14 | 补齐：LSP 工具、Plugin 自定义 slash 命令 |
 
 
 ## 附录
