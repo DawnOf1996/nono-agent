@@ -202,15 +202,19 @@ def create_default_registry() -> ProviderRegistry:
     except ImportError:
         pass
 
-    # OpenAI Responses API —— 原厂（占位）
+    # OpenAI Responses API —— 原厂
     try:
         from nono_agent.providers.responses_provider import ResponsesProvider
         registry.register_adapter("responses", ResponsesProvider)
     except ImportError:
         pass
 
-    # TODO: responses_compatible —— Responses 非原厂兼容网关
-    # registry.register_adapter("responses_compatible", ResponsesCompatibleProvider)
+    # Responses API —— 非原厂兼容网关
+    try:
+        from nono_agent.providers.responses_compatible import ResponsesCompatibleProvider
+        registry.register_adapter("responses_compatible", ResponsesCompatibleProvider)
+    except ImportError:
+        pass
     # ------------------------------------------------------------------
     # 前缀映射 —— 向后兼容路由（不配置 adapter 时按 model_id 前缀自动推断）
     # ------------------------------------------------------------------
