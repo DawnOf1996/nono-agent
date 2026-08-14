@@ -11,9 +11,9 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Callable
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def _gen_session_id() -> str:
@@ -27,7 +27,7 @@ class ProviderConfig(BaseModel):
     配置驱动适配器选择（原厂 vs 兼容，见 docs/ROADMAP.md §2.6）：
     - adapter: anthropic | messages_compatible | openai | responses | responses_compatible
     - extra_body: 每次请求时深度合并到请求体中的额外参数
-    
+
     用法示例::
 
         # MiniMax 通过 OpenAI Chat Completions 兼容 API
@@ -44,7 +44,8 @@ class ProviderConfig(BaseModel):
     """
 
     model_id: str                              # 模型 ID（如 "claude-sonnet-4-20250514"）
-    adapter: str | None = None                 # API 协议: anthropic | messages_compatible | openai | responses | responses_compatible
+    # API 协议: anthropic | messages_compatible | openai | responses | responses_compatible
+    adapter: str | None = None
     api_key: str = ""                          # API 密钥
     base_url: str | None = None                # 自定义 API 端点（代理/厂商地址）
     extra_headers: dict[str, str] = Field(default_factory=dict)  # 额外 HTTP 头
@@ -106,8 +107,7 @@ class EngineConfig(BaseModel):
     # 会话 ID（不填则自动生成）
     session_id: str = Field(default_factory=_gen_session_id)
 
-    class Config:
-        frozen = True  # 不可变，防止运行期意外修改配置
+    model_config = ConfigDict(frozen=True)  # 不可变，防止运行期意外修改配置
 
     @property
     def effective_model(self) -> str:
@@ -139,5 +139,4 @@ class QueryConfig(BaseModel):
     session_id: str                              # 所属会话 ID
     gates: RuntimeGates = Field(default_factory=RuntimeGates)  # 特性门控快照
 
-    class Config:
-        frozen = True  # 不可变，保证循环体内看到的状态一致
+    model_config = ConfigDict(frozen=True)  # 不可变，保证循环体内看到的状态一致

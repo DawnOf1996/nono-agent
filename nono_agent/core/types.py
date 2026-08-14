@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 import uuid as _uuid
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -90,13 +90,13 @@ class RedactedThinkingBlock(BaseModel):
 
 
 # 所有内容块的联合类型 —— 一个 AssistantMessage 的 content 字段就是 list[ContentBlock]
-ContentBlock = Union[
-    TextBlock,
-    ToolUseBlock,
-    ToolResultContentBlock,
-    ThinkingBlock,
-    RedactedThinkingBlock,
-]
+ContentBlock = (
+    TextBlock
+    | ToolUseBlock
+    | ToolResultContentBlock
+    | ThinkingBlock
+    | RedactedThinkingBlock
+)
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +183,8 @@ class AssistantMessage(BaseModel):
     type: Literal["assistant"] = "assistant"
     uuid: str = Field(default_factory=_new_uuid)
     timestamp: float = Field(default_factory=_now_ms)
-    message: dict[str, Any]  # {"role": "assistant", "content": [...], "usage": {...}, "stop_reason": ...}
+    # {"role": "assistant", "content": [...], "usage": {...}, "stop_reason": ...}
+    message: dict[str, Any]
     api_error: str | None = None            # API 调用出错时的错误信息
     is_api_error_message: bool = False      # 是否是 API 错误重试时生成的占位消息
 
@@ -199,11 +200,14 @@ class SystemMessage(BaseModel):
     """
 
     type: Literal["system"] = "system"
-    subtype: str = ""  # 消息子类型: "compact_boundary", "api_error", "api_retry", "tool_result", "loop_terminal" 等
+    # 消息子类型: "compact_boundary", "api_error", "api_retry",
+    # "tool_result", "loop_terminal" 等
+    subtype: str = ""
     uuid: str = Field(default_factory=_new_uuid)
     timestamp: float = Field(default_factory=_now_ms)
     content: str = ""                          # 消息文本内容
-    compact_metadata: dict[str, Any] | None = None  # 压缩操作的元数据（原始消息数、节省 token 数等）
+    # 压缩操作的元数据（原始消息数、节省 token 数等）
+    compact_metadata: dict[str, Any] | None = None
     retry_attempt: int | None = None           # API 重试当前次数
     max_retries: int | None = None             # API 最大重试次数
     retry_in_ms: int | None = None             # 重试等待时间
@@ -230,20 +234,21 @@ class ProgressMessage(BaseModel):
 
 # 所有内部消息类型的联合类型 —— agentic loop 操作的消息都是 Message
 # 通过 type 字段判别具体类型，避免 isinstance 链
-Message = Union[
-    UserMessage,
-    AssistantMessage,
-    SystemMessage,
-    AttachmentMessage,
-    ProgressMessage,
-]
+Message = (
+    UserMessage
+    | AssistantMessage
+    | SystemMessage
+    | AttachmentMessage
+    | ProgressMessage
+)
 
 
 # ---------------------------------------------------------------------------
 # Stream Events — 流式事件序列
 # ---------------------------------------------------------------------------
 # LLM 流式响应期间产生的事件序列，遵循 Anthropic 的 SSE 事件协议：
-#   message_start -> [content_block_start -> delta* -> content_block_stop]* -> message_delta -> message_stop
+#   message_start -> [content_block_start -> delta* -> content_block_stop]*
+#   -> message_delta -> message_stop
 # 引擎将这些事件透传给 CLI/Server 适配器，实现实时流式输出。
 
 
@@ -267,7 +272,9 @@ class ContentBlockDeltaEvent(BaseModel):
 
     type: Literal["content_block_delta"] = "content_block_delta"
     index: int                  # 对应内容块索引
-    delta: dict[str, Any]       # 增量内容: {"type": "text_delta", "text": "..."} 或 {"type": "input_json_delta", ...}
+    # 增量内容: {"type": "text_delta", "text": "..."} 或
+    # {"type": "input_json_delta", ...}
+    delta: dict[str, Any]
 
 
 class ContentBlockStopEvent(BaseModel):
@@ -292,14 +299,14 @@ class MessageStopEvent(BaseModel):
 
 
 # 所有流式事件的联合类型
-StreamEvent = Union[
-    MessageStartEvent,
-    ContentBlockStartEvent,
-    ContentBlockDeltaEvent,
-    ContentBlockStopEvent,
-    MessageDeltaEvent,
-    MessageStopEvent,
-]
+StreamEvent = (
+    MessageStartEvent
+    | ContentBlockStartEvent
+    | ContentBlockDeltaEvent
+    | ContentBlockStopEvent
+    | MessageDeltaEvent
+    | MessageStopEvent
+)
 
 
 class RequestStartEvent(BaseModel):
@@ -403,7 +410,9 @@ class SDKSystemMessage(BaseModel):
     """SDK 协议格式的系统消息 —— 通知客户端会话状态变化。"""
 
     type: Literal["system"] = "system"
-    subtype: str  # 子类型: "init"(会话初始化), "compact_boundary"(压缩边界), "api_retry"(重试通知), "request_start"
+    # 子类型: "init"(会话初始化), "compact_boundary"(压缩边界),
+    # "api_retry"(重试通知), "request_start"
+    subtype: str
     session_id: str
     uuid: str = Field(default_factory=_new_uuid)
     # 以下字段根据 subtype 可选填充
@@ -434,7 +443,9 @@ class SDKResultMessage(BaseModel):
     """
 
     type: Literal["result"] = "result"
-    subtype: str  # "success" | "error_max_turns" | "error_max_budget_usd" | "error_during_execution" 等
+    # "success" | "error_max_turns" | "error_max_budget_usd" |
+    # "error_during_execution" 等
+    subtype: str
     is_error: bool = False             # 是否为错误结束
     duration_ms: float = 0             # 总耗时（毫秒）
     duration_api_ms: float = 0         # API 调用耗时（毫秒，不含工具执行时间）
@@ -452,14 +463,14 @@ class SDKResultMessage(BaseModel):
 
 
 # SDK 协议消息联合类型 —— QueryEngine.submit_message() 的返回类型
-SDKMessage = Union[
-    SDKAssistantMessage,
-    SDKUserMessageReplay,
-    SDKStreamEventMessage,
-    SDKSystemMessage,
-    SDKToolUseSummary,
-    SDKResultMessage,
-]
+SDKMessage = (
+    SDKAssistantMessage
+    | SDKUserMessageReplay
+    | SDKStreamEventMessage
+    | SDKSystemMessage
+    | SDKToolUseSummary
+    | SDKResultMessage
+)
 
 
 # ---------------------------------------------------------------------------
@@ -469,10 +480,10 @@ SDKMessage = Union[
 # QueryEngine 接收 InternalMessage 后通过 _to_sdk_messages() 转换为 SDKMessage。
 # 包含：普通消息、Tombstone、工具摘要、流式事件、请求开始信号。
 
-InternalMessage = Union[
-    Message,
-    TombstoneMessage,
-    ToolUseSummaryMessage,
-    StreamEvent,
-    RequestStartEvent,
-]
+InternalMessage = (
+    Message
+    | TombstoneMessage
+    | ToolUseSummaryMessage
+    | StreamEvent
+    | RequestStartEvent
+)

@@ -25,15 +25,12 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
 from nono_agent.core.config import EngineConfig, QueryConfig
 from nono_agent.core.state import (
-    AutoCompactTracking,
     LoopState,
-    Terminal,
     TerminalReason,
     Transition,
     TransitionReason,
@@ -45,27 +42,25 @@ from nono_agent.core.types import (
     RequestStartEvent,
     StreamEvent,
     SystemMessage,
-    TombstoneMessage,
     ToolResult,
     ToolUseBlock,
-    UserMessage,
     Usage,
+    UserMessage,
 )
 from nono_agent.hooks.middleware import MiddlewareChain
-from nono_agent.hooks.stop_hooks import StopHookExecutor, StopHookResult
 from nono_agent.hooks.post_sampling import PostSamplingChain
+from nono_agent.hooks.stop_hooks import StopHookExecutor
+from nono_agent.observability.cost_tracker import CostTracker
 from nono_agent.pipeline.base import PipelineContext, PreprocessPipeline
 from nono_agent.providers.base import LLMProvider
+from nono_agent.recovery import max_output_tokens, prompt_too_long
 from nono_agent.recovery.chain import RecoveryAction, RecoveryChain, RecoveryDecision
-from nono_agent.recovery import prompt_too_long, max_output_tokens
 from nono_agent.session.store import MessageStore
-from nono_agent.tools.context import ToolUseContext
 from nono_agent.tools.executor import StreamingToolExecutor
 from nono_agent.tools.registry import ToolRegistry
 from nono_agent.utils.abort import AbortSignal
 from nono_agent.utils.tokens import (
     estimate_messages_tokens,
-    get_context_window_size,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,6 +81,7 @@ async def agentic_loop(
     system_prompt: str,
     initial_state: LoopState,
     signal: AbortSignal,
+    cost_tracker: CostTracker | None = None,
 ) -> AsyncGenerator[InternalMessage, None]:
     """主 Agentic 循环 —— while(True) 驱动的代理核心。
 
@@ -129,9 +125,17 @@ async def agentic_loop(
             )
             return
 
+        # —— 前置检查: 预算门控（美元 / token 预算在 loop 内生效）——
+        if cost_tracker is not None:
+            budget_reason = _check_budget(config, cost_tracker)
+            if budget_reason is not None:
+                yield _make_terminal(store, state, budget_reason)
+                return
+
         # ------------------------------------------------------------------
         # Phase 1: 预处理消息 (PreprocessPipeline)
-        # 将消息通过 5 级管线压缩: ToolResultBudget → SnipCompact → MicroCompact → ContextCollapse → AutoCompact
+        # 将消息通过 5 级管线压缩:
+        # ToolResultBudget → SnipCompact → MicroCompact → ContextCollapse → AutoCompact
         # 目的: 确保发给 LLM 的消息不超过上下文窗口限制
         # ------------------------------------------------------------------
         # 取边界后的消息快照（compact boundary 之后的消息）
@@ -178,7 +182,8 @@ async def agentic_loop(
         # Phase 3: LLM API 调用（流式）
         # 先发出 RequestStartEvent 信号通知 UI 开始“思考”，
         # 然后通过 provider.stream() 流式接收 LLM 响应。
-        # 流式事件序列: message_start -> content_block_start/delta/stop -> message_delta -> message_stop
+        # 流式事件序列:
+        # message_start -> content_block_start/delta/stop -> message_delta -> message_stop
         # ------------------------------------------------------------------
         yield RequestStartEvent()  # 通知消费者 API 请求开始
 
@@ -648,7 +653,11 @@ async def _apply_recovery(
 
         case RecoveryAction.ESCALATE_MAX_TOKENS:
             # 升级 max_output_tokens 上限: 从默认 8k 升级到 64k
-            new_max = decision.metadata.get("new_max_tokens", 64_000) if decision.metadata else 64_000
+            new_max = (
+                decision.metadata.get("new_max_tokens", 64_000)
+                if decision.metadata
+                else 64_000
+            )
             transition = Transition(
                 reason=TransitionReason.MAX_OUTPUT_TOKENS_ESCALATE,
                 metadata={"new_max_tokens": new_max},
@@ -687,6 +696,37 @@ async def _apply_recovery(
 
         case _:  # TERMINATE / TOKEN_BUDGET_NUDGE / PASS_THROUGH 等不处理
             return None
+
+
+def _check_budget(
+    config: EngineConfig,
+    cost_tracker: CostTracker,
+) -> TerminalReason | None:
+    """检查预算门控 —— 超出美元或 token 预算时返回终止原因。"""
+    # 美元预算
+    if config.max_budget_usd is not None:
+        if cost_tracker.get_total_cost() >= config.max_budget_usd:
+            logger.warning(
+                "Budget exceeded: $%.4f >= $%.4f",
+                cost_tracker.get_total_cost(),
+                config.max_budget_usd,
+            )
+            return TerminalReason.MAX_BUDGET_USD
+
+    # token 预算（task_budget 形如 {"total": 100000}）
+    if config.task_budget is not None:
+        total_limit = config.task_budget.get("total")
+        if total_limit is not None:
+            total_tokens = cost_tracker.get_total_usage().total_tokens
+            if total_tokens >= total_limit:
+                logger.warning(
+                    "Token budget exceeded: %d >= %d",
+                    total_tokens,
+                    total_limit,
+                )
+                return TerminalReason.TASK_BUDGET_EXHAUSTED
+
+    return None
 
 
 def _make_terminal(

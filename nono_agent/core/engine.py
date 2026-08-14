@@ -33,12 +33,9 @@ from nono_agent.core.loop import agentic_loop
 from nono_agent.core.state import (
     AutoCompactTracking,
     LoopState,
-    TerminalReason,
-    TransitionReason,
 )
 from nono_agent.core.types import (
     AssistantMessage,
-    ContentBlock,
     InternalMessage,
     Message,
     RequestStartEvent,
@@ -47,8 +44,8 @@ from nono_agent.core.types import (
     SDKResultMessage,
     SDKStreamEventMessage,
     SDKSystemMessage,
-    SDKUserMessageReplay,
     SDKToolUseSummary,
+    SDKUserMessageReplay,
     StreamEvent,
     SystemMessage,
     TombstoneMessage,
@@ -60,18 +57,27 @@ from nono_agent.hooks.middleware import MiddlewareChain
 from nono_agent.hooks.post_sampling import PostSamplingChain
 from nono_agent.hooks.stop_hooks import StopHookExecutor
 from nono_agent.observability.cost_tracker import CostTracker, estimate_cost
-from nono_agent.pipeline.base import PreprocessPipeline
-from nono_agent.pipeline.tool_result_budget import ToolResultBudgetStage
-from nono_agent.pipeline.snip_compact import SnipCompactStage
-from nono_agent.pipeline.microcompact import MicroCompactStage
+from nono_agent.permissions.denial import DenialTracker
+from nono_agent.permissions.policy import PermissionPolicy
+from nono_agent.permissions.sandbox import IgnoreMatcher, PathSandbox
 from nono_agent.pipeline.auto_compact import AutoCompactStage
-from nono_agent.providers.base import LLMProvider, ProviderRegistry, create_default_registry
+from nono_agent.pipeline.base import PreprocessPipeline
+from nono_agent.pipeline.microcompact import MicroCompactStage
+from nono_agent.pipeline.snip_compact import SnipCompactStage
+from nono_agent.pipeline.tool_result_budget import ToolResultBudgetStage
+from nono_agent.prompt.assembler import PromptAssembler
+from nono_agent.prompt.registry import SectionRegistry
+from nono_agent.prompt.section import PromptContext
+from nono_agent.prompt.sections import create_default_sections
+from nono_agent.providers.base import ProviderRegistry, create_default_registry
 from nono_agent.recovery.chain import RecoveryChain
+from nono_agent.rules.loader import FileSystemRuleLoader
+from nono_agent.rules.merge import merge_rules
 from nono_agent.session.store import MessageStore
-from nono_agent.session.transcript import TranscriptWriter, LocalFileTranscriptWriter
+from nono_agent.session.transcript import LocalFileTranscriptWriter, TranscriptWriter
 from nono_agent.tools.context import PermissionChecker, ToolUseContext
 from nono_agent.tools.registry import ToolRegistry
-from nono_agent.utils.abort import AbortController, AbortSignal
+from nono_agent.utils.abort import AbortController
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +110,11 @@ class QueryEngine:
         recovery_chain: RecoveryChain | None = None,
         transcript_writer: TranscriptWriter | None = None,
         permission_checker: PermissionChecker | None = None,
+        permission_policy: PermissionPolicy | None = None,
+        denial_tracker: DenialTracker | None = None,
+        rule_loader: FileSystemRuleLoader | None = None,
+        prompt_assembler: PromptAssembler | None = None,
+        ask_user: Any | None = None,
     ) -> None:
         self._config = config
         self._initialized = False
@@ -123,6 +134,19 @@ class QueryEngine:
         self._abort_controller = AbortController()  # 取消控制器
         self._transcript_writer = transcript_writer  # 磁盘持久化写入器
         self._permission_checker = permission_checker  # 权限检查器（CLI/Server 注入）
+
+        # 权限体系（Phase 1）：策略 + 拒绝追踪 + 路径沙箱 + Ignore
+        self._permission_policy = permission_policy or PermissionPolicy()
+        self._denial_tracker = denial_tracker or DenialTracker()
+        self._sandbox = PathSandbox(config.cwd)
+        self._ignore = IgnoreMatcher.from_workspace(config.cwd)
+
+        # Prompt 组装 + Rules 发现（Phase 1）
+        self._rule_loader = rule_loader or FileSystemRuleLoader()
+        self._prompt_assembler = prompt_assembler or self._create_default_assembler()
+
+        # AskUserQuestion 通道（Phase 1 CLI / Phase 3 Server）
+        self._ask_user = ask_user
 
         # 会话信息
         self._session_id = config.session_id
@@ -231,15 +255,20 @@ class QueryEngine:
         )
         logger.debug("Provider resolved: %s", type(provider).__name__)
 
-        # 构建系统提示: 自定义 > 默认，可选追加
+        # 构建系统提示: 通过 PromptAssembler 组装（替代旧 _build_system_prompt）
         system_prompt = self._build_system_prompt()
 
-        # 构建初始循环状态
+        # 构建初始循环状态（携带权限策略 / 沙箱 / 拒绝追踪 / Ignore）
         tool_context = ToolUseContext(
             cwd=self._config.cwd,
             signal=self._abort_controller.signal,
             session_id=self._session_id,
             permission_checker=self._permission_checker,
+            policy=self._permission_policy,
+            sandbox=self._sandbox,
+            denial_tracker=self._denial_tracker,
+            ignore=self._ignore,
+            ask_user=self._ask_user,
         )
 
         initial_state = LoopState(
@@ -256,7 +285,8 @@ class QueryEngine:
         # 内部消息流: stream events + assistant messages + tool results + terminal
         terminal_reason = None       # 终止原因
         terminal_error = None        # 终止异常
-        last_assistant_msg: AssistantMessage | None = None  # 最后的 assistant 消息（用于提取结果文本）
+        # 最后的 assistant 消息（用于提取结果文本）
+        last_assistant_msg: AssistantMessage | None = None
 
         try:
             async for internal_msg in agentic_loop(
@@ -273,6 +303,7 @@ class QueryEngine:
                 system_prompt=system_prompt,
                 initial_state=initial_state,
                 signal=self._abort_controller.signal,
+                cost_tracker=self._cost_tracker,
             ):
                 # Phase 5: 将内部消息转换为 SDK 格式
                 sdk_msgs = self._to_sdk_messages(internal_msg)
@@ -285,8 +316,10 @@ class QueryEngine:
                     usage_dict = internal_msg.message.get("usage", {})
                     if usage_dict:
                         usage = Usage(**usage_dict)
-                        self._cost_tracker.record_usage(usage, self._config.effective_model)  # 记录 token 用量
-                        cost = estimate_cost(usage, self._config.effective_model)  # 估算美元费用
+                        # 记录 token 用量
+                        self._cost_tracker.record_usage(usage, self._config.effective_model)
+                        # 估算美元费用
+                        cost = estimate_cost(usage, self._config.effective_model)
                         self._cost_tracker.record_cost(cost)  # 记录累计成本
 
                     # 持久化 assistant 消息（fire-and-forget，不阻塞主循环）
@@ -345,6 +378,7 @@ class QueryEngine:
             total_cost_usd=self._cost_tracker.get_total_cost(),
             usage=self._cost_tracker.get_total_usage(),
             model_usage=self._cost_tracker.get_model_usage(),
+            permission_denials=self._denial_tracker.list(),
             errors=[str(terminal_error)] if terminal_error else [],
         )
 
@@ -437,23 +471,42 @@ class QueryEngine:
         session_file = DEFAULT_SESSION_DIR / f"{self._session_id}.jsonl"
         return LocalFileTranscriptWriter(session_file)
 
+    def _create_default_assembler(self) -> PromptAssembler:
+        """创建默认 PromptAssembler（注册内置 section）。"""
+        registry = SectionRegistry()
+        for section in create_default_sections():
+            registry.register(section)
+        return PromptAssembler(registry)
+
     def _build_system_prompt(self) -> str:
-        """根据配置构建系统提示 —— 支持自定义、默认和追加模式。"""
+        """通过 PromptAssembler 组装系统提示 —— 替代旧的一次性字符串拼接。
+
+        静态段（identity / tools_guidance）+ 动态段（env_info / rules）。
+        custom_system_prompt 覆盖 identity；append_system_prompt 永远追加。
+        """
+        import os
+
+        rules_text = merge_rules(self._rule_loader.load(self._config.cwd))
+
+        ctx = PromptContext(
+            model_id=self._config.effective_model,
+            cwd=self._config.cwd,
+            env=dict(os.environ),
+            rules_text=rules_text,
+            custom_system_prompt=self._config.custom_system_prompt,
+            append_system_prompt=self._config.append_system_prompt,
+            tools=self._tool_registry.to_api_schema(),
+            permission_mode=self._permission_policy.mode.value,
+        )
+
+        assembled = self._prompt_assembler.assemble(ctx)
         parts: list[str] = []
-
-        if self._config.custom_system_prompt:
-            parts.append(self._config.custom_system_prompt)  # 使用自定义提示
-        else:
-            # 默认系统提示
-            parts.append(
-                "You are a helpful AI assistant. Use the provided tools to help "
-                "the user accomplish their tasks."
-            )
-
+        if assembled.full:
+            parts.append(assembled.full)
         if self._config.append_system_prompt:
-            parts.append(self._config.append_system_prompt)  # 追加额外提示
+            parts.append(self._config.append_system_prompt)
 
-        return "\n\n".join(parts)  # 用双换行拼接各段
+        return "\n\n".join(parts)
 
     def _to_sdk_messages(self, msg: InternalMessage) -> list[SDKMessage]:
         """将内部消息转换为 SDK 消息格式。
