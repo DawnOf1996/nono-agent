@@ -85,7 +85,7 @@ from nono_agent.utils.abort import AbortController
 logger = logging.getLogger(__name__)
 
 # 用于反序列化 Message 判别联合类型的 TypeAdapter
-_message_adapter = TypeAdapter(Message)
+_message_adapter: TypeAdapter[Message] = TypeAdapter(Message)
 
 # 默认会话文件存储目录
 DEFAULT_SESSION_DIR = Path.home() / ".nono-agent" / "sessions"
@@ -378,7 +378,8 @@ class QueryEngine:
 
         # 确定结果子类型: 正常完成 vs 错误终止
         is_error = terminal_reason not in (None, "COMPLETED")
-        result_subtype = "success" if not is_error else f"error_{terminal_reason.lower()}"
+        reason = terminal_reason or "unknown"
+        result_subtype = "success" if not is_error else f"error_{reason.lower()}"
 
         # 从最后一条 assistant 消息提取结果文本
         result_text = ""
@@ -390,6 +391,9 @@ class QueryEngine:
                         result_text = block.get("text", "")
             elif isinstance(content, str):
                 result_text = content
+
+        # 结构化输出闭环：配置 json_schema 时尝试把结果文本解析为 JSON
+        structured_output = self._parse_structured_output(result_text)
 
         # yield 最终结果消息 —— 客户端收到此消息即知本轮对话完成
         logger.debug(
@@ -410,6 +414,7 @@ class QueryEngine:
             model_usage=self._cost_tracker.get_model_usage(),
             permission_denials=self._denial_tracker.list(),
             errors=[str(terminal_error)] if terminal_error else [],
+            structured_output=structured_output,
         )
 
     def abort(self, reason: str | None = None) -> None:
@@ -420,6 +425,23 @@ class QueryEngine:
     def clear_session(self) -> None:
         """清空当前会话的消息存储（/clear 命令）。"""
         self._store.replace([])
+
+    def _parse_structured_output(self, result_text: str) -> Any:
+        """配置 json_schema 时把结果文本解析为 JSON（结构化输出闭环）。
+
+        解析失败返回 None（SDK 消费者据此回退到 result 文本）。
+        """
+        if not self._config.json_schema:
+            return None
+        import json
+
+        text = (result_text or "").strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return None
         logger.info("Session cleared (session=%s)", self._session_id)
 
     # ------------------------------------------------------------------

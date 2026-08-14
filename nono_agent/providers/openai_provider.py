@@ -105,6 +105,18 @@ class OpenAIProvider:
         if tools:
             params["tools"] = [to_openai_tool(t) for t in tools]
 
+        # 结构化输出：json_schema 配置 → response_format
+        json_schema = kwargs.get("json_schema")
+        if json_schema:
+            params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_output",
+                    "schema": json_schema,
+                    "strict": True,
+                },
+            }
+
         # 将 extra_body 通过 SDK 专用通道传入，避免非标准参数触发 TypeError
         if self._extra_body:
             params["extra_body"] = self._extra_body

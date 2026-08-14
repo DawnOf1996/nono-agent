@@ -205,6 +205,7 @@ async def agentic_loop(
                 model=config.effective_model,
                 max_tokens=state.max_output_tokens_override,
                 signal=signal,
+                json_schema=config.json_schema,
             ):
                 # 将流式事件透传给消费者（CLI/Server 适配器）
                 if isinstance(event, StreamEvent):
