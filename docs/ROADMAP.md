@@ -35,7 +35,7 @@
 | 用户态 Hooks 配置                                    | 可用需打磨 | `hooks.json` 命令执行器（before_tool 可否决）；HTTP 执行器待做        |
 | 权限模式 + PermissionRule + denial 追踪               | 可用需打磨 | `permissions/` 策略/规则/沙箱/denial/Bash 分类；Server 默认 deny-write |
 | Slash / 运行时命令（MVP 子集）                           | 可用需打磨 | `commands/` + help/model/cost/context/clear；不对齐 CC 100+ 全量 |
-| Plan / Memory / Checkpoint / Task 生命周期          | 可用需打磨 | Plan 进出工具 + TodoWrite；Memory/Checkpoint/Task 待做          |
+| Plan / Memory / Checkpoint / Task 生命周期          | 可用需打磨 | Plan/TodoWrite/Memory/Checkpoint/Task 均已落地；多模态附件待做     |
 | 子 Agent 三件套                                     | 可用需打磨 | AgentTool + AgentDefinition + AgentRunner；worktree 隔离/后台待做   |
 | Worktree 进出工具                                   | 可用需打磨 | enter/exit_worktree；cwd 自动切换待做                        |
 | Agent Teams / Coordinator                       | 未开始   | **P2 / 可选**；见 §6                                  |
@@ -323,9 +323,9 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 | ------------------- | ---------------------------------- | --- | --- |
 | Plan 模式工具           | Enter/Exit Plan；联动 `plan` 权限       | P1  | 已完成 |
 | TodoWrite           | 轻量进度                               | P1  | 已完成 |
-| Task 工具族            | Create/Get/Update/List/Stop/Output | P2  | 未开始 |
+| Task 工具族            | Create/Get/Update/List/Stop/Output | P2  | 可用需打磨 |
 | Memory（memdir 思路）   | 记忆目录 + 类型约束 + Prompt Section       | P2  | 可用需打磨 |
-| Checkpoint / Rewind | 编辑快照/补丁栈                           | P2  | 未开始 |
+| Checkpoint / Rewind | 编辑快照/补丁栈                           | P2  | 已完成 |
 | 多模态附件               | `attachments` 产品化                  | P2  | 未开始 |
 
 
@@ -428,11 +428,11 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 ### 3.8 可观测、测试与工程化
 
-- [ ] Metrics 真实实现（至少 counter/histogram）
-- [ ] 扩展单测与集成测（真实 Provider 可选、MCP mock、Transcript 后端 mock）
-- [ ] CI：pytest + ruff + mypy
-- [ ] README / 示例与真实默认行为一致
-- [ ] 清理仓库内敏感信息风险（密钥不得入库）
+- [x] Metrics 真实实现（至少 counter/histogram）
+- [x] 扩展单测与集成测（真实 Provider 可选、MCP mock、Transcript 后端 mock）
+- [x] CI：pytest + ruff + mypy
+- [x] README / 示例与真实默认行为一致
+- [x] 清理仓库内敏感信息风险（密钥不得入库）
 
 ---
 
@@ -789,6 +789,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | Phase 2/3 推进：子 Agent 三件套、用户态 hooks.json、原厂 responses Provider、ContextCollapse 默认 summarizer |
 | 2026-08-14 | Phase 2/3 推进：MCP stdio 客户端（tools/resources 桥接）、Worktree 进出工具、responses_compatible |
 | 2026-08-14 | Phase 2/4 推进：Plugins 扩展包、json_schema 结构化输出闭环、Memory（memdir） |
+| 2026-08-14 | Phase 4 推进：mypy 全量清零、Checkpoint、Task 工具族、CI（pytest+ruff+mypy） |
 
 
 ## 附录

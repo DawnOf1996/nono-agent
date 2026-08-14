@@ -11,13 +11,14 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 | `QueryEngine.submit_message()` 流式 API | LSP / WebFetch 工具 |
 | Anthropic / OpenAI / Compatible + messages_compatible + responses(+compatible) | WebSocket、MCP Auth |
 | 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep）+ AskUser + TodoWrite + Plan + Worktree | Server 鉴权/会话治理 |
-| 默认 4 级上下文压缩管线 + 可配置 ContextCollapse summarizer | Redis/Postgres、Checkpoint/Task |
+| 默认 4 级上下文压缩管线 + 可配置 ContextCollapse summarizer | Redis/Postgres |
 | Prompt Section 组装（静态/动态边界 + 优先级合并 + 结构化输出闭环） | HTTP Hooks 执行器 |
 | Rules + Skills（SkillTool）+ 子 Agent 三件套 + Slash MVP | Agent Teams（P2 可选） |
-| 权限模式 + PermissionRule + 路径沙箱 + denial 追踪 | — |
+| 权限模式 + PermissionRule + 路径沙箱 + denial 追踪 | 多模态附件产品化 |
 | Settings 分层 + 用户态 Hooks（hooks.json） | — |
 | MCP 客户端（stdio tools/resources 桥接）+ Plugins | — |
-| Memory（memdir）+ 工具协议、注册表、流式执行器 | — |
+| Memory（memdir）+ Checkpoint + Task 工具族 | — |
+| 工具协议、注册表、流式执行器 + CI（pytest+ruff+mypy） | — |
 | `TranscriptWriter` + NDJSON + SQLite | — |
 | CLI + Server（SSE） | — |
 
