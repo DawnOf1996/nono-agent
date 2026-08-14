@@ -31,6 +31,7 @@ class PromptContext:
     memories_text: str = ""                    # 跨会话 Memory 文本
     custom_system_prompt: str | None = None    # 覆盖默认 identity
     append_system_prompt: str | None = None    # 永远追加
+    output_style: str | None = None            # 输出风格（concise/detailed/...）
     tools: list[dict[str, Any]] = field(default_factory=list)
     permission_mode: str = "default"
     extra: dict[str, Any] = field(default_factory=dict)

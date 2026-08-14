@@ -564,6 +564,7 @@ class QueryEngine:
             memories_text=memories_text,
             custom_system_prompt=self._config.custom_system_prompt,
             append_system_prompt=self._config.append_system_prompt,
+            output_style=self._config.output_style,
             tools=self._tool_registry.to_api_schema(),
             permission_mode=self._permission_policy.mode.value,
         )

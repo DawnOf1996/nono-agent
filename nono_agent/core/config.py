@@ -92,6 +92,9 @@ class EngineConfig(BaseModel):
     # 追加系统提示（拼接到默认/自定义提示后面）
     append_system_prompt: str | None = None
 
+    # 输出风格（concise/detailed/explanatory）；None=不注入
+    output_style: str | None = None
+
     # 结构化输出 JSON Schema（配置后 LLM 会返回符合 schema 的 JSON）
     json_schema: dict[str, Any] | None = None
 
