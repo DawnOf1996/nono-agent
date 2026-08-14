@@ -6,6 +6,7 @@ from pathlib import Path
 from nono_agent.plugins import (
     FileSystemPluginLoader,
     activate_agents,
+    activate_commands,
     activate_mcp,
     activate_rules,
     activate_skills,
@@ -27,6 +28,12 @@ def _make_plugin(root: Path) -> Path:
                 "agents_dir": "agents",
                 "mcp": {"filesystem": {"command": "npx", "args": ["-y", "fs"]}},
                 "permissions": {"rules": [{"action": "allow", "tool_name": "read_file"}]},
+                "commands": {
+                    "mycmd": {
+                        "description": "My command",
+                        "response": "hello from plugin",
+                    }
+                },
             }
         )
     )
@@ -101,3 +108,8 @@ class TestActivate:
 
         perms = activate_permissions(manifest)
         assert perms["rules"][0]["tool_name"] == "read_file"
+
+        commands = activate_commands(manifest)
+        assert len(commands) == 1
+        assert commands[0].name == "mycmd"
+        assert commands[0].execute([], None) == "hello from plugin"

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import sys
@@ -25,6 +26,8 @@ from nono_agent.core.types import (
     SDKSystemMessage,
 )
 from nono_agent.tools.context import PermissionChecker
+
+logger = logging.getLogger(__name__)
 
 
 def _make_cli_permission_checker(console: Any) -> PermissionChecker:
@@ -171,6 +174,16 @@ async def run_cli(
     command_registry = CommandRegistry()
     for command in create_builtin_commands(command_registry):
         command_registry.register(command)
+
+    # 注册插件自定义 slash（数据驱动）
+    try:
+        from nono_agent.plugins import FileSystemPluginLoader, activate_commands
+
+        for manifest in FileSystemPluginLoader().load(config.cwd):
+            for command in activate_commands(manifest):
+                command_registry.register(command)
+    except Exception:
+        logger.warning("Failed to load plugin commands", exc_info=True)
 
     async with QueryEngine(
         config,

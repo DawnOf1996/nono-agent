@@ -26,6 +26,7 @@ class PluginManifest:
     mcp: dict[str, dict[str, Any]] = field(default_factory=dict)  # mcp server 声明
     permissions: dict[str, Any] = field(default_factory=dict)     # 权限需求清单
     hooks: dict[str, Any] = field(default_factory=dict)           # hooks.json 内容
+    commands: dict[str, dict[str, Any]] = field(default_factory=dict)  # 自定义 slash（数据驱动）
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], directory: Path) -> PluginManifest:
@@ -44,6 +45,11 @@ class PluginManifest:
                 else {}
             ),
             hooks=data.get("hooks", {}) if isinstance(data.get("hooks"), dict) else {},
+            commands=(
+                data.get("commands", {})
+                if isinstance(data.get("commands"), dict)
+                else {}
+            ),
         )
 
     def validate(self) -> list[str]:

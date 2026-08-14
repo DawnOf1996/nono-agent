@@ -124,3 +124,37 @@ def activate_mcp(manifest: PluginManifest) -> dict[str, MCPServerConfig]:
 def activate_permissions(manifest: PluginManifest) -> dict[str, Any]:
     """返回插件声明的权限需求清单。"""
     return dict(manifest.permissions)
+
+
+def activate_commands(manifest: PluginManifest) -> list[Any]:
+    """把插件声明的自定义 slash 命令转换为 SlashCommand（数据驱动，无代码执行）。
+
+    plugin.json::
+
+        {"commands": {"mycmd": {"description": "...", "response": "..."}}}
+    """
+    from nono_agent.commands.registry import SlashCommand
+
+    commands: list[SlashCommand] = []
+    for name, spec in manifest.commands.items():
+        if not isinstance(spec, dict):
+            continue
+
+        class _PluginCommand:
+            def __init__(self, name: str, spec: dict[str, Any]) -> None:
+                self._name = name
+                self._spec = spec
+
+            @property
+            def name(self) -> str:
+                return self._name
+
+            @property
+            def description(self) -> str:
+                return str(self._spec.get("description", ""))
+
+            def execute(self, args: list[str], ctx: Any) -> str:
+                return str(self._spec.get("response", ""))
+
+        commands.append(_PluginCommand(name, spec))
+    return commands

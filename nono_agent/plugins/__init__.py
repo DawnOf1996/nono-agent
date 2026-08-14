@@ -2,6 +2,7 @@
 
 from nono_agent.plugins.activate import (
     activate_agents,
+    activate_commands,
     activate_mcp,
     activate_permissions,
     activate_rules,
@@ -15,6 +16,7 @@ __all__ = [
     "PluginLoader",
     "PluginManifest",
     "activate_agents",
+    "activate_commands",
     "activate_mcp",
     "activate_permissions",
     "activate_rules",
