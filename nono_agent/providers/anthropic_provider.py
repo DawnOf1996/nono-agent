@@ -19,6 +19,7 @@ from nono_agent.core.types import (
     MessageStartEvent,
     MessageStopEvent,
 )
+from nono_agent.providers._messages_utils import normalize_anthropic_messages
 from nono_agent.providers._openai_utils import deep_merge
 from nono_agent.providers.base import FallbackTriggeredError
 from nono_agent.utils.tokens import estimate_messages_tokens
@@ -241,42 +242,8 @@ class AnthropicProvider:
         }
 
     def normalize_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
-        """将内部消息转换为 Anthropic API 格式。
-
-        处理 tool_use.input 从 JSON 字符串到 dict 的转换 ——
-        流式累积后 input 是字符串，但 Anthropic API 要求 dict。
-        """
-        import json
-
-        result: list[dict[str, Any]] = []
-        for msg in messages:
-            if hasattr(msg, "message") and isinstance(msg.message, dict):
-                api_msg = msg.message.copy()
-                if "role" not in api_msg:
-                    api_msg["role"] = msg.type if msg.type in ("user", "assistant") else "user"
-
-                # 处理 content 块中的 tool_use.input
-                content = api_msg.get("content")
-                if isinstance(content, list) and api_msg.get("role") == "assistant":
-                    new_content = []
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "tool_use":
-                            block = {**block}  # 浅拷贝避免污染原始数据
-                            raw_input = block.get("input", {})
-                            if isinstance(raw_input, str):
-                                try:
-                                    block["input"] = (
-                                        json.loads(raw_input) if raw_input.strip() else {}
-                                    )
-                                except json.JSONDecodeError:
-                                    block["input"] = {}
-                            elif not isinstance(raw_input, dict):
-                                block["input"] = {}
-                        new_content.append(block)
-                    api_msg["content"] = new_content
-
-                result.append(api_msg)
-        return result
+        """将内部消息转换为 Anthropic API 格式（共享实现）。"""
+        return normalize_anthropic_messages(messages)
 
     def count_tokens(
         self,

@@ -188,8 +188,12 @@ def create_default_registry() -> ProviderRegistry:
     except ImportError:
         pass
 
-    # TODO: messages_compatible —— Anthropic Messages 非原厂兼容网关
-    # registry.register_adapter("messages_compatible", MessagesCompatibleProvider)
+    # Anthropic Messages API —— 非原厂兼容网关
+    try:
+        from nono_agent.providers.messages_compatible import MessagesCompatibleProvider
+        registry.register_adapter("messages_compatible", MessagesCompatibleProvider)
+    except ImportError:
+        pass
 
     # Chat Completions —— 通用兼容（MiniMax/DeepSeek/通义千问/智谱/Moonshot 等）
     try:
