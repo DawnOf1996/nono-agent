@@ -25,7 +25,7 @@ def ctx(tmp_path):
 
 
 class TestBuiltinFactory:
-    def test_creates_eight_tools(self):
+    def test_creates_ten_tools(self):
         tools = create_builtin_tools()
         names = {t.name for t in tools}
         assert names == {
@@ -37,6 +37,8 @@ class TestBuiltinFactory:
             "grep",
             "ask_user_question",
             "todo_write",
+            "enter_plan_mode",
+            "exit_plan_mode",
         }
 
 
