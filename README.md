@@ -107,6 +107,7 @@ python examples/server_basic.py
 
 | 文档 | 说明 |
 |------|------|
+| [docs/USAGE.md](docs/USAGE.md) | 使用与测试说明（库 / CLI / Server / 配置 / 工具 / 测试） |
 | [docs/NonoAgent-Architecture.md](docs/NonoAgent-Architecture.md) | 设计理念与系统架构 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 未实现能力与打磨规划 |
 | [docs/COMMIT.md](docs/COMMIT.md) | Git 提交规范（Conventional Commits） |
