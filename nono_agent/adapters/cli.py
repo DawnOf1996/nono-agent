@@ -164,6 +164,14 @@ async def run_cli(
     for tool in create_builtin_tools():
         tool_registry.register(tool)
 
+    # 注册 Slash 命令（MVP）
+    from nono_agent.commands import CommandRegistry, parse_slash
+    from nono_agent.commands.builtin import create_builtin_commands
+
+    command_registry = CommandRegistry()
+    for command in create_builtin_commands(command_registry):
+        command_registry.register(command)
+
     async with QueryEngine(
         config,
         permission_checker=permission_checker,
@@ -185,7 +193,8 @@ async def run_cli(
         console.print(Panel.fit(
             f"[bold green]Nono Agent[/bold green] — Session: {engine.session_id}\n"
             f"Model: {config.effective_model}\n"
-            f"Type 'exit' or 'quit' to stop. Ctrl+C during streaming to abort.",
+            f"Type 'exit' or 'quit' to stop. Ctrl+C during streaming to abort.\n"
+            f"Type /help for commands.",
             border_style="blue",
         ))
 
@@ -208,6 +217,18 @@ async def run_cli(
             if user_input.lower() in ("exit", "quit"):
                 console.print("[dim]Goodbye![/dim]")
                 break
+
+            # Slash 命令分流
+            slash = parse_slash(user_input)
+            if slash is not None:
+                name, args = slash
+                from nono_agent.commands import CommandContext
+
+                output = command_registry.execute(
+                    name, args, CommandContext(engine=engine, cwd=config.cwd)
+                )
+                console.print(f"[dim]{output}[/dim]")
+                continue
 
             await _process_one_message(engine, user_input, console)
 
