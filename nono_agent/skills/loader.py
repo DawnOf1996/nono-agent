@@ -9,14 +9,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from nono_agent.skills.models import Skill
 
 _SKILL_FILE = "SKILL.md"
 
 
-def parse_skill_markdown(text: str) -> tuple[dict[str, object], str]:
+def parse_skill_markdown(text: str) -> tuple[dict[str, Any], str]:
     """解析 SKILL.md 的 frontmatter 与正文。"""
     if not text.startswith("---"):
         return {}, text
@@ -27,7 +27,7 @@ def parse_skill_markdown(text: str) -> tuple[dict[str, object], str]:
     meta_block = rest[:end]
     body = rest[end + 4 :].lstrip("\n")
 
-    meta: dict[str, object] = {}
+    meta: dict[str, Any] = {}
     for line in meta_block.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
