@@ -10,7 +10,7 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 |------|----------|
 | `QueryEngine.submit_message()` 流式 API | LSP / WebFetch 工具 |
 | Anthropic / OpenAI / Compatible + messages_compatible + responses(+compatible) | WebSocket、MCP Auth |
-| 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep）+ AskUser + TodoWrite + Plan + Worktree | Server 鉴权/会话治理 |
+| 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep）+ AskUser + TodoWrite + Plan + Worktree | WebSocket、MCP Auth |
 | 默认 4 级上下文压缩管线 + 可配置 ContextCollapse summarizer | Redis/Postgres |
 | Prompt Section 组装（静态/动态边界 + 优先级合并 + 结构化输出闭环） | HTTP Hooks 执行器 |
 | Rules + Skills（SkillTool）+ 子 Agent 三件套 + Slash MVP | Agent Teams（P2 可选） |
@@ -20,7 +20,7 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 | Memory（memdir）+ Checkpoint + Task 工具族 | — |
 | 工具协议、注册表、流式执行器 + CI（pytest+ruff+mypy） | — |
 | `TranscriptWriter` + NDJSON + SQLite | — |
-| CLI + Server（SSE） | — |
+| CLI + Server（SSE，含鉴权/TTL/AskUser 回调） | — |
 
 详细架构见 [docs/NonoAgent-Architecture.md](docs/NonoAgent-Architecture.md)，规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 

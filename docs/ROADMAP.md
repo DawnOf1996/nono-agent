@@ -41,7 +41,7 @@
 | Agent Teams / Coordinator                       | 未开始   | **P2 / 可选**；见 §6                                  |
 | Bridge / Remote / Cron                          | 未开始   | **默认非目标**；见 §6                                    |
 | CLI 适配器                                         | 可用需打磨 | REPL / resume / 流式渲染可用                            |
-| Server 适配器（SSE）                                 | 可用需打磨 | 多会话 + SSE；无 WebSocket                             |
+| Server 适配器（SSE）                                 | 可用需打磨 | 多会话 + SSE + 鉴权 + TTL + AskUser 回调；无 WebSocket   |
 | 会话持久化（Transcript）                               | 可用需打磨 | Protocol + NDJSON + SQLite；缺 Redis/Postgres         |
 | CostTracker / 日志                                | 可用需打磨 | Metrics 最小可用（内存 counter/histogram/gauge）          |
 | 文档 / README                                     | 进行中   | 本文档与 README 对齐中                                   |
@@ -342,7 +342,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 | ContextCollapse 默认启用     | 可配置   | `context_collapse_enabled` 开关 |
 | `json_schema` 闭环         | 可用需打磨 | response_format + structured_output 解析；深度 schema 校验待做 |
 | 预算硬门控                    | 已实现   | loop 强制终止          |
-| Output Styles            | 无     | P2 可配置输出风格 section |
+| Output Styles            | 已实现   | `output_style` 配置 + OutputStyle section |
 | SDK `permission_denials` | 已实现   | SDKResult 回灌 DenialTracker |
 
 
@@ -418,11 +418,11 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 ### 3.7 适配器
 
-- [ ] CLI：去掉硬编码密钥/调试配置，改为环境变量与配置文件
+- [x] CLI：去掉硬编码密钥/调试配置，改为环境变量与配置文件
 - [ ] CLI：会话列表、成本展示、工具调用可视化
-- [ ] Server：会话 TTL、并发限制、鉴权、优雅关闭压测
-- [ ] Server：可注入非文件 Transcript 后端（为 DB 多会话做准备）
-- [ ] SDKMessage 对外契约稳定化（版本字段、`permission_denials`、AskUser 事件）
+- [x] Server：会话 TTL、并发限制、鉴权、优雅关闭压测
+- [x] Server：可注入非文件 Transcript 后端（为 DB 多会话做准备）
+- [x] SDKMessage 对外契约稳定化（版本字段、`permission_denials`、AskUser 事件）
 
 
 
@@ -480,7 +480,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 ### Phase 3 —— 多 Agent 与服务化（P1）
 
 1. [x] **子 Agent 三件套**（AgentTool + Definition + run）+ Worktree 工具
-2. [ ] Server：鉴权、会话治理、AskUser 回调/SSE；按需 WebSocket
+2. [x] Server：鉴权、会话治理（TTL）、AskUser 回调/SSE（WebSocket 按需待做）
 3. [ ] Transcript 生产后端；Plugin/Slash 管理 API
 4. [x] `responses_compatible`（结构化输出闭环待做）
 5. [x] SDK 契约含 `permission_denials`
@@ -790,6 +790,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | Phase 2/3 推进：MCP stdio 客户端（tools/resources 桥接）、Worktree 进出工具、responses_compatible |
 | 2026-08-14 | Phase 2/4 推进：Plugins 扩展包、json_schema 结构化输出闭环、Memory（memdir） |
 | 2026-08-14 | Phase 4 推进：mypy 全量清零、Checkpoint、Task 工具族、CI（pytest+ruff+mypy） |
+| 2026-08-14 | Phase 3/4 推进：Server 治理（鉴权/TTL/AskUser SSE）、Output Styles section |
 
 
 ## 附录
