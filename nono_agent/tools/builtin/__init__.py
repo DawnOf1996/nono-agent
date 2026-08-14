@@ -14,6 +14,7 @@ from nono_agent.tools.builtin.glob import GlobTool
 from nono_agent.tools.builtin.grep import GrepTool
 from nono_agent.tools.builtin.plan import EnterPlanModeTool, ExitPlanModeTool
 from nono_agent.tools.builtin.read import ReadFileTool
+from nono_agent.tools.builtin.task import TaskStore, create_task_tools
 from nono_agent.tools.builtin.todo_write import TodoWriteTool
 from nono_agent.tools.builtin.worktree import EnterWorktreeTool, ExitWorktreeTool
 from nono_agent.tools.builtin.write import WriteFileTool
@@ -40,7 +41,7 @@ __all__ = [
 
 def create_builtin_tools() -> list[ToolBase]:
     """创建所有内置工具实例（生产级默认集合）。"""
-    return [
+    tools: list[ToolBase] = [
         BashTool(),
         ReadFileTool(),
         WriteFileTool(),
@@ -54,3 +55,6 @@ def create_builtin_tools() -> list[ToolBase]:
         EnterWorktreeTool(),
         ExitWorktreeTool(),
     ]
+    # Task 工具族共享同一个会话级 TaskStore
+    tools.extend(create_task_tools(TaskStore()))
+    return tools
