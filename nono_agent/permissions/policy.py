@@ -166,3 +166,14 @@ def policy_from_dict(data: dict[str, Any]) -> PermissionPolicy:
             continue
 
     return PermissionPolicy(mode=mode, rules=rules)
+
+
+def policy_from_settings(settings: Any) -> PermissionPolicy:
+    """从合并后的 Settings 读取 ``permissions`` 段并构建 PermissionPolicy。
+
+    未配置 ``permissions`` 时返回默认策略。
+    """
+    data = settings.get("permissions", {}) if settings is not None else {}
+    if not isinstance(data, dict):
+        data = {}
+    return policy_from_dict(data)
