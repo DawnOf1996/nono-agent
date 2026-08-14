@@ -36,13 +36,13 @@ async def reactive_compact(
 
     for msg in messages:
         if isinstance(msg, AssistantMessage):
-            new_msg, s = _strip_thinking_blocks(msg)
+            stripped, s = _strip_thinking_blocks(msg)
             saved += s
-            result.append(new_msg)
+            result.append(stripped)
         elif isinstance(msg, UserMessage):
-            new_msg, s = _truncate_tool_results(msg, max_tool_result_tokens)
+            truncated, s = _truncate_tool_results(msg, max_tool_result_tokens)
             saved += s
-            result.append(new_msg)
+            result.append(truncated)
         else:
             result.append(msg)
 

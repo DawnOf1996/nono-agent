@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from nono_agent.core.config import ProviderConfig, ThinkingConfig
 from nono_agent.core.types import Message, StreamEvent
@@ -140,7 +140,7 @@ class ProviderRegistry:
                     f"Available adapters: {available}"
                 )
             # 配置驱动的 Provider 每次都创建新实例（因为配置可能不同）
-            return cls(config=config)
+            return cast(LLMProvider, cls(config=config))
 
         # 优先级 2: 缓存实例匹配
         for prefix, instance in self._instances.items():
@@ -150,7 +150,7 @@ class ProviderRegistry:
         # 优先级 3: 前缀匹配（向后兼容）
         for prefix, cls in self._providers.items():
             if model_id.startswith(prefix):
-                instance = cls(config=config) if config else cls()
+                instance = cast(LLMProvider, cls(config=config) if config else cls())
                 self._instances[prefix] = instance
                 return instance
 

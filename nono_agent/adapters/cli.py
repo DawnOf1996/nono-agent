@@ -290,7 +290,7 @@ async def _consume_stream(
     # 流式文本累积状态
     is_streaming = False      # 是否正在接收流式文本
     last_text = ""            # 上一次累积的文本（用于计算增量）
-    current_blocks: list[dict] = []  # 当前正在累积的内容块
+    current_blocks: list[dict[str, Any]] = []  # 当前正在累积的内容块
     has_thinking = False      # 是否出现过思考块
 
     async for sdk_msg in engine.submit_message(user_input):
@@ -390,7 +390,7 @@ async def _consume_stream(
     return None
 
 
-def _apply_delta(block: dict, delta: dict) -> None:
+def _apply_delta(block: dict[str, Any], delta: dict[str, Any]) -> None:
     """将流式 delta 合并到内容块中。"""
     delta_type = delta.get("type", "")
     if delta_type == "text_delta":
@@ -405,7 +405,7 @@ def _apply_delta(block: dict, delta: dict) -> None:
         block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
 
 
-def _render_blocks(blocks: list[dict]) -> str:
+def _render_blocks(blocks: list[dict[str, Any]]) -> str:
     """从内容块列表渲染可显示的增量文本。
 
     注意：流式路径不包含 thinking 的视觉标记（由事件处理器控制），

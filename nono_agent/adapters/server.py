@@ -104,7 +104,7 @@ def create_server_app(
             return engine
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> Any:
         """应用生命周期管理 —— 启动时初始化，关闭时清理所有会话。"""
         logger.info("Nono Agent Server starting up...")
         yield
@@ -170,12 +170,12 @@ def create_server_app(
     # ------------------------------------------------------------------
 
     @app.get("/health")
-    async def health():
+    async def health() -> dict[str, Any]:
         """健康检查端点 —— 返回服务状态和活跃会话数。"""
         return {"status": "ok", "sessions": len(sessions)}
 
     @app.post("/chat")
-    async def chat(request: ChatRequest):
+    async def chat(request: ChatRequest) -> Any:
         """发送消息并以 SSE 流式返回响应。
 
         响应是 Server-Sent Events 流，每个事件包含一个 JSON 编码的 SDK 消息。
@@ -187,7 +187,7 @@ def create_server_app(
         session_id = request.session_id or str(uuid.uuid4())
         engine = await _get_or_create_engine(session_id, model=request.model)
 
-        async def event_generator():
+        async def event_generator() -> Any:
             """将引擎的 AsyncGenerator 响应转换为 SSE 事件流。
 
             遍历 submit_message() 产出的 SDKMessage，
@@ -227,7 +227,7 @@ def create_server_app(
     async def new_session(
         model: str | None = None,
         cwd: str | None = None,
-    ):
+    ) -> SessionInfo:
         """创建新会话并返回其 ID —— 不发送消息，仅初始化引擎。"""
         session_id = str(uuid.uuid4())
         engine = await _get_or_create_engine(session_id, model=model)
@@ -240,7 +240,7 @@ def create_server_app(
         )
 
     @app.get("/sessions")
-    async def list_sessions():
+    async def list_sessions() -> dict[str, Any]:
         """列出所有活跃会话 —— 返回每个会话的 ID、模型、轮次和花费。"""
         result = []
         async with session_lock:
@@ -256,7 +256,7 @@ def create_server_app(
         return {"sessions": result}
 
     @app.delete("/session/{session_id}")
-    async def close_session(session_id: str):
+    async def close_session(session_id: str) -> dict[str, str]:
         """关闭并移除指定会话 —— 释放该会话的引擎资源。"""
         async with session_lock:
             engine = sessions.pop(session_id, None)
@@ -266,7 +266,7 @@ def create_server_app(
         raise HTTPException(status_code=404, detail="Session not found")
 
     @app.post("/session/{session_id}/resume")
-    async def resume(session_id: str, request: ResumeRequest | None = None):
+    async def resume(session_id: str, request: ResumeRequest | None = None) -> SessionInfo:
         """恢复历史会话 —— 通过 TranscriptWriter 协议加载并继续对话。
 
         创建新的引擎实例，从存储后端读取历史消息加载到 store，
@@ -303,7 +303,7 @@ def create_server_app(
         )
 
     @app.post("/abort")
-    async def abort_session(request: AbortRequest):
+    async def abort_session(request: AbortRequest) -> dict[str, str]:
         """中止会话中正在进行的查询 —— 触发 AbortController 取消流式传输。"""
         async with session_lock:
             engine = sessions.get(request.session_id)

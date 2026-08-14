@@ -116,7 +116,10 @@ class ContextCollapseStage:
             is_compact_summary=True,
         )
 
-        result = [boundary, summary_msg] + recent_messages
+        result: list[Message] = []
+        result.append(boundary)
+        result.append(summary_msg)
+        result.extend(recent_messages)
 
         # Update token estimate
         old_tokens = sum(

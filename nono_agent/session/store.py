@@ -14,6 +14,7 @@ TS 版有三个独立数组 (mutableMessages, messages, messagesForQuery)，
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from typing import Any
 
 from nono_agent.core.types import (
     AssistantMessage,
@@ -109,9 +110,9 @@ class MessageStore:
     def get_tool_use_blocks_from_assistants(
         self,
         assistant_messages: list[AssistantMessage],
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Extract tool_use blocks from a list of assistant messages."""
-        blocks = []
+        blocks: list[dict[str, Any]] = []
         for msg in assistant_messages:
             content = msg.message.get("content", [])
             for block in content:

@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-import aiofiles
+import aiofiles  # type: ignore[import-untyped]
 
 from nono_agent.core.types import Message
 

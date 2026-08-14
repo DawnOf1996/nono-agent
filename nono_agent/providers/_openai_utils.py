@@ -56,8 +56,8 @@ def normalize_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
             if isinstance(content, list):
                 # assistant 消息: 分离 tool_use 块为 tool_calls
                 if role == "assistant":
-                    text_content: list[dict] = []
-                    tool_calls: list[dict] = []
+                    text_content: list[dict[str, Any]] = []
+                    tool_calls: list[dict[str, Any]] = []
                     for block in content:
                         if isinstance(block, dict) and block.get("type") == "tool_use":
                             # 将 tool_use 块转换为 OpenAI tool_call 格式

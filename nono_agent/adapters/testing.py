@@ -278,11 +278,16 @@ class FixtureReplayProvider:
                 }
             )
 
-    def count_tokens(self, messages, system_prompt, tools):
+    def count_tokens(
+        self,
+        messages: list[Message],
+        system_prompt: str,
+        tools: list[dict[str, Any]],
+    ) -> int:
         """固定返回 100 —— fixture 模式下不做真实 token 计数。"""
         return 100
 
-    def normalize_messages(self, messages):
+    def normalize_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """将 Message 对象标准化为字典列表。"""
         return [m.message if hasattr(m, "message") else {} for m in messages]
 

@@ -44,7 +44,7 @@ class ToolResultBudgetStage:
     def priority(self) -> int:
         return 10
 
-    def should_run(self, messages, context) -> bool:
+    def should_run(self, messages: list[Message], context: PipelineContext) -> bool:
         # 始终运行 —— 检查代价低，大多数对话都有工具结果
         return True
 

@@ -53,7 +53,6 @@ from nono_agent.hooks.stop_hooks import StopHookExecutor
 from nono_agent.observability.cost_tracker import CostTracker
 from nono_agent.observability.metrics import METRIC_API_REQUESTS, record_counter
 from nono_agent.pipeline.base import PipelineContext, PreprocessPipeline
-from nono_agent.providers.base import LLMProvider
 from nono_agent.recovery import max_output_tokens, prompt_too_long
 from nono_agent.recovery.chain import RecoveryAction, RecoveryChain, RecoveryDecision
 from nono_agent.session.store import MessageStore
@@ -70,7 +69,9 @@ logger = logging.getLogger(__name__)
 async def agentic_loop(
     *,
     store: MessageStore,
-    provider: LLMProvider,
+    # Protocol 的 stream 以 `...` 为 body，mypy 视作协程而非 async generator；
+    # 此处以 Any 标注，避免误判 async for 迭代。
+    provider: Any,
     tool_registry: ToolRegistry,
     pipeline: PreprocessPipeline,
     middleware_chain: MiddlewareChain,

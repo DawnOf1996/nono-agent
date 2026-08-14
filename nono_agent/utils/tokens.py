@@ -10,15 +10,15 @@ import json
 from typing import Any
 
 # 懒加载 tiktoken 以避免硬依赖
-_tiktoken_encoder = None
+_tiktoken_encoder: Any = None
 
 
-def _get_encoder():
+def _get_encoder() -> Any:
     """懒加载 tiktoken 编码器 —— 首次调用时初始化。"""
     global _tiktoken_encoder
     if _tiktoken_encoder is None:
         try:
-            import tiktoken
+            import tiktoken  # type: ignore[import-not-found]
 
             _tiktoken_encoder = tiktoken.get_encoding("cl100k_base")
         except ImportError:
@@ -133,11 +133,11 @@ def get_final_context_tokens(messages: list[dict[str, Any]]) -> int:
     for msg in reversed(messages):
         if msg.get("role") == "assistant":
             usage = msg.get("usage", {})
-            if usage:
+            if usage and isinstance(usage, dict):
                 return (
-                    usage.get("input_tokens", 0)
-                    + usage.get("cache_read_input_tokens", 0)
-                    + usage.get("cache_creation_input_tokens", 0)
+                    int(usage.get("input_tokens", 0))
+                    + int(usage.get("cache_read_input_tokens", 0))
+                    + int(usage.get("cache_creation_input_tokens", 0))
                 )
             break
     return estimate_messages_tokens(messages)
