@@ -7,8 +7,12 @@ from typing import Any
 from nono_agent.tools.protocol import Tool
 
 
-class ToolNotFound(KeyError):
+class ToolNotFoundError(KeyError):
     """工具未找到异常 —— 查询不存在的工具名时抛出。"""
+
+
+# 向后兼容别名
+ToolNotFound = ToolNotFoundError
 
 
 class ToolRegistry:
