@@ -266,7 +266,7 @@
 
 | 命令                                        | 作用           | 状态 |
 | ----------------------------------------- | ------------ | --- |
-| `/compact` `/clear`                       | 压缩 / 清空      | `/clear` 已完成，`/compact` 未开始 |
+| `/compact` `/clear`                       | 压缩 / 清空      | 已完成 |
 | `/rules` `/skills` `/mcp` `/plugins`      | 扩展面调试        | 已完成 |
 | `/permission` `/model` `/cost` `/context` | 模式、模型、成本、上下文 | 已完成 |
 | `/memory` `/hooks`                        | P2 可后置       | 已完成 |
