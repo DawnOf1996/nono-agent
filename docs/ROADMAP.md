@@ -30,7 +30,7 @@
 | Settings 分层（user/project/policy）                | 可用需打磨 | `settings/` 分层合并 + 来源追踪；待接入 EngineConfig        |
 | Rules（项目/用户指令）                                  | 可用需打磨 | `rules/` 发现/合并/注入；含 `CLAUDE.md`/`AGENTS.md` 兼容        |
 | Skills（含 SkillTool）                             | 可用需打磨 | `skills/` 发现/加载 + SkillTool + Section 注入                  |
-| Plugins（扩展包）                                    | 未开始   | 可打包 Rules/Skills/Agents/Hooks/MCP                 |
+| Plugins（扩展包）                                    | 可用需打磨 | plugin.json 组合注册 Rules/Skills/Agents/MCP/权限             |
 | MCP 配置与桥接                                       | 可用需打磨 | stdio tools/resources 桥接；auth/SSE/ToolSearch 待做        |
 | 用户态 Hooks 配置                                    | 可用需打磨 | `hooks.json` 命令执行器（before_tool 可否决）；HTTP 执行器待做        |
 | 权限模式 + PermissionRule + denial 追踪               | 可用需打磨 | `permissions/` 策略/规则/沙箱/denial/Bash 分类；Server 默认 deny-write |
@@ -209,9 +209,9 @@
 
 | 项         | 说明                                                | 状态  |
 | --------- | ------------------------------------------------- | --- |
-| 清单 + 发现路径 | `plugin.toml`/`json`；`.nono/plugins`、用户目录         | 未开始 |
-| 加载器       | 校验、启停、冲突、失败隔离                                     | 未开始 |
-| 注册对接      | Tool / Rules / Skills / Agents / Hooks / Commands | 未开始 |
+| 清单 + 发现路径 | `plugin.json`；`.nono/plugins`、用户目录               | 已完成 |
+| 加载器       | 校验、启停、冲突、失败隔离                                     | 已完成 |
+| 注册对接      | Rules / Skills / Agents / MCP / 权限（Tools 经 MCP）   | 可用需打磨 |
 
 
 建议模块：`nono_agent/plugins/`。原则：引擎只认 Protocol；插件无 loop 特权入口。
@@ -324,7 +324,7 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 | Plan 模式工具           | Enter/Exit Plan；联动 `plan` 权限       | P1  | 已完成 |
 | TodoWrite           | 轻量进度                               | P1  | 已完成 |
 | Task 工具族            | Create/Get/Update/List/Stop/Output | P2  | 未开始 |
-| Memory（memdir 思路）   | 记忆目录 + 类型约束 + Prompt Section       | P2  | 未开始 |
+| Memory（memdir 思路）   | 记忆目录 + 类型约束 + Prompt Section       | P2  | 可用需打磨 |
 | Checkpoint / Rewind | 编辑快照/补丁栈                           | P2  | 未开始 |
 | 多模态附件               | `attachments` 产品化                  | P2  | 未开始 |
 
@@ -340,7 +340,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 | Server WebSocket         | 仅 SSE | 按需                 |
 | Metrics                  | 最小可用 | 内存 counter/histogram/gauge |
 | ContextCollapse 默认启用     | 可配置   | `context_collapse_enabled` 开关 |
-| `json_schema` 闭环         | 字段存在  | Provider + 校验      |
+| `json_schema` 闭环         | 可用需打磨 | response_format + structured_output 解析；深度 schema 校验待做 |
 | 预算硬门控                    | 已实现   | loop 强制终止          |
 | Output Styles            | 无     | P2 可配置输出风格 section |
 | SDK `permission_denials` | 已实现   | SDKResult 回灌 DenialTracker |
@@ -464,16 +464,16 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 ### Phase 2 —— 可扩展生态（P0/P1）
 
-1. MCP：tools + **resources/auth** + ToolSearch 协同
-2. Skills + **SkillTool**
-3. Plugins（含 Agents/Hooks 声明）
-4. Settings 分层（user/project/flag）
-5. 用户 Hooks + Slash MVP
-6. Plan 模式工具 + TodoWrite
-7. LSP 工具（可选但建议）
-8. ContextCollapse 默认 summarizer；Metrics 最小可用
-9. Transcript：SQLite 起步
-10. Provider：`messages_compatible`；推进原厂 `responses`
+1. [x] MCP：tools + **resources**（auth/ToolSearch 待做）
+2. [x] Skills + **SkillTool**
+3. [x] Plugins（含 Agents/Hooks 声明）
+4. [x] Settings 分层（user/project/flag）
+5. [x] 用户 Hooks + Slash MVP
+6. [x] Plan 模式工具 + TodoWrite
+7. [ ] LSP 工具（可选但建议）
+8. [x] ContextCollapse 默认 summarizer；Metrics 最小可用
+9. [x] Transcript：SQLite 起步
+10. [x] Provider：`messages_compatible`；原厂 `responses`
 
 **完成定义：** 配置/插件扩展行为，无需改引擎；MCP/Skills/Rules/Settings 可组合。
 
@@ -788,6 +788,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | Phase 2 推进：Settings 分层、messages_compatible、Metrics 最小可用、Skills+SkillTool、Plan 模式工具、SQLite Transcript、Slash MVP、TodoWrite |
 | 2026-08-14 | Phase 2/3 推进：子 Agent 三件套、用户态 hooks.json、原厂 responses Provider、ContextCollapse 默认 summarizer |
 | 2026-08-14 | Phase 2/3 推进：MCP stdio 客户端（tools/resources 桥接）、Worktree 进出工具、responses_compatible |
+| 2026-08-14 | Phase 2/4 推进：Plugins 扩展包、json_schema 结构化输出闭环、Memory（memdir） |
 
 
 ## 附录
