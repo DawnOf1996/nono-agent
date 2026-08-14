@@ -133,9 +133,19 @@ curl -X POST http://localhost:8000/abort -d '{"session_id":"..."}' -H "Content-T
 }
 ```
 
-优先级：**命令行参数 > 环境变量 > 配置文件 > 默认值**。
+优先级：**命令行参数 > 环境变量 > `--config` 文件 > 用户基础配置 > 默认值**。
 
-### 3.3 项目侧约定目录 `.nono/`
+### 3.3 首次运行引导页
+
+交互式运行 `chat`（不带 `-m`）时，若检测不到「必备配置」（协议 `adapter` + 密钥 `api_key`，来自环境变量 / `--config` / 用户基础配置），会进入**交互式引导**，按提示依次输入：① 协议、② 模型、③ API Key、④ Base URL（可选），完成后保存到用户基础配置：
+
+```
+~/.nono-agent/config.json
+```
+
+该文件格式与 `--config` 一致（`model` + `provider{adapter, api_key, base_url}`），之后每次启动自动读取，无需重复输入。
+
+### 3.4 项目侧约定目录 `.nono/`
 
 ```
 .nono/

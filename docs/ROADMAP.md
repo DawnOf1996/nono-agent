@@ -795,6 +795,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | 补齐：WebSearch 工具、MCP 静态 token/headers、Skills enable/disable |
 | 2026-08-14 | 补齐：fallback_model 切换、/memory /hooks slash、CLI sessions 会话列表 |
 | 2026-08-14 | 补齐：LSP 工具、Plugin 自定义 slash 命令 |
+| 2026-08-14 | CLI 首次运行引导页：检测用户基础配置（模型/协议/密钥）缺失则交互式引导并落盘 `~/.nono-agent/config.json` |
 
 
 ## 附录
