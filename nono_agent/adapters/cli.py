@@ -17,6 +17,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from nono_agent.adapters.onboarding import (
+    ADAPTER_CHOICES,
+    USER_CONFIG_PATH,
+    is_base_configured,
+    load_user_config,
+    save_user_config,
+)
 from nono_agent.core.config import EngineConfig, ProviderConfig
 from nono_agent.core.engine import QueryEngine
 from nono_agent.core.types import (
@@ -472,6 +479,48 @@ def _coalesce(*values: Any) -> Any:
     return None
 
 
+def run_onboarding(console: Any) -> dict[str, Any]:
+    """交互式引导 —— 收集协议 / 模型 / 密钥 / 端点，返回基础配置字典。"""
+    from rich.panel import Panel
+
+    console.print(Panel.fit(
+        "[bold green]欢迎使用 Nono Agent[/bold green]\n"
+        "首次运行需要配置模型与 API 凭据，配置将保存到 "
+        f"[cyan]{USER_CONFIG_PATH}[/cyan]。",
+        border_style="blue",
+    ))
+
+    # 1. 协议（adapter）
+    console.print("\n[bold]① 选择协议 (adapter)：[/bold]")
+    for i, choice in enumerate(ADAPTER_CHOICES, start=1):
+        console.print(f"  {i}. {choice}")
+    raw = console.input("[yellow]请输入序号（默认 1 = openai）：[/yellow] ").strip()
+    adapter = (
+        ADAPTER_CHOICES[int(raw) - 1]
+        if raw.isdigit() and 1 <= int(raw) <= len(ADAPTER_CHOICES)
+        else "openai"
+    )
+
+    # 2. 模型
+    model = (
+        console.input("[yellow]② 模型 (默认 MiniMax-M3)：[/yellow] ").strip()
+        or "MiniMax-M3"
+    )
+
+    # 3. 密钥（必填）
+    api_key = console.input("[yellow]③ API Key（必填）：[/yellow] ").strip()
+    while not api_key:
+        api_key = console.input("[yellow]API Key 不能为空，请重新输入：[/yellow] ").strip()
+
+    # 4. 端点（可选）
+    base_url = console.input("[yellow]④ Base URL（可留空）：[/yellow] ").strip()
+
+    provider: dict[str, Any] = {"adapter": adapter, "api_key": api_key}
+    if base_url:
+        provider["base_url"] = base_url
+    return {"model": model, "provider": provider}
+
+
 def build_engine_config(
     *,
     model: str | None = None,
@@ -479,23 +528,25 @@ def build_engine_config(
     verbose: bool = False,
     config_file: str | None = None,
 ) -> EngineConfig:
-    """从 CLI 参数 + 环境变量 + 配置文件构建 EngineConfig。
+    """从 CLI 参数 + 环境变量 + 配置文件 + 用户基础配置构建 EngineConfig。
 
-    优先级：命令行参数 > 环境变量 > 配置文件 > 默认值。
+    优先级：命令行参数 > 环境变量 > --config 文件 > 用户基础配置 > 默认值。
     密钥只允许来自环境变量或配置文件，绝不硬编码。
     """
     file_cfg: dict[str, Any] = _read_config_file(config_file) if config_file else {}
+    # 合并用户级基础配置（~/.nono-agent/config.json），--config 优先
+    merged_cfg: dict[str, Any] = {**load_user_config(), **file_cfg}
 
     # 模型：CLI > env > 配置文件 > 默认
-    resolved_model = _coalesce(model, os.environ.get(ENV_MODEL), file_cfg.get("model"))
+    resolved_model = _coalesce(model, os.environ.get(ENV_MODEL), merged_cfg.get("model"))
     resolved_model = resolved_model or "claude-sonnet-4-20250514"
 
     # cwd：CLI > env > 配置文件 > 默认
-    resolved_cwd = _coalesce(cwd, os.environ.get(ENV_CWD), file_cfg.get("cwd"))
+    resolved_cwd = _coalesce(cwd, os.environ.get(ENV_CWD), merged_cfg.get("cwd"))
     resolved_cwd = resolved_cwd or "."
 
     # Provider 配置：配置文件 provider 段 + 环境变量覆盖
-    file_provider = file_cfg.get("provider") or {}
+    file_provider = merged_cfg.get("provider") or {}
     if not isinstance(file_provider, dict):
         file_provider = {}
 
@@ -573,6 +624,17 @@ def create_cli_app() -> Any:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
         logging.getLogger("openai").setLevel(logging.WARNING)
+
+        # 引导页：交互模式且缺少必备配置（协议 + 密钥）时执行引导
+        if message is None and not is_base_configured(config_file):
+            from rich.console import Console
+
+            console = Console()
+            base_cfg = run_onboarding(console)
+            save_user_config(base_cfg)
+            console.print(
+                f"[green]✓ 配置已保存到 {USER_CONFIG_PATH}[/green]"
+            )
 
         config = build_engine_config(
             model=model,
