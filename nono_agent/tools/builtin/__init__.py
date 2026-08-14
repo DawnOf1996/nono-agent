@@ -13,6 +13,7 @@ from nono_agent.tools.builtin.edit import EditFileTool
 from nono_agent.tools.builtin.glob import GlobTool
 from nono_agent.tools.builtin.grep import GrepTool
 from nono_agent.tools.builtin.ls import LSTool
+from nono_agent.tools.builtin.lsp import LSPTool
 from nono_agent.tools.builtin.plan import EnterPlanModeTool, ExitPlanModeTool
 from nono_agent.tools.builtin.read import ReadFileTool
 from nono_agent.tools.builtin.task import TaskStore, create_task_tools
@@ -53,6 +54,7 @@ def create_builtin_tools() -> list[ToolBase]:
         GlobTool(),
         GrepTool(),
         LSTool(),
+        LSPTool(),
         WebFetchTool(),
         WebSearchTool(),
         ToolSearchTool(),

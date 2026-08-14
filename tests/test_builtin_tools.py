@@ -25,7 +25,7 @@ def ctx(tmp_path):
 
 
 class TestBuiltinFactory:
-    def test_creates_twenty_one_tools(self):
+    def test_creates_twenty_two_tools(self):
         tools = create_builtin_tools()
         names = {t.name for t in tools}
         assert names == {
@@ -36,6 +36,7 @@ class TestBuiltinFactory:
             "glob",
             "grep",
             "list_directory",
+            "lsp",
             "web_fetch",
             "web_search",
             "tool_search",
