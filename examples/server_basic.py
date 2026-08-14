@@ -33,8 +33,8 @@ def main():
         include_partial_messages=True,  # Stream events to clients
     )
 
-    # Create the FastAPI app
-    app = create_server_app(
+    # The app can also be created directly (run_server creates it internally):
+    _ = create_server_app(
         config,
         cors_origins=["*"],  # Allow all origins for development
     )

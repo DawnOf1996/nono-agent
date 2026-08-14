@@ -58,7 +58,6 @@ def create_server_app(
     try:
         from fastapi import FastAPI, HTTPException
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import JSONResponse
         from pydantic import BaseModel
     except ImportError:
         raise ImportError(
@@ -190,7 +189,7 @@ def create_server_app(
 
         async def event_generator():
             """将引擎的 AsyncGenerator 响应转换为 SSE 事件流。
-            
+
             遍历 submit_message() 产出的 SDKMessage，
             将每条消息序列化为 SSE event/data 对推送给客户端。
             """

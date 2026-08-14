@@ -9,19 +9,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import signal
 import sys
+from pathlib import Path
 from typing import Any
 
-from nono_agent.core.config import EngineConfig, ProviderConfig, ThinkingConfig
+from nono_agent.core.config import EngineConfig, ProviderConfig
 from nono_agent.core.engine import QueryEngine
 from nono_agent.core.types import (
     SDKAssistantMessage,
-    SDKMessage,
     SDKResultMessage,
     SDKStreamEventMessage,
     SDKSystemMessage,
-    SDKUserMessageReplay,
 )
 from nono_agent.tools.context import PermissionChecker
 
@@ -43,6 +44,51 @@ def _make_cli_permission_checker(console: Any) -> PermissionChecker:
         return answer in ("y", "yes")
 
     return checker
+
+
+def _make_cli_ask_user(console: Any) -> Any:
+    """创建终端交互式 AskUserQuestion 回调 —— 渲染问题并读取答案。"""
+
+    def ask_user(questions: list[dict[str, Any]]) -> dict[str, Any]:
+        answers: dict[str, Any] = {}
+        for q in questions:
+            header = q.get("header") or "Question"
+            text = q.get("question", "")
+            options = q.get("options") or []
+            multi = bool(q.get("multi_select", False))
+
+            console.print(f"\n[bold cyan]{header}[/bold cyan]")
+            console.print(f"[bold]{text}[/bold]")
+            if options:
+                for i, opt in enumerate(options, start=1):
+                    desc = opt.get("description", "")
+                    suffix = f" [dim]- {desc}[/dim]" if desc else ""
+                    console.print(f"  {i}. {opt.get('label', '?')}{suffix}")
+                prompt = (
+                    "[yellow]  Select numbers (comma-separated):[/yellow] "
+                    if multi
+                    else "[yellow]  Select a number:[/yellow] "
+                )
+                raw = console.input(prompt).strip()
+                if multi:
+                    chosen = [
+                        options[int(n) - 1].get("label", "")
+                        for n in raw.split(",")
+                        if n.strip().isdigit() and 1 <= int(n) <= len(options)
+                    ]
+                else:
+                    chosen = (
+                        options[int(raw) - 1].get("label", "")
+                        if raw.isdigit() and 1 <= int(raw) <= len(options)
+                        else raw
+                    )
+            else:
+                chosen = console.input("[yellow]  Your answer:[/yellow] ").strip()
+
+            answers[text] = chosen
+        return {"answers": answers}
+
+    return ask_user
 
 
 def _render_text(content: Any) -> str:
@@ -87,10 +133,7 @@ async def run_cli(
     """
     try:
         from rich.console import Console
-        from rich.markdown import Markdown
         from rich.panel import Panel
-        from rich.live import Live
-        from rich.text import Text
     except ImportError:
         print("Error: 'rich' package is required for CLI adapter.", file=sys.stderr)
         print("Install with: pip install rich", file=sys.stderr)
@@ -103,7 +146,12 @@ async def run_cli(
     if sys.platform == "win32" and hasattr(console.file, "encoding"):
         if console.file.encoding and console.file.encoding.lower() not in ("utf-8", "utf8"):
             import io
-            console = Console(file=io.TextIOWrapper(console.file.buffer, encoding="utf-8", errors="replace"))
+
+            console = Console(
+                file=io.TextIOWrapper(
+                    console.file.buffer, encoding="utf-8", errors="replace"
+                )
+            )
 
     # 终端交互式权限检查器
     permission_checker = _make_cli_permission_checker(console)
@@ -120,6 +168,7 @@ async def run_cli(
         config,
         permission_checker=permission_checker,
         tool_registry=tool_registry,
+        ask_user=_make_cli_ask_user(console),
     ) as engine:
         # Resume session if requested
         if resume_session:
@@ -173,11 +222,6 @@ async def _process_one_message(
     Ctrl+C during streaming triggers engine.abort() for graceful shutdown
     of the current query, rather than killing the entire process.
     """
-    try:
-        from rich.markdown import Markdown
-        from rich.text import Text
-    except ImportError:
-        pass
 
     # 注册 SIGINT 处理器: Ctrl+C → engine.abort() 而非杀进程
     # 使用 signal.signal() 兼容 Unix + Windows (含 Git Bash)
@@ -243,7 +287,7 @@ async def _consume_stream(
                         has_thinking = True
                         if not is_streaming:
                             is_streaming = True
-                            console.print(f"\n[bold magenta]Assistant:[/bold magenta]")
+                            console.print("\n[bold magenta]Assistant:[/bold magenta]")
                         console.print("[dim italic]── Start Thinking ──[/dim italic]")
                     elif block_type == "text" and has_thinking:
                         # 思考结束，正文开始 —— 视觉分隔
@@ -260,7 +304,7 @@ async def _consume_stream(
                 if new_text and new_text != last_text:
                     if not is_streaming:
                         is_streaming = True
-                        console.print(f"\n[bold magenta]Assistant:[/bold magenta]")
+                        console.print("\n[bold magenta]Assistant:[/bold magenta]")
                     # 只打印新增部分（打字机效果）
                     incremental = new_text[len(last_text):]
                     if incremental:
@@ -289,7 +333,7 @@ async def _consume_stream(
         elif isinstance(sdk_msg, SDKSystemMessage):
             subtype = sdk_msg.subtype
             if subtype == "api_retry":
-                console.print(f"[yellow][!] Retrying...[/yellow]")
+                console.print("[yellow][!] Retrying...[/yellow]")
             elif subtype == "tool_result":
                 # 工具执行完成通知 —— 显示工具名称和耗时
                 content = getattr(sdk_msg, "content", None) or ""
@@ -361,6 +405,98 @@ def _render_blocks(blocks: list[dict]) -> str:
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# CLI 配置外部化 —— 从环境变量 / 配置文件读取，禁止硬编码密钥
+# ---------------------------------------------------------------------------
+
+# 环境变量名（优先级从高到低由 resolve 逻辑决定）
+ENV_MODEL = "NONO_MODEL"
+ENV_ADAPTER = "NONO_ADAPTER"
+ENV_API_KEY = "NONO_API_KEY"
+ENV_BASE_URL = "NONO_BASE_URL"
+ENV_CWD = "NONO_CWD"
+
+
+def _read_config_file(path: str) -> dict[str, Any]:
+    """读取 JSON 配置文件 —— 文件不存在或损坏时返回空字典。"""
+    config_path = Path(path)
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _coalesce(*values: Any) -> Any:
+    """返回第一个非 None / 非空字符串的值。"""
+    for v in values:
+        if v is not None and v != "":
+            return v
+    return None
+
+
+def build_engine_config(
+    *,
+    model: str | None = None,
+    cwd: str | None = None,
+    verbose: bool = False,
+    config_file: str | None = None,
+) -> EngineConfig:
+    """从 CLI 参数 + 环境变量 + 配置文件构建 EngineConfig。
+
+    优先级：命令行参数 > 环境变量 > 配置文件 > 默认值。
+    密钥只允许来自环境变量或配置文件，绝不硬编码。
+    """
+    file_cfg: dict[str, Any] = _read_config_file(config_file) if config_file else {}
+
+    # 模型：CLI > env > 配置文件 > 默认
+    resolved_model = _coalesce(model, os.environ.get(ENV_MODEL), file_cfg.get("model"))
+    resolved_model = resolved_model or "claude-sonnet-4-20250514"
+
+    # cwd：CLI > env > 配置文件 > 默认
+    resolved_cwd = _coalesce(cwd, os.environ.get(ENV_CWD), file_cfg.get("cwd"))
+    resolved_cwd = resolved_cwd or "."
+
+    # Provider 配置：配置文件 provider 段 + 环境变量覆盖
+    file_provider = file_cfg.get("provider") or {}
+    if not isinstance(file_provider, dict):
+        file_provider = {}
+
+    api_key = _coalesce(
+        os.environ.get(ENV_API_KEY),
+        file_provider.get("api_key"),
+    )
+    base_url = _coalesce(
+        os.environ.get(ENV_BASE_URL),
+        file_provider.get("base_url"),
+    )
+    adapter = _coalesce(
+        os.environ.get(ENV_ADAPTER),
+        file_provider.get("adapter"),
+    )
+
+    provider: ProviderConfig | None = None
+    if adapter or api_key or base_url:
+        provider = ProviderConfig(
+            model_id=resolved_model,
+            adapter=adapter,
+            api_key=api_key or "",
+            base_url=base_url,
+            extra_body=file_provider.get("extra_body") or {},
+        )
+
+    return EngineConfig(
+        model=resolved_model,
+        cwd=resolved_cwd,
+        verbose=verbose,
+        provider=provider,
+        include_partial_messages=True,  # 启用流式事件，实现实时文本渲染
+    )
+
+
 def create_cli_app() -> Any:
     """Create a Typer CLI application for the agent.
 
@@ -377,13 +513,21 @@ def create_cli_app() -> Any:
 
     @app.command()
     def chat(
-        model: str = typer.Option("claude-sonnet-4-20250514", help="Model to use"),
-        cwd: str = typer.Option(".", help="Working directory"),
+        model: str = typer.Option(None, help="Model to use (default from env/config)"),
+        cwd: str = typer.Option(None, help="Working directory (default: env/config or '.')"),
         resume: str = typer.Option(None, help="Session ID to resume"),
-        message: str = typer.Option(None, "--message", "-m", help="Single message (non-interactive)"),
+        message: str = typer.Option(
+            None, "--message", "-m", help="Single message (non-interactive)"
+        ),
+        config_file: str = typer.Option(None, "--config", "-c", help="JSON config file path"),
         verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging"),
     ) -> None:
-        """Start an interactive chat session with the agent."""
+        """Start an interactive chat session with the agent.
+
+        Provider credentials are read from environment variables (NONO_API_KEY,
+        NONO_BASE_URL, NONO_ADAPTER, NONO_MODEL, NONO_CWD) or a --config JSON file.
+        No API keys are hardcoded.
+        """
         import logging
 
         # 日志配置: 默认 WARNING 级别，--verbose 时开启 DEBUG
@@ -395,33 +539,12 @@ def create_cli_app() -> Any:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
         logging.getLogger("openai").setLevel(logging.WARNING)
-            
-        # provider_config = ProviderConfig(
-        #     model_id="MiniMax-M3",
-        #     adapter="anthropic",
-        #     api_key="sk-cp-Lsl_O2etf4XBqwShOkRXiR089pzGL8hO70mKAyjPgG_axZOtU0GArEZveRBvAS3CuDspfg1z7NB71j8lcc3c0enqvS94x_eKZJ84QIR1ydhlpa6pY8wb5sA",
-        #     base_url="https://api.minimaxi.com/anthropic",
-        # )
-        
-        provider_config = ProviderConfig(
-            model_id="MiniMax-M3",
-            adapter="openai",
-            api_key="sk-cp-Lsl_O2etf4XBqwShOkRXiR089pzGL8hO70mKAyjPgG_axZOtU0GArEZveRBvAS3CuDspfg1z7NB71j8lcc3c0enqvS94x_eKZJ84QIR1ydhlpa6pY8wb5sA",
-            base_url="https://api.minimaxi.com/v1",
-            extra_body={
-                "reasoning_split": True,
-                "thinking": {
-                    "type": "adaptive"
-                }
-            },
-        )
 
-        config = EngineConfig(
+        config = build_engine_config(
             model=model,
             cwd=cwd,
             verbose=verbose,
-            provider=provider_config,
-            include_partial_messages=True,  # 启用流式事件，实现实时文本渲染
+            config_file=config_file,
         )
 
         asyncio.run(

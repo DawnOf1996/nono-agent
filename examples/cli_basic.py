@@ -8,7 +8,8 @@ Or using the CLI adapter directly:
 """
 
 import asyncio
-from nono_agent import QueryEngine, EngineConfig
+
+from nono_agent import EngineConfig, QueryEngine
 
 
 async def main():
@@ -36,7 +37,7 @@ async def main():
                         print(f"Assistant: {block['text']}")
 
             elif msg.type == "result":
-                print(f"\n--- Result ---")
+                print("\n--- Result ---")
                 print(f"  Status: {'Error' if msg.is_error else 'Success'}")
                 print(f"  Duration: {msg.duration_ms:.0f}ms")
                 print(f"  Turns: {msg.num_turns}")

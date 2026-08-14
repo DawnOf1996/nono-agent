@@ -786,3 +786,29 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-10 | 新增 [COMMIT.md](./COMMIT.md) Git 提交规范 |
 
 
+## 附录
+可用的测试模型（密钥一律经环境变量注入，**不得硬编码入库**）：
+```bash
+model MiniMax-M3
+base_url https://api.minimaxi.com 或 https://api.minimaxi.com/anthropic(messages协议)
+# 通过环境变量提供密钥（CLI 或配置文件的读取约定见 adapters/cli.py）
+# export NONO_API_KEY=... NONO_BASE_URL=https://api.minimaxi.com/v1 NONO_ADAPTER=openai NONO_MODEL=MiniMax-M3
+```
+
+测试配置示例：
+
+```python
+import os
+provider_config = ProviderConfig(
+        model_id="MiniMax-M3",
+        adapter="openai",
+        api_key=os.environ["NONO_API_KEY"],
+        base_url="https://api.minimaxi.com/v1",
+        extra_body={
+            "reasoning_split": True,
+            "thinking": {
+                "type": "adaptive"
+            }
+        },
+    )
+```
