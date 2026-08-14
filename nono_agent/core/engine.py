@@ -119,6 +119,8 @@ class QueryEngine:
         prompt_assembler: PromptAssembler | None = None,
         ask_user: Any | None = None,
         skill_loader: FileSystemSkillLoader | None = None,
+        agent_loader: Any | None = None,
+        register_agent_tool: bool = True,
     ) -> None:
         self._config = config
         self._initialized = False
@@ -145,11 +147,13 @@ class QueryEngine:
         self._sandbox = PathSandbox(config.cwd)
         self._ignore = IgnoreMatcher.from_workspace(config.cwd)
 
-        # Prompt 组装 + Rules 发现（Phase 1）+ Skills（Phase 2）
+        # Prompt 组装 + Rules 发现（Phase 1）+ Skills（Phase 2）+ 子 Agent（Phase 3）
         self._rule_loader = rule_loader or FileSystemRuleLoader()
         self._prompt_assembler = prompt_assembler or self._create_default_assembler()
         self._skill_loader = skill_loader or FileSystemSkillLoader()
         self._skills: list[Skill] = []
+        self._agent_loader = agent_loader
+        self._register_agent_tool = register_agent_tool
 
         # AskUserQuestion 通道（Phase 1 CLI / Phase 3 Server）
         self._ask_user = ask_user
@@ -178,6 +182,21 @@ class QueryEngine:
         self._skills = self._skill_loader.load(self._config.cwd)
         if self._skills and not self._tool_registry.has("skill"):
             self._tool_registry.register(SkillTool(self._skills))
+
+        # 加载子 Agent 定义并注册 AgentTool（Phase 3）
+        if self._register_agent_tool and self._agent_loader is not None:
+            from nono_agent.agents import (
+                AgentRunner,
+                AgentTool,
+                create_builtin_agents,
+            )
+
+            definitions = create_builtin_agents() + self._agent_loader.load(self._config.cwd)
+            if definitions and not self._tool_registry.has("agent"):
+                runner = AgentRunner(
+                    self._provider_registry, self._tool_registry, self._config
+                )
+                self._tool_registry.register(AgentTool(definitions, runner))
 
         self._initialized = True
         logger.info("QueryEngine initialized (session=%s)", self._session_id)
