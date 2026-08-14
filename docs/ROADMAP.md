@@ -145,7 +145,7 @@
 | Write / Edit         | 原子写、diff/patch、权限门控                | P0    | 可用需打磨 |
 | Glob / Grep          | 工作区匹配与内容搜索                         | P0    | 已完成 |
 | LS / Tree            | 目录列举 + Ignore                      | P1    | 已完成 |
-| WebFetch / WebSearch | 网络 + SSRF/安全策略                     | P1    | WebFetch 已完成；WebSearch 未开始 |
+| WebFetch / WebSearch | 网络 + SSRF/安全策略                     | P1    | 已完成 |
 | AskUserQuestion      | 结构化提问；CLI 交互 / Server 回调或 SSE      | P0/P1 | 可用需打磨 |
 | LSP                  | 定义跳转/引用/诊断（对标 `LSPTool`）           | P1    | 未开始 |
 | NotebookEdit         | Jupyter（按需）                        | P2    | 未开始 |
@@ -183,7 +183,7 @@
 | 发现与加载         | 项目 / 用户 / plugin / bundled    | 可用需打磨 |
 | 注入管线          | 提示片段 + 工具白名单                  | 可用需打磨 |
 | **SkillTool** | 模型可调用的激活入口（对标 CC `SkillTool`） | 已完成 |
-| CLI/Server    | list / enable / disable       | 未开始 |
+| CLI/Server    | list / enable / disable       | CLI 可用（/skills）；Server 待做 |
 
 
 
@@ -196,7 +196,7 @@
 | 配置 schema / 传输 / 生命周期 | `mcp.json`、stdio/SSE、启停健康检查 | 可用需打磨 |
 | Tool 桥接               | MCP tools → `Tool` Protocol | 已完成 |
 | **Resources**         | List/Read MCP resources     | 已完成 |
-| **Auth**              | OAuth/令牌流（对标 `McpAuthTool`） | 未开始 |
+| **Auth**              | OAuth/令牌流（对标 `McpAuthTool`） | 静态 token 起步 |
 | 权限隔离 + ToolSearch 协同  | 按 server 授权；工具过多时延迟暴露       | 未开始 |
 
 
@@ -792,6 +792,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | Phase 4 推进：mypy 全量清零、Checkpoint、Task 工具族、CI（pytest+ruff+mypy） |
 | 2026-08-14 | Phase 3/4 推进：Server 治理（鉴权/TTL/AskUser SSE）、Output Styles section |
 | 2026-08-14 | Phase 1/2 补齐：LS/WebFetch(SSRF)/ToolSearch 工具、Slash /rules /skills /permission /mcp /plugins |
+| 2026-08-14 | 补齐：WebSearch 工具、MCP 静态 token/headers、Skills enable/disable |
 
 
 ## 附录
