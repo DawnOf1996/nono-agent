@@ -302,6 +302,7 @@ class QueryEngine:
             denial_tracker=self._denial_tracker,
             ignore=self._ignore,
             ask_user=self._ask_user,
+            tool_registry=self._tool_registry,
         )
 
         initial_state = LoopState(

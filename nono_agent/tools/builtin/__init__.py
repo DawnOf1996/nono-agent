@@ -12,10 +12,13 @@ from nono_agent.tools.builtin.demo import CalculatorTool, GetTimeTool
 from nono_agent.tools.builtin.edit import EditFileTool
 from nono_agent.tools.builtin.glob import GlobTool
 from nono_agent.tools.builtin.grep import GrepTool
+from nono_agent.tools.builtin.ls import LSTool
 from nono_agent.tools.builtin.plan import EnterPlanModeTool, ExitPlanModeTool
 from nono_agent.tools.builtin.read import ReadFileTool
 from nono_agent.tools.builtin.task import TaskStore, create_task_tools
 from nono_agent.tools.builtin.todo_write import TodoWriteTool
+from nono_agent.tools.builtin.tool_search import ToolSearchTool
+from nono_agent.tools.builtin.web_fetch import WebFetchTool
 from nono_agent.tools.builtin.worktree import EnterWorktreeTool, ExitWorktreeTool
 from nono_agent.tools.builtin.write import WriteFileTool
 from nono_agent.tools.protocol import ToolBase
@@ -48,6 +51,9 @@ def create_builtin_tools() -> list[ToolBase]:
         EditFileTool(),
         GlobTool(),
         GrepTool(),
+        LSTool(),
+        WebFetchTool(),
+        ToolSearchTool(),
         AskUserQuestionTool(),
         TodoWriteTool(),
         EnterPlanModeTool(),

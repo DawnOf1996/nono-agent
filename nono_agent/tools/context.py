@@ -60,6 +60,9 @@ class ToolUseContext:
     # AskUserQuestion 回调 —— 人在环结构化提问（CLI 交互 / Server 回调）
     ask_user: AskUserCallback | None = None
 
+    # 工具注册表 —— 供 ToolSearch 等工具按需检索
+    tool_registry: Any | None = None  # ToolRegistry
+
     # 中间件或引擎注入的额外上下文
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -170,5 +173,6 @@ class ToolUseContext:
             denial_tracker=self.denial_tracker,
             ignore=self.ignore,
             ask_user=self.ask_user,
+            tool_registry=self.tool_registry,
             extra=merged,
         )
