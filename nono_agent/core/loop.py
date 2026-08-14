@@ -53,6 +53,7 @@ from nono_agent.hooks.stop_hooks import StopHookExecutor
 from nono_agent.observability.cost_tracker import CostTracker
 from nono_agent.observability.metrics import METRIC_API_REQUESTS, record_counter
 from nono_agent.pipeline.base import PipelineContext, PreprocessPipeline
+from nono_agent.providers.base import FallbackTriggeredError
 from nono_agent.recovery import max_output_tokens, prompt_too_long
 from nono_agent.recovery.chain import RecoveryAction, RecoveryChain, RecoveryDecision
 from nono_agent.session.store import MessageStore
@@ -111,6 +112,8 @@ async def agentic_loop(
     - 成本跟踪聚合
     """
     state = initial_state  # 当前循环状态（每轮迭代后构造新实例）
+    current_model = config.effective_model  # 运行时当前模型（fallback 切换后可改变）
+    used_fallback = False
 
     while True:
         # —— 前置检查: 用户取消 ——
@@ -147,12 +150,12 @@ async def agentic_loop(
 
         logger.debug(
             "Turn %d: %d messages, %d tools, model=%s",
-            state.turn_count, len(messages), len(api_tools), config.effective_model,
+            state.turn_count, len(messages), len(api_tools), current_model,
         )
 
         # 构造管线上下文: 模型 ID + 估算 token 数
         pipeline_ctx = PipelineContext(
-            model_id=config.effective_model,
+            model_id=current_model,
             estimated_tokens=estimate_messages_tokens(
                 [m.message for m in messages if hasattr(m, "message")]
             ),
@@ -188,7 +191,7 @@ async def agentic_loop(
         # message_start -> content_block_start/delta/stop -> message_delta -> message_stop
         # ------------------------------------------------------------------
         yield RequestStartEvent()  # 通知消费者 API 请求开始
-        record_counter(METRIC_API_REQUESTS, model=config.effective_model)
+        record_counter(METRIC_API_REQUESTS, model=current_model)
 
         # 累积流式事件的状态
         assistant_content: list[dict[str, Any]] = []  # 累积的 assistant content blocks
@@ -203,7 +206,8 @@ async def agentic_loop(
                 system_prompt=system_prompt,
                 tools=api_tools,
                 thinking_config=config.thinking_config,
-                model=config.effective_model,
+                model=current_model,
+                fallback_model=config.fallback_model,
                 max_tokens=state.max_output_tokens_override,
                 signal=signal,
                 json_schema=config.json_schema,
@@ -252,6 +256,26 @@ async def agentic_loop(
                     if event.message.get("usage"):
                         usage = Usage(**event.message["usage"])
                     stop_reason = event.message.get("stop_reason")
+
+        except FallbackTriggeredError as exc:
+            # 主模型过载 → 切换到 fallback_model 重试（仅一次）
+            if config.fallback_model and not used_fallback:
+                used_fallback = True
+                current_model = exc.fallback_model
+                logger.warning(
+                    "Falling back from %s to %s", exc.original_model, exc.fallback_model
+                )
+                yield SystemMessage(
+                    subtype="api_retry",
+                    content=(
+                        f"Model {exc.original_model} unavailable, "
+                        f"falling back to {exc.fallback_model}..."
+                    ),
+                )
+                continue
+            api_error = str(exc)
+            yield _make_terminal(store, state, TerminalReason.MODEL_ERROR, error=exc)
+            return
 
         except Exception as exc:
             api_error = str(exc)
@@ -325,7 +349,7 @@ async def agentic_loop(
                 [(b.name, b.id) for b in tool_blocks],
             )
         assistant_msg = await post_sampling_chain.run(
-            assistant_msg, tool_blocks, {"model_id": config.effective_model}
+            assistant_msg, tool_blocks, {"model_id": current_model}
         )
 
         # ------------------------------------------------------------------
