@@ -41,7 +41,11 @@ async def main():
                 print(f"  Status: {'Error' if msg.is_error else 'Success'}")
                 print(f"  Duration: {msg.duration_ms:.0f}ms")
                 print(f"  Turns: {msg.num_turns}")
-                print(f"  Cost: ${msg.total_cost_usd:.4f}")
+                u = msg.usage
+                print(
+                    f"  Tokens: in={u.input_tokens} out={u.output_tokens} "
+                    f"cache_read={u.cache_read_input_tokens}"
+                )
 
 
 if __name__ == "__main__":

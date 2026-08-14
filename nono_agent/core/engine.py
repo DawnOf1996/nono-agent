@@ -57,7 +57,7 @@ from nono_agent.hooks.middleware import MiddlewareChain
 from nono_agent.hooks.post_sampling import PostSamplingChain
 from nono_agent.hooks.stop_hooks import StopHookExecutor
 from nono_agent.memory.store import FileSystemMemoryStore
-from nono_agent.observability.cost_tracker import CostTracker, estimate_cost
+from nono_agent.observability.token_tracker import TokenTracker
 from nono_agent.permissions.denial import DenialTracker
 from nono_agent.permissions.policy import PermissionPolicy
 from nono_agent.permissions.sandbox import IgnoreMatcher, PathSandbox
@@ -138,7 +138,7 @@ class QueryEngine:
 
         # 运行时状态
         self._store = MessageStore()             # 消息存储
-        self._cost_tracker = CostTracker()       # 成本跟踪器
+        self._token_tracker = TokenTracker()     # Token 跟踪器
         self._abort_controller = AbortController()  # 取消控制器
         self._transcript_writer = transcript_writer  # 磁盘持久化写入器
         self._permission_checker = permission_checker  # 权限检查器（CLI/Server 注入）
@@ -337,7 +337,7 @@ class QueryEngine:
                 system_prompt=system_prompt,
                 initial_state=initial_state,
                 signal=self._abort_controller.signal,
-                cost_tracker=self._cost_tracker,
+                token_tracker=self._token_tracker,
             ):
                 # Phase 5: 将内部消息转换为 SDK 格式
                 sdk_msgs = self._to_sdk_messages(internal_msg)
@@ -350,11 +350,8 @@ class QueryEngine:
                     usage_dict = internal_msg.message.get("usage", {})
                     if usage_dict:
                         usage = Usage(**usage_dict)
-                        # 记录 token 用量
-                        self._cost_tracker.record_usage(usage, self._config.effective_model)
-                        # 估算美元费用
-                        cost = estimate_cost(usage, self._config.effective_model)
-                        self._cost_tracker.record_cost(cost)  # 记录累计成本
+                        # 记录 token 用量（输入/输出/缓存命中/缓存创建）
+                        self._token_tracker.record_usage(usage, self._config.effective_model)
 
                     # 持久化 assistant 消息（fire-and-forget，不阻塞主循环）
                     if self._transcript_writer:
@@ -401,21 +398,20 @@ class QueryEngine:
 
         # yield 最终结果消息 —— 客户端收到此消息即知本轮对话完成
         logger.debug(
-            "Query complete: result=%s, elapsed=%.0fms, turns=%d, cost=$%.4f",
+            "Query complete: result=%s, elapsed=%.0fms, turns=%d, tokens=%d",
             result_subtype, elapsed, self._turn_count,
-            self._cost_tracker.get_total_cost(),
+            self._token_tracker.get_total_tokens(),
         )
         yield SDKResultMessage(
             subtype=result_subtype,
             is_error=is_error,
             duration_ms=elapsed,
-            duration_api_ms=self._cost_tracker.get_total_api_duration(),
+            duration_api_ms=self._token_tracker.get_total_api_duration(),
             num_turns=self._turn_count,
             result=result_text,
             session_id=self._session_id,
-            total_cost_usd=self._cost_tracker.get_total_cost(),
-            usage=self._cost_tracker.get_total_usage(),
-            model_usage=self._cost_tracker.get_model_usage(),
+            usage=self._token_tracker.get_total_usage(),
+            model_usage=self._token_tracker.get_model_usage(),
             permission_denials=self._denial_tracker.list(),
             errors=[str(terminal_error)] if terminal_error else [],
             structured_output=structured_output,
@@ -487,8 +483,8 @@ class QueryEngine:
         return self._session_id
 
     @property
-    def cost_tracker(self) -> CostTracker:
-        return self._cost_tracker
+    def token_tracker(self) -> TokenTracker:
+        return self._token_tracker
 
     @property
     def tool_registry(self) -> ToolRegistry:

@@ -35,7 +35,8 @@ async def main():
             if msg.type == "assistant":
                 print(msg.message)
             elif msg.type == "result":
-                print(f"done: {msg.num_turns} turns, ${msg.total_cost_usd:.4f}")
+                u = msg.usage
+                print(f"done: {msg.num_turns} turns, in={u.input_tokens} out={u.output_tokens} tokens")
 
 asyncio.run(main())
 ```
@@ -175,7 +176,7 @@ curl -X POST http://localhost:8000/abort -d '{"session_id":"..."}' -H "Content-T
 
 ## 5. Slash 命令（REPL 内以 `/` 开头）
 
-`/help` `/model` `/cost` `/context` `/clear` `/compact` `/rules` `/skills` `/permission` `/mcp` `/plugins` `/memory` `/hooks`。
+`/help` `/model` `/tokens` `/context` `/clear` `/compact` `/rules` `/skills` `/permission` `/mcp` `/plugins` `/memory` `/hooks`。
 
 示例：`/permission plan`（进入计划模式）、`/skills disable <name>`、`/compact`（手动压缩上下文）。
 
@@ -259,7 +260,7 @@ nono_agent/
 ├── prompt/        Prompt Section 组装（静态/动态边界 + 优先级合并）
 ├── rules/ skills/ plugins/ commands/ settings/ permissions/ mcp/ agents/ memory/ checkpoint/
 ├── hooks/         引擎内 Middleware + 用户态 hooks.json
-├── observability/ 成本/日志/指标
+├── observability/ Token 跟踪/日志/指标
 └── adapters/      CLI / Server / testing
 ```
 

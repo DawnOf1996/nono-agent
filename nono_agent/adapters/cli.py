@@ -392,18 +392,23 @@ async def _consume_stream(
 
         elif isinstance(sdk_msg, SDKResultMessage):
             # Print result summary
+            tokens = sdk_msg.usage
+            token_str = (
+                f"in={tokens.input_tokens} out={tokens.output_tokens} "
+                f"cache={tokens.cache_read_input_tokens}"
+            )
             if sdk_msg.is_error:
                 console.print(
                     f"\n[red]Error: {sdk_msg.subtype}[/red]\n"
                     f"Duration: {sdk_msg.duration_ms:.0f}ms | "
                     f"Turns: {sdk_msg.num_turns} | "
-                    f"Cost: ${sdk_msg.total_cost_usd:.4f}"
+                    f"Tokens: {token_str}"
                 )
             else:
                 console.print(
                     f"\n[dim][OK] Completed in {sdk_msg.duration_ms:.0f}ms | "
                     f"{sdk_msg.num_turns} turns | "
-                    f"${sdk_msg.total_cost_usd:.4f}[/dim]"
+                    f"{token_str}[/dim]"
                 )
             return sdk_msg
 

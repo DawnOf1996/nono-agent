@@ -53,7 +53,7 @@ class TestCommandsWithEngine:
 
         return create_test_engine()
 
-    def test_model_and_cost(self):
+    def test_model_and_tokens(self):
         engine = self._engine()
         registry = CommandRegistry()
         for cmd in create_builtin_commands(registry):
@@ -61,7 +61,7 @@ class TestCommandsWithEngine:
         ctx = CommandContext(engine=engine, cwd=".")
 
         assert "claude-test" in registry.execute("model", [], ctx)
-        assert "Cost:" in registry.execute("cost", [], ctx)
+        assert "Tokens:" in registry.execute("tokens", [], ctx)
         assert "Context:" in registry.execute("context", [], ctx)
 
     def test_clear(self):

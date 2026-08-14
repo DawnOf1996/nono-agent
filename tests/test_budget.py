@@ -1,4 +1,4 @@
-"""Tests for loop budget gating (max_budget_usd / task_budget)."""
+"""Tests for loop budget gating (task_budget)."""
 
 import pytest
 
@@ -23,19 +23,6 @@ def _make_engine(**config_kwargs) -> QueryEngine:
 
 
 class TestBudgetGating:
-    @pytest.mark.asyncio
-    async def test_max_budget_usd_zero(self):
-        """max_budget_usd=0.0 should terminate immediately with MAX_BUDGET_USD."""
-        engine = _make_engine(max_budget_usd=0.0)
-        async with engine:
-            result = None
-            async for msg in engine.submit_message("hi"):
-                if isinstance(msg, SDKResultMessage):
-                    result = msg
-            assert result is not None
-            assert result.is_error
-            assert result.subtype == "error_max_budget_usd"
-
     @pytest.mark.asyncio
     async def test_task_budget_zero(self):
         """task_budget total=0 should terminate with TASK_BUDGET_EXHAUSTED."""

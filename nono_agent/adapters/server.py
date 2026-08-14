@@ -235,7 +235,7 @@ def create_server_app(
         session_id: str          # 会话唯一标识
         model: str               # 当前使用的模型
         turn_count: int          # 已完成的对话轮次
-        total_cost_usd: float    # 累计花费（美元）
+        total_tokens: int        # 累计 token 数
 
     class AbortRequest(BaseModel):
         """中止请求 —— 客户端请求取消正在进行的查询。"""
@@ -347,12 +347,12 @@ def create_server_app(
             session_id=session_id,
             model=engine._config.model,
             turn_count=0,
-            total_cost_usd=0.0,
+            total_tokens=0,
         )
 
     @app.get("/sessions")
     async def list_sessions() -> dict[str, Any]:
-        """列出所有活跃会话 —— 返回每个会话的 ID、模型、轮次和花费。"""
+        """列出所有活跃会话 —— 返回每个会话的 ID、模型、轮次和 token 数。"""
         result = []
         async with session_lock:
             for sid, engine in sessions.items():
@@ -361,7 +361,7 @@ def create_server_app(
                         session_id=sid,
                         model=engine._config.model,
                         turn_count=engine._turn_count,
-                        total_cost_usd=engine.cost_tracker.get_total_cost(),
+                        total_tokens=engine.token_tracker.get_total_tokens(),
                     )
                 )
         return {"sessions": result}
@@ -410,7 +410,7 @@ def create_server_app(
             session_id=session_id,
             model=engine._config.model,
             turn_count=len(messages),
-            total_cost_usd=0.0,
+            total_tokens=0,
         )
 
     @app.post("/abort")

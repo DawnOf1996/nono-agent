@@ -25,7 +25,7 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 | 权限模式 / Rule / denial / Hooks / Slash | **未实现** | §2.6–§2.7 |
 | 会话持久化（`TranscriptWriter`） | 骨架 | 默认本地 NDJSON；DB/Redis 等后端见 Roadmap |
 | CLI / Server 适配器 | 基本可用 | Server 目前仅 SSE（文档曾提及的 WebSocket 未实现） |
-| 可观测性 | 部分可用 | CostTracker + 日志可用；Metrics 为 No-Op 占位 |
+| 可观测性 | 部分可用 | TokenTracker + 日志可用；Metrics 为 No-Op 占位 |
 
 ---
 
@@ -117,7 +117,7 @@ nono_agent/
 ├── recovery/             # ✅ RecoveryChain 与策略
 ├── hooks/                # 🔧 引擎内 Middleware/Stop/PostSampling
 ├── adapters/             # 🔧 CLI / Server(SSE) / Testing
-├── observability/        # 🔧 CostTracker / logging / metrics(占位)
+├── observability/        # 🔧 TokenTracker / logging / metrics(占位)
 ├── utils/                # 🔧 abort / tokens
 │
 │ ─── LLM 与会话 ───────────────────────────────────────────
@@ -151,7 +151,7 @@ nono_agent/
 | `recovery/` | 错误分类与恢复动作 | UI、Provider 传输细节 |
 | `hooks/` | 代码级生命周期链 | 用户 `hooks.json` 加载（适配后挂入） |
 | `adapters/` | 流式交付、交互确认、AskUser/Slash 入口 | 业务工具与 Prompt 内容 |
-| `observability/` | 成本、日志、指标 | 业务决策 |
+| `observability/` | Token、日志、指标 | 业务决策 |
 | `utils/` | Abort、token 等无领域原语 | 领域策略 |
 | `providers/` | LLM 协议适配与路由 | 工具执行、会话存储 |
 | `session/` | 内存消息 + Transcript 多后端 | 跨会话 Memory |
@@ -214,7 +214,7 @@ graph TB
     subgraph Session
         MS[MessageStore<br/>运行时内存]
         TW[TranscriptWriter<br/>可插拔持久化]
-        CT[CostTracker<br/>成本跟踪]
+        TT[TokenTracker<br/>Token 跟踪]
     end
 
     CLI --> QE
@@ -230,7 +230,7 @@ graph TB
     TE --> TR
     QE --> MS
     QE --> TW
-    QE --> CT
+    QE --> TT
 ```
 
 ---

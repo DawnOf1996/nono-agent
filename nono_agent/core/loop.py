@@ -50,8 +50,8 @@ from nono_agent.core.types import (
 from nono_agent.hooks.middleware import MiddlewareChain
 from nono_agent.hooks.post_sampling import PostSamplingChain
 from nono_agent.hooks.stop_hooks import StopHookExecutor
-from nono_agent.observability.cost_tracker import CostTracker
 from nono_agent.observability.metrics import METRIC_API_REQUESTS, record_counter
+from nono_agent.observability.token_tracker import TokenTracker
 from nono_agent.pipeline.base import PipelineContext, PreprocessPipeline
 from nono_agent.providers.base import FallbackTriggeredError
 from nono_agent.recovery import max_output_tokens, prompt_too_long
@@ -84,7 +84,7 @@ async def agentic_loop(
     system_prompt: str,
     initial_state: LoopState,
     signal: AbortSignal,
-    cost_tracker: CostTracker | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> AsyncGenerator[InternalMessage, None]:
     """主 Agentic 循环 —— while(True) 驱动的代理核心。
 
@@ -130,9 +130,9 @@ async def agentic_loop(
             )
             return
 
-        # —— 前置检查: 预算门控（美元 / token 预算在 loop 内生效）——
-        if cost_tracker is not None:
-            budget_reason = _check_budget(config, cost_tracker)
+        # —— 前置检查: token 预算门控（task_budget 在 loop 内生效）——
+        if token_tracker is not None:
+            budget_reason = _check_budget(config, token_tracker)
             if budget_reason is not None:
                 yield _make_terminal(store, state, budget_reason)
                 return
@@ -728,24 +728,14 @@ async def _apply_recovery(
 
 def _check_budget(
     config: EngineConfig,
-    cost_tracker: CostTracker,
+    token_tracker: TokenTracker,
 ) -> TerminalReason | None:
-    """检查预算门控 —— 超出美元或 token 预算时返回终止原因。"""
-    # 美元预算
-    if config.max_budget_usd is not None:
-        if cost_tracker.get_total_cost() >= config.max_budget_usd:
-            logger.warning(
-                "Budget exceeded: $%.4f >= $%.4f",
-                cost_tracker.get_total_cost(),
-                config.max_budget_usd,
-            )
-            return TerminalReason.MAX_BUDGET_USD
-
+    """检查 token 预算门控 —— 超出 token 预算时返回终止原因。"""
     # token 预算（task_budget 形如 {"total": 100000}）
     if config.task_budget is not None:
         total_limit = config.task_budget.get("total")
         if total_limit is not None:
-            total_tokens = cost_tracker.get_total_usage().total_tokens
+            total_tokens = token_tracker.get_total_usage().total_tokens
             if total_tokens >= total_limit:
                 logger.warning(
                     "Token budget exceeded: %d >= %d",

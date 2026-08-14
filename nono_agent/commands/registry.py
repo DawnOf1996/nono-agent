@@ -10,7 +10,7 @@ from typing import Any, Protocol, runtime_checkable
 class CommandContext:
     """命令执行上下文 —— 提供引擎与工作目录访问。"""
 
-    engine: Any | None = None      # QueryEngine（供 /cost /model /clear 等使用）
+    engine: Any | None = None      # QueryEngine（供 /tokens /model /clear 等使用）
     cwd: str = "."
 
 

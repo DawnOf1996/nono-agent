@@ -34,7 +34,7 @@
 | MCP 配置与桥接                                       | 可用需打磨 | stdio tools/resources 桥接；auth/SSE/ToolSearch 待做        |
 | 用户态 Hooks 配置                                    | 可用需打磨 | `hooks.json` 命令执行器（before_tool 可否决）；HTTP 执行器待做        |
 | 权限模式 + PermissionRule + denial 追踪               | 可用需打磨 | `permissions/` 策略/规则/沙箱/denial/Bash 分类；Server 默认 deny-write |
-| Slash / 运行时命令（MVP 子集）                           | 可用需打磨 | `commands/` + help/model/cost/context/clear；不对齐 CC 100+ 全量 |
+| Slash / 运行时命令（MVP 子集）                           | 可用需打磨 | `commands/` + help/model/tokens/context/clear 等；不对齐 CC 100+ 全量 |
 | Plan / Memory / Checkpoint / Task 生命周期          | 可用需打磨 | Plan/TodoWrite/Memory/Checkpoint/Task 均已落地；多模态附件待做     |
 | 子 Agent 三件套                                     | 可用需打磨 | AgentTool + AgentDefinition + AgentRunner；worktree 隔离/后台待做   |
 | Worktree 进出工具                                   | 可用需打磨 | enter/exit_worktree；cwd 自动切换待做                        |
@@ -43,7 +43,7 @@
 | CLI 适配器                                         | 可用需打磨 | REPL / resume / 流式渲染可用                            |
 | Server 适配器（SSE）                                 | 可用需打磨 | 多会话 + SSE + 鉴权 + TTL + AskUser 回调；无 WebSocket   |
 | 会话持久化（Transcript）                               | 可用需打磨 | Protocol + NDJSON + SQLite；缺 Redis/Postgres         |
-| CostTracker / 日志                                | 可用需打磨 | Metrics 最小可用（内存 counter/histogram/gauge）          |
+| TokenTracker / 日志                               | 可用需打磨 | Metrics 最小可用（内存 counter/histogram/gauge）          |
 | 文档 / README                                     | 进行中   | 本文档与 README 对齐中                                   |
 
 
@@ -268,7 +268,7 @@
 | ----------------------------------------- | ------------ | --- |
 | `/compact` `/clear`                       | 压缩 / 清空      | 已完成 |
 | `/rules` `/skills` `/mcp` `/plugins`      | 扩展面调试        | 已完成 |
-| `/permission` `/model` `/cost` `/context` | 模式、模型、成本、上下文 | 已完成 |
+| `/permission` `/model` `/tokens` `/context` | 模式、模型、token、上下文 | 已完成 |
 | `/memory` `/hooks`                        | P2 可后置       | 已完成 |
 | Plugin 自定义 slash                          | 扩展机制         | 已完成 |
 
@@ -356,7 +356,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 ### 3.1 核心引擎
 
-- [ ] 预算门控：`max_budget_usd` / `task_budget` 在 loop 内真正生效并产出明确 `TerminalReason`
+- [x] 预算门控：`task_budget` 在 loop 内真正生效并产出明确 `TerminalReason`
 - [x] `fallback_model` 流式失败切换路径验证与测试
 - [ ] abort：流式、工具执行、权限等待、AskUser 等待各阶段一致性（含竞态）
 - [ ] `MessageStore` compact boundary / tombstone / resume 边界用例补齐
@@ -419,7 +419,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 ### 3.7 适配器
 
 - [x] CLI：去掉硬编码密钥/调试配置，改为环境变量与配置文件
-- [x] CLI：会话列表、成本展示（工具调用可视化待做）
+- [x] CLI：会话列表、token 展示（工具调用可视化待做）
 - [x] Server：会话 TTL、并发限制、鉴权、优雅关闭压测
 - [x] Server：可注入非文件 Transcript 后端（为 DB 多会话做准备）
 - [x] SDKMessage 对外契约稳定化（版本字段、`permission_denials`、AskUser 事件）
@@ -491,7 +491,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 - Memory（memdir）/ Checkpoint / Task 工具族 / Output Styles（§2.11）  
 - 可选：Agent Teams / Coordinator（§2.8.1）  
-- Provider 对齐、压缩与成本、CI 门禁
+- Provider 对齐、压缩与 token、CI 门禁
 
 ---
 
@@ -541,8 +541,8 @@ nono_agent/
 │   ├── server.py
 │   └── testing.py
 │
-├── observability/                 # 🔧 成本 / 日志 / 指标
-│   ├── cost_tracker.py
+├── observability/                 # 🔧 Token 跟踪 / 日志 / 指标
+│   ├── token_tracker.py
 │   ├── logging.py
 │   └── metrics.py                 # No-Op → 真实实现
 │
@@ -676,7 +676,7 @@ nono_agent/
 | **`recovery/`** | API/循环错误分类与恢复动作（压缩重试、升 max_tokens、终止） | 主动压缩策略实现细节可委托 pipeline | ✅ |
 | **`hooks/`** | **引擎内** Middleware / Stop / PostSampling 链（代码注入） | 用户 `hooks.json` 的加载与沙箱执行（由扩展面适配后挂入本链） | 🔧 |
 | **`adapters/`** | CLI/Server/Testing：消费 `submit_message` 流、权限交互、AskUser 通道、Slash 入口调用 | 业务工具逻辑、Prompt 内容拼装 | 🔧 |
-| **`observability/`** | 成本、结构化日志、指标 | 业务决策 | 🔧 Metrics 占位 |
+| **`observability/`** | Token、结构化日志、指标 | 业务决策 | 🔧 Metrics 占位 |
 | **`utils/`** | Abort、token 估算等无业务依赖的原语 | 领域策略 | 🔧 |
 
 #### LLM 与会话
@@ -796,6 +796,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | 补齐：fallback_model 切换、/memory /hooks slash、CLI sessions 会话列表 |
 | 2026-08-14 | 补齐：LSP 工具、Plugin 自定义 slash 命令 |
 | 2026-08-14 | CLI 首次运行引导页：检测用户基础配置（模型/协议/密钥）缺失则交互式引导并落盘 `~/.nono-agent/config.json` |
+| 2026-08-14 | observability：CostTracker 整改为 TokenTracker（去价格，只统计输入/输出/缓存命中 token）；移除 `max_budget_usd`、`SDKResult.total_cost_usd`、`estimate_cost` 与定价表 |
 
 
 ## 附录

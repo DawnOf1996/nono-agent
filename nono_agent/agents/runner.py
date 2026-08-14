@@ -24,7 +24,7 @@ class AgentRunResult:
     text: str = ""
     is_error: bool = False
     num_turns: int = 0
-    cost_usd: float = 0.0
+    total_tokens: int = 0
 
 
 class AgentRunner:
@@ -60,7 +60,6 @@ class AgentRunner:
             session_id=str(uuid.uuid4()),
             custom_system_prompt=definition.system_prompt,
             max_turns=self._base_config.max_turns,
-            max_budget_usd=self._base_config.max_budget_usd,
         )
 
     async def run(
@@ -95,5 +94,5 @@ class AgentRunner:
             text=result.result,
             is_error=result.is_error,
             num_turns=result.num_turns,
-            cost_usd=result.total_cost_usd,
+            total_tokens=result.usage.total_tokens,
         )

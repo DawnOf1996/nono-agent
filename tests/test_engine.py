@@ -103,8 +103,8 @@ class TestQueryEngine:
             assert len(engine.session_id) > 0
 
     @pytest.mark.asyncio
-    async def test_cost_tracking(self):
-        """Test that cost tracking accumulates."""
+    async def test_token_tracking(self):
+        """Test that token tracking accumulates."""
         engine = create_test_engine(
             responses=[
                 {"text": "Response 1", "tool_calls": []},
@@ -115,8 +115,9 @@ class TestQueryEngine:
             async for _ in engine.submit_message("Hello"):
                 pass
 
-            usage = engine.cost_tracker.get_total_usage()
+            usage = engine.token_tracker.get_total_usage()
             assert usage.input_tokens >= 0
+            assert engine.token_tracker.get_total_tokens() >= 0
             assert usage.output_tokens >= 0
 
 

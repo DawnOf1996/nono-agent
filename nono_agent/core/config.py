@@ -80,7 +80,6 @@ class EngineConfig(BaseModel):
 
     # 运行限制
     max_turns: int | None = None                  # 最大循环轮次（None 表示不限制）
-    max_budget_usd: float | None = None           # 最大美元预算
     task_budget: dict[str, float] | None = None   # Token 预算: {"total": 100000}
 
     # 扩展思考配置

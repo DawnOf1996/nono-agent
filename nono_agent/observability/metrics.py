@@ -135,4 +135,4 @@ METRIC_TURN_DURATION = "nono_agent.turn.duration_ms"   # 每轮总耗时
 # 仪表盘 —— 实时状态值
 METRIC_CONTEXT_TOKENS = "nono_agent.context.tokens"   # 当前上下文 token 数
 METRIC_MESSAGE_COUNT = "nono_agent.messages.count"     # 当前消息数
-METRIC_COST_USD = "nono_agent.cost.usd"               # 当前累计成本
+METRIC_TOTAL_TOKENS = "nono_agent.tokens.total"        # 当前累计 token 数

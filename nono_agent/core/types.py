@@ -102,7 +102,7 @@ ContentBlock = (
 # ---------------------------------------------------------------------------
 # Usage — Token 用量统计
 # ---------------------------------------------------------------------------
-# 每次 API 响应都会返回 usage 信息，引擎通过 CostTracker 累积统计。
+# 每次 API 响应都会返回 usage 信息，引擎通过 TokenTracker 累积统计。
 
 
 class Usage(BaseModel):
@@ -438,12 +438,12 @@ class SDKToolUseSummary(BaseModel):
 class SDKResultMessage(BaseModel):
     """SDK 协议格式的最终结果消息 —— 每轮 submit_message() 的最后一条消息。
 
-    包含完整的统计信息：耗时、轮数、成本、token 用量、错误列表。
+    包含完整的统计信息：耗时、轮数、token 用量、错误列表。
     客户端收到此消息即知本轮对话已完成。
     """
 
     type: Literal["result"] = "result"
-    # "success" | "error_max_turns" | "error_max_budget_usd" |
+    # "success" | "error_max_turns" | "error_task_budget_exhausted" |
     # "error_during_execution" 等
     subtype: str
     is_error: bool = False             # 是否为错误结束
@@ -453,7 +453,6 @@ class SDKResultMessage(BaseModel):
     result: str = ""                   # 最终结果文本（从最后一条 assistant 消息提取）
     stop_reason: str | None = None     # 循环终止原因
     session_id: str = ""               # 所属会话 ID
-    total_cost_usd: float = 0          # 本轮累计美元费用
     usage: Usage = Field(default_factory=Usage)         # 累计 token 用量
     model_usage: dict[str, Any] = Field(default_factory=dict)  # 按模型分项的用量统计
     permission_denials: list[dict[str, Any]] = Field(default_factory=list)  # 权限拒绝记录

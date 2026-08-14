@@ -57,7 +57,8 @@ async def main():
             if msg.type == "assistant":
                 print(msg.message)
             elif msg.type == "result":
-                print(f"done: {msg.num_turns} turns, ${msg.total_cost_usd:.4f}")
+                u = msg.usage
+                print(f"done: {msg.num_turns} turns, in={u.input_tokens} out={u.output_tokens} tokens")
 
 asyncio.run(main())
 ```

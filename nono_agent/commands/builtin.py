@@ -1,4 +1,4 @@
-"""内置 Slash 命令（MVP 子集）：help/model/cost/context/clear。"""
+"""内置 Slash 命令（MVP 子集）：help/model/tokens/context/clear 等。"""
 
 from __future__ import annotations
 
@@ -47,18 +47,20 @@ class ModelCommand(_SimpleCommand):
         return f"Model: {ctx.engine._config.effective_model}"
 
 
-class CostCommand(_SimpleCommand):
-    _name = "cost"
-    _description = "Show session cost"
+class TokensCommand(_SimpleCommand):
+    _name = "tokens"
+    _description = "Show session token usage"
 
     def execute(self, args: list[str], ctx: CommandContext) -> str:
         if ctx.engine is None:
-            return "Cost: (no engine attached)"
-        tracker = ctx.engine.cost_tracker
+            return "Tokens: (no engine attached)"
+        tracker = ctx.engine.token_tracker
         usage = tracker.get_total_usage()
         return (
-            f"Cost: ${tracker.get_total_cost():.4f} | "
-            f"tokens in={usage.input_tokens} out={usage.output_tokens}"
+            f"Tokens: in={usage.input_tokens} out={usage.output_tokens} "
+            f"cache_read={usage.cache_read_input_tokens} "
+            f"cache_creation={usage.cache_creation_input_tokens} "
+            f"(total {usage.total_tokens})"
         )
 
 
@@ -226,7 +228,7 @@ def create_builtin_commands(registry: object | None = None) -> list[SlashCommand
     """创建内置 Slash 命令列表。"""
     commands: list[SlashCommand] = [
         ModelCommand(),
-        CostCommand(),
+        TokensCommand(),
         ContextCommand(),
         ClearCommand(),
         CompactCommand(),

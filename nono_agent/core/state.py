@@ -59,7 +59,6 @@ class TerminalReason(Enum):
     STOP_HOOK_PREVENTED = auto()   # stop hook 明确阻止继续
     HOOK_STOPPED = auto()          # middleware 在 on_transition 中否决继续
     MAX_TURNS = auto()             # 达到最大轮次限制
-    MAX_BUDGET_USD = auto()        # 超出美元预算 (max_budget_usd)
     TASK_BUDGET_EXHAUSTED = auto() # 超出 token 预算 (task_budget)
 
 
