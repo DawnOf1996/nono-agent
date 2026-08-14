@@ -797,6 +797,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | 补齐：LSP 工具、Plugin 自定义 slash 命令 |
 | 2026-08-14 | CLI 首次运行引导页：检测用户基础配置（模型/协议/密钥）缺失则交互式引导并落盘 `~/.nono-agent/config.json` |
 | 2026-08-14 | observability：CostTracker 整改为 TokenTracker（去价格，只统计输入/输出/缓存命中 token）；移除 `max_budget_usd`、`SDKResult.total_cost_usd`、`estimate_cost` 与定价表 |
+| 2026-08-14 | fix：messages_compatible 补 `stream=true`（否则非流式响应被 SSE 解析跳过导致空输出）；端点自动补 `/v1/messages` |
 
 
 ## 附录

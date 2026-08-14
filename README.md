@@ -2,20 +2,20 @@
 
 Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 QueryEngine 架构。
 
-当前定位是可扩展的 **Agent 骨架**：核心循环、Provider 适配、工具协议与 CLI/SSE 双侧适配已可跑通；相对 Claude Code 运行时深度（Prompt 组装、权限规则、Agent 三件套、Rules/Skills/Plugins/MCP 等）仍在规划中，见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+已对齐 Claude Code 的 Agent 运行时深度：Prompt 组装、权限规则、Agent 三件套、Rules/Skills/Plugins/MCP、子 Agent、会话治理等均基本落地，见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## 现状一览
 
 | 已有 | 尚未建成 |
 |------|----------|
-| `QueryEngine.submit_message()` 流式 API | LSP 工具（可选） |
-| Anthropic / OpenAI / Compatible + messages_compatible + responses(+compatible) | WebSocket、MCP Auth |
-| 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep/LS/WebFetch/ToolSearch）+ AskUser + TodoWrite + Plan + Worktree | WebSocket、MCP Auth |
-| 默认 4 级上下文压缩管线 + 可配置 ContextCollapse summarizer | Redis/Postgres |
-| Prompt Section 组装（静态/动态边界 + 优先级合并 + 结构化输出闭环） | HTTP Hooks 执行器 |
-| Rules + Skills（SkillTool）+ 子 Agent 三件套 + Slash MVP | Agent Teams（P2 可选） |
-| 权限模式 + PermissionRule + 路径沙箱 + denial 追踪 | 多模态附件产品化 |
-| Settings 分层 + 用户态 Hooks（hooks.json） | — |
+| `QueryEngine.submit_message()` 流式 API | WebSocket |
+| Provider 全矩阵（anthropic / openai / compatible / messages_compatible / responses / responses_compatible） | MCP OAuth 全量 / SSE transport |
+| 22 个内置工具（Bash/Read/Write/Edit/Glob/Grep/LS/LSP/WebFetch/WebSearch/ToolSearch/AskUser/TodoWrite/Plan/Worktree/Task） | Transcript Postgres/Redis |
+| 默认 4 级上下文压缩管线 + 可配置 ContextCollapse summarizer | 多模态附件产品化（P2） |
+| Prompt Section 组装（静态/动态边界 + 优先级合并）+ 结构化输出闭环 | Agent Teams（P2 可选） |
+| Rules + Skills（SkillTool）+ 子 Agent 三件套 + Slash MVP | HTTP Hooks 执行器（命令执行器已有） |
+| 权限模式 + PermissionRule + 路径沙箱 + denial 追踪 | OS 级硬沙箱（容器/bubblewrap） |
+| Settings 分层 + 用户态 Hooks（hooks.json）+ CLI 首次运行引导页 | — |
 | MCP 客户端（stdio tools/resources 桥接）+ Plugins | — |
 | Memory（memdir）+ Checkpoint + Task 工具族 | — |
 | 工具协议、注册表、流式执行器 + CI（pytest+ruff+mypy） | — |
@@ -84,7 +84,10 @@ config = EngineConfig(
 ```bash
 python -m nono_agent.adapters.cli chat --model claude-sonnet-4-20250514
 python -m nono_agent.adapters.cli chat -m "你好" --model claude-sonnet-4-20250514
+python -m nono_agent.adapters.cli sessions   # 列出历史会话
 ```
+
+首次交互式运行会检测用户基础配置（模型/协议/密钥），缺失时进入引导并保存到 `~/.nono-agent/config.json`；密钥也可经 `NONO_*` 环境变量提供。详见 [docs/USAGE.md](docs/USAGE.md)。
 
 ### Server（SSE）
 

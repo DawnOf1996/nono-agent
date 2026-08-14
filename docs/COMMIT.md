@@ -68,7 +68,7 @@ BREAKING CHANGE: 消费方若按固定字段反序列化需同步升级。
 | `settings` / `permissions` | 配置与权限 |
 | `mcp` / `agents` | MCP / 子 Agent |
 | `memory` / `checkpoint` | P2 能力 |
-| `observability` | 成本/日志/指标 |
+| `observability` | Token/日志/指标 |
 | `docs` | `docs/`、README（也可直接用 type=docs 省略 scope） |
 | `roadmap` / `arch` | 规划或架构文档专项 |
 

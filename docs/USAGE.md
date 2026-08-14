@@ -198,7 +198,7 @@ curl -X POST http://localhost:8000/abort -d '{"session_id":"..."}' -H "Content-T
 ### 7.1 一键跑全套
 
 ```bash
-uv run pytest -q            # 239 个测试
+uv run pytest -q            # 249 个测试
 uv run ruff check .         # lint
 uv run mypy nono_agent/     # 类型检查（strict）
 ```
