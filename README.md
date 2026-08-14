@@ -8,12 +8,16 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 
 | 已有 | 尚未建成 |
 |------|----------|
-| `QueryEngine.submit_message()` 流式 API | 生产级工具 + AskUser / LSP / Worktree |
-| Anthropic / OpenAI / OpenAI-Compatible Provider | Prompt Section 组装、Rules、Settings |
-| 默认 4 级上下文压缩管线 | Skills（含 SkillTool）、Plugins、MCP（含 Resources/Auth） |
-| 工具协议、注册表、流式执行器 | 权限 Rule + denial、子 Agent 三件套 |
-| `TranscriptWriter` + 本地 NDJSON | DB/Redis、Plan/Memory/Checkpoint、Slash MVP |
-| CLI + Server（SSE） | Provider 兼容矩阵补齐、WebSocket、真实 Metrics |
+| `QueryEngine.submit_message()` 流式 API | LSP / WebFetch / Worktree / TodoWrite 工具 |
+| Anthropic / OpenAI / OpenAI-Compatible Provider | Skills（含 SkillTool）、Plugins、MCP（含 Resources/Auth） |
+| 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep）+ AskUserQuestion（CLI） | Settings 分层、Slash MVP、子 Agent 三件套 |
+| 默认 4 级上下文压缩管线 | DB/Redis、Plan/Memory/Checkpoint |
+| Prompt Section 组装（静态/动态边界 + 优先级合并） | Provider 兼容矩阵补齐、WebSocket、真实 Metrics |
+| Rules 发现注入（`CLAUDE.md`/`AGENTS.md`/`.nono/rules`） | — |
+| 权限模式 + PermissionRule + 路径沙箱 + denial 追踪 | — |
+| 工具协议、注册表、流式执行器 | — |
+| `TranscriptWriter` + 本地 NDJSON | — |
+| CLI + Server（SSE） | — |
 
 详细架构见 [docs/NonoAgent-Architecture.md](docs/NonoAgent-Architecture.md)，规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 

@@ -15,25 +15,25 @@
 | 能力域                                             | 状态    | 备注                                                |
 | ----------------------------------------------- | ----- | ------------------------------------------------- |
 | QueryEngine + agentic loop                      | 可用需打磨 | 主路径可用；边界/预算/取消等需加固                                |
-| Prompt Section 组装管线                             | 未开始   | 仅有简单 `_build_system_prompt`；对标 CC Prompt-Assembly |
+| Prompt Section 组装管线                             | 可用需打磨 | `prompt/` 有序 section + 静态/动态边界 + 优先级合并              |
 | 状态机 / RecoveryChain                             | 可用需打磨 | 原因枚举齐全；策略与可观测性可加强                                 |
 | 默认预处理管线（4 级）                                    | 可用需打磨 | ContextCollapse 未进默认管线                            |
 | Anthropic / OpenAI / OpenAI-Compatible Provider | 可用需打磨 | 原厂 + Chat Completions 兼容可用                        |
 | Anthropic Messages 兼容（`messages_compatible`）    | 未开始   | 非原厂 Messages 协议网关                                 |
 | OpenAI Responses Provider（原厂）                   | 未开始   | 仅有占位类                                             |
 | Responses 兼容（`responses_compatible`）            | 未开始   | 非原厂 Responses 协议网关                                |
-| 工具协议 / Registry / Executor                      | 骨架    | 协议可用；缺生产工具与权限策略                                   |
-| 内置工具                                            | 骨架    | 演示工具；缺 Bash/Edit/Grep/LSP/AskUser 等               |
-| AskUserQuestion 通道                              | 未开始   | 人在环澄清（CLI/Server 均需）                              |
+| 工具协议 / Registry / Executor                      | 可用需打磨 | 三态权限决策接入 Executor                                    |
+| 内置工具                                            | 可用需打磨 | Bash/Read/Write/Edit/Glob/Grep/AskUser 可用；缺 LSP/Web/Worktree |
+| AskUserQuestion 通道                              | 可用需打磨 | CLI 交互回调可用；Server 回调/SSE 待 Phase 3                |
 | LSP 工具                                          | 未开始   | 对标 CC `LSPTool`                                   |
 | ToolSearch / MCP Resources+Auth                 | 未开始   | 工具膨胀与完整 MCP 面                                     |
 | Settings 分层（user/project/policy）                | 未开始   | 对标 CC settings 来源优先级                              |
-| Rules（项目/用户指令）                                  | 未开始   | 含 `CLAUDE.md`/`AGENTS.md` 类发现                     |
+| Rules（项目/用户指令）                                  | 可用需打磨 | `rules/` 发现/合并/注入；含 `CLAUDE.md`/`AGENTS.md` 兼容        |
 | Skills（含 SkillTool）                             | 未开始   | 加载注入 + 模型可调用入口                                    |
 | Plugins（扩展包）                                    | 未开始   | 可打包 Rules/Skills/Agents/Hooks/MCP                 |
 | MCP 配置与桥接                                       | 未开始   | tools + resources + auth                          |
 | 用户态 Hooks 配置                                    | 未开始   | 仅有代码内 `MiddlewareChain`                           |
-| 权限模式 + PermissionRule + denial 追踪               | 未开始   | 仅布尔 `PermissionChecker`                           |
+| 权限模式 + PermissionRule + denial 追踪               | 可用需打磨 | `permissions/` 策略/规则/沙箱/denial/Bash 分类；Server 默认 deny-write |
 | Slash / 运行时命令（MVP 子集）                           | 未开始   | 不对齐 CC 100+ 全量                                    |
 | Plan / Memory / Checkpoint / Task 生命周期          | 未开始   | Memory 应对齐 memdir 思路                              |
 | 子 Agent 三件套                                     | 未开始   | AgentTool + AgentDefinition + run 实例              |
@@ -123,12 +123,12 @@
 
 | 项                         | 说明                                                   | 状态  |
 | ------------------------- | ---------------------------------------------------- | --- |
-| `PromptSection` Protocol  | `name` + `render(ctx) -> str | None`                 | 未开始 |
-| Section Registry          | 注册顺序、按名 memoize、可禁用                                  | 未开始 |
-| 静态/动态边界                   | 利于 prompt cache（对标 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`） | 未开始 |
-| 优先级合并                     | override > agent > custom > default；`append_*` 永远追加  | 未开始 |
-| 内置 section                | identity、工具规范、权限/hooks 说明、env/git、Rules、Memory…      | 未开始 |
-| 替换 `_build_system_prompt` | Engine 只调组装器                                         | 未开始 |
+| `PromptSection` Protocol  | `name` + `render(ctx) -> str | None`                 | 已完成 |
+| Section Registry          | 注册顺序、按名 memoize、可禁用                                  | 已完成 |
+| 静态/动态边界                   | 利于 prompt cache（对标 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`） | 已完成 |
+| 优先级合并                     | override > agent > custom > default；`append_*` 永远追加  | 已完成 |
+| 内置 section                | identity、工具规范、权限/hooks 说明、env/git、Rules、Memory…      | 可用需打磨 |
+| 替换 `_build_system_prompt` | Engine 只调组装器                                         | 已完成 |
 
 
 建议模块：`nono_agent/prompt/`。
@@ -140,13 +140,13 @@
 
 | 工具                   | 目标能力                               | 优先级   | 状态  |
 | -------------------- | ---------------------------------- | ----- | --- |
-| Bash / Shell         | 超时、cwd、截断、abort；危险命令分类             | P0    | 未开始 |
-| Read                 | 大文件分段、编码/二进制、行号                    | P0    | 骨架  |
-| Write / Edit         | 原子写、diff/patch、权限门控                | P0    | 骨架  |
-| Glob / Grep          | 工作区匹配与内容搜索                         | P0    | 未开始 |
+| Bash / Shell         | 超时、cwd、截断、abort；危险命令分类             | P0    | 已完成 |
+| Read                 | 大文件分段、编码/二进制、行号                    | P0    | 已完成 |
+| Write / Edit         | 原子写、diff/patch、权限门控                | P0    | 可用需打磨 |
+| Glob / Grep          | 工作区匹配与内容搜索                         | P0    | 已完成 |
 | LS / Tree            | 目录列举 + Ignore                      | P1    | 未开始 |
 | WebFetch / WebSearch | 网络 + SSRF/安全策略                     | P1    | 未开始 |
-| AskUserQuestion      | 结构化提问；CLI 交互 / Server 回调或 SSE      | P0/P1 | 未开始 |
+| AskUserQuestion      | 结构化提问；CLI 交互 / Server 回调或 SSE      | P0/P1 | 可用需打磨 |
 | LSP                  | 定义跳转/引用/诊断（对标 `LSPTool`）           | P1    | 未开始 |
 | NotebookEdit         | Jupyter（按需）                        | P2    | 未开始 |
 | ToolSearch           | 工具过多时按需检索暴露                        | P1    | 未开始 |
@@ -165,10 +165,10 @@
 
 | 项           | 说明                                               | 状态  |
 | ----------- | ------------------------------------------------ | --- |
-| 文件约定        | `.nono/rules/`、`AGENTS.md`、`CLAUDE.md`（兼容读）、用户全局 | 未开始 |
-| 发现与加载       | CWD 向上 walk、校验、缓存                                | 未开始 |
-| 层级合并 / 条件启用 | 全局 < 项目 < 路径级；`globs`                            | 未开始 |
-| 注入          | 作为 Prompt Section（§2.0），非一次性拼接                   | 未开始 |
+| 文件约定        | `.nono/rules/`、`AGENTS.md`、`CLAUDE.md`（兼容读）、用户全局 | 已完成 |
+| 发现与加载       | CWD 向上 walk、校验、缓存                                | 可用需打磨 |
+| 层级合并 / 条件启用 | 全局 < 项目 < 路径级；`globs`                            | 已完成 |
+| 注入          | 作为 Prompt Section（§2.0），非一次性拼接                   | 已完成 |
 | 调试          | `/rules` 列出生效来源                                  | 未开始 |
 
 
@@ -223,20 +223,20 @@
 
 | 模式             | 行为         | 状态  |
 | -------------- | ---------- | --- |
-| `default`      | 写/执行需确认    | 未开始 |
-| `accept_edits` | 工作区内编辑自动允许 | 未开始 |
-| `plan`         | 禁止写副作用     | 未开始 |
-| `bypass`       | 显式危险模式     | 未开始 |
+| `default`      | 写/执行需确认    | 已完成 |
+| `accept_edits` | 工作区内编辑自动允许 | 已完成 |
+| `plan`         | 禁止写副作用     | 已完成 |
+| `bypass`       | 显式危险模式     | 已完成 |
 
 
 
 | 项                  | 说明                                         | 状态  |
 | ------------------ | ------------------------------------------ | --- |
-| `PermissionPolicy` | 模式 + Checker                               | 未开始 |
-| **PermissionRule** | 可落盘 allow/deny（工具名、路径、bash 模式）             | 未开始 |
-| **denial 追踪**      | 进入会话态与 `SDKResult`（对标 `permissionDenials`） | 未开始 |
-| Ignore + 路径沙箱      | `.gitignore` / `.nonoignore`；拒绝逃逸          | 未开始 |
-| Bash 分类            | 危险命令与模式联动                                  | 未开始 |
+| `PermissionPolicy` | 模式 + Checker                               | 已完成 |
+| **PermissionRule** | 可落盘 allow/deny（工具名、路径、bash 模式）             | 已完成 |
+| **denial 追踪**      | 进入会话态与 `SDKResult`（对标 `permissionDenials`） | 已完成 |
+| Ignore + 路径沙箱      | `.gitignore` / `.nonoignore`；拒绝逃逸          | 已完成 |
+| Bash 分类            | 危险命令与模式联动                                  | 可用需打磨 |
 
 
 
@@ -442,23 +442,23 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 
 
-### Phase 0 —— 文档与基线对齐（当前）
+### Phase 0 —— 文档与基线对齐（已完成）
 
 - [x] 架构文档标注实现状态
 - [x] 编写本 Roadmap（含相对 CC 缺口）
 - [x] 更新 README
-- [ ] 清理 CLI 中硬编码密钥与调试 Provider 配置
+- [x] 清理 CLI 中硬编码密钥与调试 Provider 配置
 
 
 
 ### Phase 1 —— 可干活的本地 Agent（P0）
 
-1. 生产级工具：Bash、Read、Edit/Write、Glob、Grep；Bash 安全分类起步
-2. **PermissionPolicy + PermissionRule + Ignore + 路径沙箱**（§2.6）+ denial 追踪
-3. **Prompt Section 组装**（§2.0）+ **Rules 发现注入**（§2.2，含 CLAUDE.md 兼容）
-4. AskUserQuestion 最小通道（CLI）
-5. 引擎预算门控与关键边界测试
-6. CLI 配置外部化（env / 配置文件）
+1. [x] 生产级工具：Bash、Read、Edit/Write、Glob、Grep；Bash 安全分类起步
+2. [x] **PermissionPolicy + PermissionRule + Ignore + 路径沙箱**（§2.6）+ denial 追踪
+3. [x] **Prompt Section 组装**（§2.0）+ **Rules 发现注入**（§2.2，含 CLAUDE.md 兼容）
+4. [x] AskUserQuestion 最小通道（CLI）
+5. [x] 引擎预算门控与关键边界测试
+6. [x] CLI 配置外部化（env / 配置文件）
 
 **完成定义：** 本地「读改跑」闭环；Rules/权限可落盘；拒绝可回灌；可取消。
 
@@ -784,6 +784,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-10 | 对照 ClaudeCode 源码加细：Prompt 组装、Agent 三件套、PermissionRule、AskUser、LSP、MCP Resources/Auth、Settings、Task、明确 Teams/Bridge/Cron 边界 |
 | 2026-08-10 | §5 完整包树（内核+扩展面）与各包职责、依赖方向、迁移对照 |
 | 2026-08-10 | 新增 [COMMIT.md](./COMMIT.md) Git 提交规范 |
+| 2026-08-14 | Phase 0/1 落地：`permissions`/`prompt`/`rules` 包、生产级 `tools/builtin`、AskUserQuestion(CLI)、预算门控、CLI 配置外部化与密钥清理 |
 
 
 ## 附录
