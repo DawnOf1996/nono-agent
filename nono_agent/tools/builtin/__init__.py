@@ -15,6 +15,7 @@ from nono_agent.tools.builtin.grep import GrepTool
 from nono_agent.tools.builtin.plan import EnterPlanModeTool, ExitPlanModeTool
 from nono_agent.tools.builtin.read import ReadFileTool
 from nono_agent.tools.builtin.todo_write import TodoWriteTool
+from nono_agent.tools.builtin.worktree import EnterWorktreeTool, ExitWorktreeTool
 from nono_agent.tools.builtin.write import WriteFileTool
 from nono_agent.tools.protocol import ToolBase
 
@@ -24,7 +25,9 @@ __all__ = [
     "CalculatorTool",
     "EditFileTool",
     "EnterPlanModeTool",
+    "EnterWorktreeTool",
     "ExitPlanModeTool",
+    "ExitWorktreeTool",
     "GetTimeTool",
     "GlobTool",
     "GrepTool",
@@ -48,4 +51,6 @@ def create_builtin_tools() -> list[ToolBase]:
         TodoWriteTool(),
         EnterPlanModeTool(),
         ExitPlanModeTool(),
+        EnterWorktreeTool(),
+        ExitWorktreeTool(),
     ]
