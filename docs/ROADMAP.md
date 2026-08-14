@@ -151,9 +151,9 @@
 | NotebookEdit         | Jupyter（按需）                        | P2    | 未开始 |
 | ToolSearch           | 工具过多时按需检索暴露                        | P1    | 已完成 |
 | Enter/Exit Worktree  | git worktree 进出                    | P1    | 已完成 |
-| TodoWrite            | 轻量任务列表                             | P1    | 未开始 |
-| Task* 工具族            | Create/Get/Update/List/Stop/Output | P2    | 未开始 |
-| Skill / Agent        | 见 §2.3 / §2.8                      | P1    | 未开始 |
+| TodoWrite            | 轻量任务列表                             | P1    | 已完成 |
+| Task* 工具族            | Create/Get/Update/List/Stop/Output | P2    | 已完成 |
+| Skill / Agent        | 见 §2.3 / §2.8                      | P1    | 已完成 |
 
 
 配套：路径沙箱 + Ignore、输出预算、abort、Bash 与权限模式联动。
@@ -169,7 +169,7 @@
 | 发现与加载       | CWD 向上 walk、校验、缓存                                | 可用需打磨 |
 | 层级合并 / 条件启用 | 全局 < 项目 < 路径级；`globs`                            | 已完成 |
 | 注入          | 作为 Prompt Section（§2.0），非一次性拼接                   | 已完成 |
-| 调试          | `/rules` 列出生效来源                                  | 未开始 |
+| 调试          | `/rules` 列出生效来源                                  | 已完成 |
 
 
 建议模块：`nono_agent/rules/`。

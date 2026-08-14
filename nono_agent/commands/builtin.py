@@ -193,6 +193,17 @@ class MemoryCommand(_SimpleCommand):
         return "Memories:\n" + "\n".join(lines)
 
 
+class CompactCommand(_SimpleCommand):
+    _name = "compact"
+    _description = "Manually compact the conversation context"
+
+    def execute(self, args: list[str], ctx: CommandContext) -> str:
+        if ctx.engine is None:
+            return "Compact: (no engine attached)"
+        removed = ctx.engine.compact()
+        return f"Compacted: removed {removed} message(s)."
+
+
 class HooksCommand(_SimpleCommand):
     _name = "hooks"
     _description = "List user hooks"
@@ -218,6 +229,7 @@ def create_builtin_commands(registry: object | None = None) -> list[SlashCommand
         CostCommand(),
         ContextCommand(),
         ClearCommand(),
+        CompactCommand(),
         RulesCommand(),
         SkillsCommand(),
         PermissionCommand(),

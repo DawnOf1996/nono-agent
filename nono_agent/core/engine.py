@@ -438,6 +438,28 @@ class QueryEngine:
                 return True
         return False
 
+    def compact(self, keep_recent: int = 6) -> int:
+        """手动压缩（/compact）：保留最近 N 条消息，插入 compact boundary。
+
+        Returns:
+            被移除的消息条数。
+        """
+        from nono_agent.core.types import SystemMessage
+
+        messages = self._store.all_messages()
+        if len(messages) <= keep_recent:
+            return 0
+
+        boundary = SystemMessage(
+            subtype="compact_boundary",
+            content="[Manual compact: earlier conversation removed.]",
+            compact_metadata={"removed": len(messages) - keep_recent},
+        )
+        recent = messages[-keep_recent:]
+        self._store.replace([boundary] + recent)
+        logger.info("Manual compact removed %d messages", len(messages) - keep_recent)
+        return len(messages) - keep_recent
+
     def _parse_structured_output(self, result_text: str) -> Any:
         """配置 json_schema 时把结果文本解析为 JSON（结构化输出闭环）。
 

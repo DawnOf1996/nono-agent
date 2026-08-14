@@ -99,3 +99,12 @@ class TestCommandsWithEngine:
         ctx = CommandContext(engine=engine, cwd=".")
         # 默认无 skills/rules 也应返回非错误文本
         assert "No skills" in registry.execute("skills", [], ctx)
+
+    def test_compact(self):
+        engine = self._engine()
+        registry = CommandRegistry()
+        for cmd in create_builtin_commands(registry):
+            registry.register(cmd)
+        ctx = CommandContext(engine=engine, cwd=".")
+        # 少量消息不足以压缩 → removed 0
+        assert "removed 0" in registry.execute("compact", [], ctx)
