@@ -8,15 +8,16 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 
 | 已有 | 尚未建成 |
 |------|----------|
-| `QueryEngine.submit_message()` 流式 API | LSP / WebFetch / Worktree / TodoWrite 工具 |
-| Anthropic / OpenAI / OpenAI-Compatible Provider | Skills（含 SkillTool）、Plugins、MCP（含 Resources/Auth） |
-| 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep）+ AskUserQuestion（CLI） | Settings 分层、Slash MVP、子 Agent 三件套 |
-| 默认 4 级上下文压缩管线 | DB/Redis、Plan/Memory/Checkpoint |
-| Prompt Section 组装（静态/动态边界 + 优先级合并） | Provider 兼容矩阵补齐、WebSocket、真实 Metrics |
-| Rules 发现注入（`CLAUDE.md`/`AGENTS.md`/`.nono/rules`） | — |
+| `QueryEngine.submit_message()` 流式 API | LSP / WebFetch / Worktree 工具 |
+| Anthropic / OpenAI / OpenAI-Compatible + messages_compatible Provider | Plugins、MCP（含 Resources/Auth） |
+| 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep）+ AskUserQuestion + TodoWrite + Plan 进出 | 子 Agent 三件套 |
+| 默认 4 级上下文压缩管线 | Redis/Postgres、Memory/Checkpoint/Task |
+| Prompt Section 组装（静态/动态边界 + 优先级合并） | 原厂 responses Provider、WebSocket |
+| Rules 发现注入 + Skills（SkillTool）+ Slash MVP | 用户态 Hooks（hooks.json） |
 | 权限模式 + PermissionRule + 路径沙箱 + denial 追踪 | — |
+| Settings 分层（default/user/project/policy/flag） | — |
 | 工具协议、注册表、流式执行器 | — |
-| `TranscriptWriter` + 本地 NDJSON | — |
+| `TranscriptWriter` + NDJSON + SQLite | — |
 | CLI + Server（SSE） | — |
 
 详细架构见 [docs/NonoAgent-Architecture.md](docs/NonoAgent-Architecture.md)，规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。

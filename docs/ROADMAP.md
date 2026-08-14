@@ -29,20 +29,20 @@
 | ToolSearch / MCP Resources+Auth                 | 未开始   | 工具膨胀与完整 MCP 面                                     |
 | Settings 分层（user/project/policy）                | 可用需打磨 | `settings/` 分层合并 + 来源追踪；待接入 EngineConfig        |
 | Rules（项目/用户指令）                                  | 可用需打磨 | `rules/` 发现/合并/注入；含 `CLAUDE.md`/`AGENTS.md` 兼容        |
-| Skills（含 SkillTool）                             | 未开始   | 加载注入 + 模型可调用入口                                    |
+| Skills（含 SkillTool）                             | 可用需打磨 | `skills/` 发现/加载 + SkillTool + Section 注入                  |
 | Plugins（扩展包）                                    | 未开始   | 可打包 Rules/Skills/Agents/Hooks/MCP                 |
 | MCP 配置与桥接                                       | 未开始   | tools + resources + auth                          |
 | 用户态 Hooks 配置                                    | 未开始   | 仅有代码内 `MiddlewareChain`                           |
 | 权限模式 + PermissionRule + denial 追踪               | 可用需打磨 | `permissions/` 策略/规则/沙箱/denial/Bash 分类；Server 默认 deny-write |
-| Slash / 运行时命令（MVP 子集）                           | 未开始   | 不对齐 CC 100+ 全量                                    |
-| Plan / Memory / Checkpoint / Task 生命周期          | 未开始   | Memory 应对齐 memdir 思路                              |
+| Slash / 运行时命令（MVP 子集）                           | 可用需打磨 | `commands/` + help/model/cost/context/clear；不对齐 CC 100+ 全量 |
+| Plan / Memory / Checkpoint / Task 生命周期          | 可用需打磨 | Plan 进出工具 + TodoWrite；Memory/Checkpoint/Task 待做          |
 | 子 Agent 三件套                                     | 未开始   | AgentTool + AgentDefinition + run 实例              |
 | Worktree 进出工具                                   | 未开始   | §2.8 隔离的可操作面                                      |
 | Agent Teams / Coordinator                       | 未开始   | **P2 / 可选**；见 §6                                  |
 | Bridge / Remote / Cron                          | 未开始   | **默认非目标**；见 §6                                    |
 | CLI 适配器                                         | 可用需打磨 | REPL / resume / 流式渲染可用                            |
 | Server 适配器（SSE）                                 | 可用需打磨 | 多会话 + SSE；无 WebSocket                             |
-| 会话持久化（Transcript）                               | 骨架    | Protocol + 本地 NDJSON；缺 DB/Redis                   |
+| 会话持久化（Transcript）                               | 可用需打磨 | Protocol + NDJSON + SQLite；缺 Redis/Postgres         |
 | CostTracker / 日志                                | 可用需打磨 | Metrics 最小可用（内存 counter/histogram/gauge）          |
 | 文档 / README                                     | 进行中   | 本文档与 README 对齐中                                   |
 
@@ -179,10 +179,10 @@
 
 | 项             | 说明                            | 状态  |
 | ------------- | ----------------------------- | --- |
-| 目录与 manifest  | `SKILL.md` / frontmatter      | 未开始 |
-| 发现与加载         | 项目 / 用户 / plugin / bundled    | 未开始 |
-| 注入管线          | 提示片段 + 工具白名单                  | 未开始 |
-| **SkillTool** | 模型可调用的激活入口（对标 CC `SkillTool`） | 未开始 |
+| 目录与 manifest  | `SKILL.md` / frontmatter      | 已完成 |
+| 发现与加载         | 项目 / 用户 / plugin / bundled    | 可用需打磨 |
+| 注入管线          | 提示片段 + 工具白名单                  | 可用需打磨 |
+| **SkillTool** | 模型可调用的激活入口（对标 CC `SkillTool`） | 已完成 |
 | CLI/Server    | list / enable / disable       | 未开始 |
 
 
@@ -264,13 +264,13 @@
 **Slash MVP（不对齐 CC 100+ 全量）：**
 
 
-| 命令                                        | 作用           |
-| ----------------------------------------- | ------------ |
-| `/compact` `/clear`                       | 压缩 / 清空      |
-| `/rules` `/skills` `/mcp` `/plugins`      | 扩展面调试        |
-| `/permission` `/model` `/cost` `/context` | 模式、模型、成本、上下文 |
-| `/memory` `/hooks`                        | P2 可后置       |
-| Plugin 自定义 slash                          | 扩展机制         |
+| 命令                                        | 作用           | 状态 |
+| ----------------------------------------- | ------------ | --- |
+| `/compact` `/clear`                       | 压缩 / 清空      | `/clear` 已完成，`/compact` 未开始 |
+| `/rules` `/skills` `/mcp` `/plugins`      | 扩展面调试        | 未开始 |
+| `/permission` `/model` `/cost` `/context` | 模式、模型、成本、上下文 | `/model` `/cost` `/context` 已完成，`/permission` 未开始 |
+| `/memory` `/hooks`                        | P2 可后置       | 未开始 |
+| Plugin 自定义 slash                          | 扩展机制         | 未开始 |
 
 
 建议：`nono_agent/commands/`。
@@ -299,7 +299,7 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 
 ### 2.9 会话消息持久化扩展（优先级：P1）
 
-`TranscriptWriter` Protocol；当前仅 LocalFile NDJSON。规划：SQLite/Postgres/MySQL、Redis、可选 S3。配套：schema 版本、`list_sessions`/`delete`/`read_range`、工厂切换。
+`TranscriptWriter` Protocol；已有 LocalFile NDJSON + SQLite + 工厂切换。规划：Postgres/MySQL、Redis、可选 S3。配套：schema 版本、`list_sessions`/`delete`/`read_range`。
 
 ### 2.10 Provider 协议矩阵扩展（优先级：P1）
 
@@ -321,7 +321,7 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 
 | 能力                  | 说明                                 | 优先级 | 状态  |
 | ------------------- | ---------------------------------- | --- | --- |
-| Plan 模式工具           | Enter/Exit Plan；联动 `plan` 权限       | P1  | 未开始 |
+| Plan 模式工具           | Enter/Exit Plan；联动 `plan` 权限       | P1  | 已完成 |
 | TodoWrite           | 轻量进度                               | P1  | 已完成 |
 | Task 工具族            | Create/Get/Update/List/Stop/Output | P2  | 未开始 |
 | Memory（memdir 思路）   | 记忆目录 + 类型约束 + Prompt Section       | P2  | 未开始 |
@@ -785,6 +785,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-10 | §5 完整包树（内核+扩展面）与各包职责、依赖方向、迁移对照 |
 | 2026-08-10 | 新增 [COMMIT.md](./COMMIT.md) Git 提交规范 |
 | 2026-08-14 | Phase 0/1 落地：`permissions`/`prompt`/`rules` 包、生产级 `tools/builtin`、AskUserQuestion(CLI)、预算门控、CLI 配置外部化与密钥清理 |
+| 2026-08-14 | Phase 2 推进：Settings 分层、messages_compatible、Metrics 最小可用、Skills+SkillTool、Plan 模式工具、SQLite Transcript、Slash MVP、TodoWrite |
 
 
 ## 附录
