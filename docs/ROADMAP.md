@@ -21,7 +21,7 @@
 | Anthropic / OpenAI / OpenAI-Compatible Provider | 可用需打磨 | 原厂 + Chat Completions 兼容可用                        |
 | Anthropic Messages 兼容（`messages_compatible`）    | 可用需打磨 | 非原厂 Messages 协议网关（httpx SSE）                         |
 | OpenAI Responses Provider（原厂）                   | 可用需打磨 | 已实现流式事件映射（待真实 API 验证）                         |
-| Responses 兼容（`responses_compatible`）            | 未开始   | 非原厂 Responses 协议网关                                |
+| Responses 兼容（`responses_compatible`）            | 可用需打磨 | 非原厂 Responses 协议网关（httpx SSE）                       |
 | 工具协议 / Registry / Executor                      | 可用需打磨 | 三态权限决策接入 Executor                                    |
 | 内置工具                                            | 可用需打磨 | Bash/Read/Write/Edit/Glob/Grep/AskUser 可用；缺 LSP/Web/Worktree |
 | AskUserQuestion 通道                              | 可用需打磨 | CLI 交互回调可用；Server 回调/SSE 待 Phase 3                |
@@ -31,13 +31,13 @@
 | Rules（项目/用户指令）                                  | 可用需打磨 | `rules/` 发现/合并/注入；含 `CLAUDE.md`/`AGENTS.md` 兼容        |
 | Skills（含 SkillTool）                             | 可用需打磨 | `skills/` 发现/加载 + SkillTool + Section 注入                  |
 | Plugins（扩展包）                                    | 未开始   | 可打包 Rules/Skills/Agents/Hooks/MCP                 |
-| MCP 配置与桥接                                       | 未开始   | tools + resources + auth                          |
+| MCP 配置与桥接                                       | 可用需打磨 | stdio tools/resources 桥接；auth/SSE/ToolSearch 待做        |
 | 用户态 Hooks 配置                                    | 可用需打磨 | `hooks.json` 命令执行器（before_tool 可否决）；HTTP 执行器待做        |
 | 权限模式 + PermissionRule + denial 追踪               | 可用需打磨 | `permissions/` 策略/规则/沙箱/denial/Bash 分类；Server 默认 deny-write |
 | Slash / 运行时命令（MVP 子集）                           | 可用需打磨 | `commands/` + help/model/cost/context/clear；不对齐 CC 100+ 全量 |
 | Plan / Memory / Checkpoint / Task 生命周期          | 可用需打磨 | Plan 进出工具 + TodoWrite；Memory/Checkpoint/Task 待做          |
 | 子 Agent 三件套                                     | 可用需打磨 | AgentTool + AgentDefinition + AgentRunner；worktree 隔离/后台待做   |
-| Worktree 进出工具                                   | 未开始   | §2.8 隔离的可操作面                                      |
+| Worktree 进出工具                                   | 可用需打磨 | enter/exit_worktree；cwd 自动切换待做                        |
 | Agent Teams / Coordinator                       | 未开始   | **P2 / 可选**；见 §6                                  |
 | Bridge / Remote / Cron                          | 未开始   | **默认非目标**；见 §6                                    |
 | CLI 适配器                                         | 可用需打磨 | REPL / resume / 流式渲染可用                            |
@@ -150,7 +150,7 @@
 | LSP                  | 定义跳转/引用/诊断（对标 `LSPTool`）           | P1    | 未开始 |
 | NotebookEdit         | Jupyter（按需）                        | P2    | 未开始 |
 | ToolSearch           | 工具过多时按需检索暴露                        | P1    | 未开始 |
-| Enter/Exit Worktree  | git worktree 进出                    | P1    | 未开始 |
+| Enter/Exit Worktree  | git worktree 进出                    | P1    | 已完成 |
 | TodoWrite            | 轻量任务列表                             | P1    | 未开始 |
 | Task* 工具族            | Create/Get/Update/List/Stop/Output | P2    | 未开始 |
 | Skill / Agent        | 见 §2.3 / §2.8                      | P1    | 未开始 |
@@ -193,9 +193,9 @@
 
 | 项                     | 说明                          | 状态  |
 | --------------------- | --------------------------- | --- |
-| 配置 schema / 传输 / 生命周期 | `mcp.json`、stdio/SSE、启停健康检查 | 未开始 |
-| Tool 桥接               | MCP tools → `Tool` Protocol | 未开始 |
-| **Resources**         | List/Read MCP resources     | 未开始 |
+| 配置 schema / 传输 / 生命周期 | `mcp.json`、stdio/SSE、启停健康检查 | 可用需打磨 |
+| Tool 桥接               | MCP tools → `Tool` Protocol | 已完成 |
+| **Resources**         | List/Read MCP resources     | 已完成 |
 | **Auth**              | OAuth/令牌流（对标 `McpAuthTool`） | 未开始 |
 | 权限隔离 + ToolSearch 协同  | 按 server 授权；工具过多时延迟暴露       | 未开始 |
 
@@ -311,7 +311,7 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 | `openai`               | Chat Completions | 兼容        | ✅   |
 | （前缀 gpt-/o*）           | Chat Completions | 原厂 OpenAI | ✅   |
 | `responses`            | Responses        | 原厂        | ✅   |
-| `responses_compatible` | Responses        | 非原厂       | 未开始 |
+| `responses_compatible` | Responses        | 非原厂       | ✅   |
 
 
 配套：`_messages_utils` / `_responses_utils`；`extra_body`；与 §2.0 静态段协同 prompt cache。
@@ -479,11 +479,11 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 ### Phase 3 —— 多 Agent 与服务化（P1）
 
-1. **子 Agent 三件套**（AgentTool + Definition + run）+ Worktree 工具
-2. Server：鉴权、会话治理、AskUser 回调/SSE；按需 WebSocket
-3. Transcript 生产后端；Plugin/Slash 管理 API
-4. `responses_compatible` + 结构化输出闭环
-5. SDK 契约含 `permission_denials`
+1. [x] **子 Agent 三件套**（AgentTool + Definition + run）+ Worktree 工具
+2. [ ] Server：鉴权、会话治理、AskUser 回调/SSE；按需 WebSocket
+3. [ ] Transcript 生产后端；Plugin/Slash 管理 API
+4. [x] `responses_compatible`（结构化输出闭环待做）
+5. [x] SDK 契约含 `permission_denials`
 
 **完成定义：** 可落盘 Agent 定义并可派发子任务；CLI/Server 扩展面对称。
 
@@ -787,6 +787,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | Phase 0/1 落地：`permissions`/`prompt`/`rules` 包、生产级 `tools/builtin`、AskUserQuestion(CLI)、预算门控、CLI 配置外部化与密钥清理 |
 | 2026-08-14 | Phase 2 推进：Settings 分层、messages_compatible、Metrics 最小可用、Skills+SkillTool、Plan 模式工具、SQLite Transcript、Slash MVP、TodoWrite |
 | 2026-08-14 | Phase 2/3 推进：子 Agent 三件套、用户态 hooks.json、原厂 responses Provider、ContextCollapse 默认 summarizer |
+| 2026-08-14 | Phase 2/3 推进：MCP stdio 客户端（tools/resources 桥接）、Worktree 进出工具、responses_compatible |
 
 
 ## 附录

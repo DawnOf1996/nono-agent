@@ -8,14 +8,15 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 
 | 已有 | 尚未建成 |
 |------|----------|
-| `QueryEngine.submit_message()` 流式 API | LSP / WebFetch / Worktree 工具 |
-| Anthropic / OpenAI / Compatible + messages_compatible + responses | Plugins、MCP（含 Resources/Auth） |
-| 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep）+ AskUser + TodoWrite + Plan 进出 | responses_compatible、WebSocket |
+| `QueryEngine.submit_message()` 流式 API | LSP / WebFetch 工具 |
+| Anthropic / OpenAI / Compatible + messages_compatible + responses(+compatible) | Plugins |
+| 生产级内置工具（Bash/Read/Write/Edit/Glob/Grep）+ AskUser + TodoWrite + Plan + Worktree | WebSocket、MCP Auth |
 | 默认 4 级上下文压缩管线 + 可配置 ContextCollapse summarizer | Redis/Postgres、Memory/Checkpoint/Task |
-| Prompt Section 组装（静态/动态边界 + 优先级合并） | — |
+| Prompt Section 组装（静态/动态边界 + 优先级合并） | Server 鉴权/会话治理 |
 | Rules + Skills（SkillTool）+ 子 Agent 三件套 + Slash MVP | Agent Teams（P2 可选） |
-| 权限模式 + PermissionRule + 路径沙箱 + denial 追踪 | — |
-| Settings 分层 + 用户态 Hooks（hooks.json） | HTTP Hooks 执行器 |
+| 权限模式 + PermissionRule + 路径沙箱 + denial 追踪 | HTTP Hooks 执行器 |
+| Settings 分层 + 用户态 Hooks（hooks.json） | — |
+| MCP 客户端（stdio tools/resources 桥接） | — |
 | 工具协议、注册表、流式执行器 | — |
 | `TranscriptWriter` + NDJSON + SQLite | — |
 | CLI + Server（SSE） | — |
