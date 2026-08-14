@@ -19,7 +19,7 @@
 | 状态机 / RecoveryChain                             | 可用需打磨 | 原因枚举齐全；策略与可观测性可加强                                 |
 | 默认预处理管线（4 级）                                    | 可用需打磨 | ContextCollapse 未进默认管线                            |
 | Anthropic / OpenAI / OpenAI-Compatible Provider | 可用需打磨 | 原厂 + Chat Completions 兼容可用                        |
-| Anthropic Messages 兼容（`messages_compatible`）    | 未开始   | 非原厂 Messages 协议网关                                 |
+| Anthropic Messages 兼容（`messages_compatible`）    | 可用需打磨 | 非原厂 Messages 协议网关（httpx SSE）                         |
 | OpenAI Responses Provider（原厂）                   | 未开始   | 仅有占位类                                             |
 | Responses 兼容（`responses_compatible`）            | 未开始   | 非原厂 Responses 协议网关                                |
 | 工具协议 / Registry / Executor                      | 可用需打磨 | 三态权限决策接入 Executor                                    |
@@ -27,7 +27,7 @@
 | AskUserQuestion 通道                              | 可用需打磨 | CLI 交互回调可用；Server 回调/SSE 待 Phase 3                |
 | LSP 工具                                          | 未开始   | 对标 CC `LSPTool`                                   |
 | ToolSearch / MCP Resources+Auth                 | 未开始   | 工具膨胀与完整 MCP 面                                     |
-| Settings 分层（user/project/policy）                | 未开始   | 对标 CC settings 来源优先级                              |
+| Settings 分层（user/project/policy）                | 可用需打磨 | `settings/` 分层合并 + 来源追踪；待接入 EngineConfig        |
 | Rules（项目/用户指令）                                  | 可用需打磨 | `rules/` 发现/合并/注入；含 `CLAUDE.md`/`AGENTS.md` 兼容        |
 | Skills（含 SkillTool）                             | 未开始   | 加载注入 + 模型可调用入口                                    |
 | Plugins（扩展包）                                    | 未开始   | 可打包 Rules/Skills/Agents/Hooks/MCP                 |
@@ -43,7 +43,7 @@
 | CLI 适配器                                         | 可用需打磨 | REPL / resume / 流式渲染可用                            |
 | Server 适配器（SSE）                                 | 可用需打磨 | 多会话 + SSE；无 WebSocket                             |
 | 会话持久化（Transcript）                               | 骨架    | Protocol + 本地 NDJSON；缺 DB/Redis                   |
-| CostTracker / 日志                                | 可用需打磨 | Metrics 为 No-Op                                   |
+| CostTracker / 日志                                | 可用需打磨 | Metrics 最小可用（内存 counter/histogram/gauge）          |
 | 文档 / README                                     | 进行中   | 本文档与 README 对齐中                                   |
 
 
@@ -248,11 +248,11 @@
 
 | 来源         | 用途                      | 状态  |
 | ---------- | ----------------------- | --- |
-| 默认         | 引擎内置                    | —   |
-| user       | `~/.nono/settings.json` | 未开始 |
-| project    | `.nono/settings.json`   | 未开始 |
-| policy     | 托管/企业下发（Server）         | 未开始 |
-| flag / env | CLI 临时覆盖，最高优先           | 未开始 |
+| 默认         | 引擎内置                    | 已完成 |
+| user       | `~/.nono/settings.json` | 已完成 |
+| project    | `.nono/settings.json`   | 已完成 |
+| policy     | 托管/企业下发（Server）         | 已完成 |
+| flag / env | CLI 临时覆盖，最高优先           | 已完成 |
 
 
 各子系统禁止各自读文件；统一读合并后的 Settings。
@@ -307,7 +307,7 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 | `adapter`              | 协议               | 面向        | 现状  |
 | ---------------------- | ---------------- | --------- | --- |
 | `anthropic`            | Messages         | 原厂        | ✅   |
-| `messages_compatible`  | Messages         | 非原厂       | 未开始 |
+| `messages_compatible`  | Messages         | 非原厂       | ✅   |
 | `openai`               | Chat Completions | 兼容        | ✅   |
 | （前缀 gpt-/o*）           | Chat Completions | 原厂 OpenAI | ✅   |
 | `responses`            | Responses        | 原厂        | 占位  |
@@ -322,7 +322,7 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 | 能力                  | 说明                                 | 优先级 | 状态  |
 | ------------------- | ---------------------------------- | --- | --- |
 | Plan 模式工具           | Enter/Exit Plan；联动 `plan` 权限       | P1  | 未开始 |
-| TodoWrite           | 轻量进度                               | P1  | 未开始 |
+| TodoWrite           | 轻量进度                               | P1  | 已完成 |
 | Task 工具族            | Create/Get/Update/List/Stop/Output | P2  | 未开始 |
 | Memory（memdir 思路）   | 记忆目录 + 类型约束 + Prompt Section       | P2  | 未开始 |
 | Checkpoint / Rewind | 编辑快照/补丁栈                           | P2  | 未开始 |
