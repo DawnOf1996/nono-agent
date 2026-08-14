@@ -476,6 +476,18 @@ class QueryEngine:
     def pipeline(self) -> PreprocessPipeline:
         return self._pipeline
 
+    @property
+    def permission_policy(self) -> PermissionPolicy:
+        return self._permission_policy
+
+    @property
+    def skills(self) -> list[Skill]:
+        return list(self._skills)
+
+    @property
+    def rule_loader(self) -> FileSystemRuleLoader:
+        return self._rule_loader
+
     # ------------------------------------------------------------------
     # 会话管理
     # ------------------------------------------------------------------

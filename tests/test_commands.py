@@ -71,3 +71,31 @@ class TestCommandsWithEngine:
             registry.register(cmd)
         ctx = CommandContext(engine=engine, cwd=".")
         assert "cleared" in registry.execute("clear", [], ctx)
+
+    def test_permission_show_and_set(self):
+        engine = self._engine()
+        registry = CommandRegistry()
+        for cmd in create_builtin_commands(registry):
+            registry.register(cmd)
+        ctx = CommandContext(engine=engine, cwd=".")
+
+        assert "default" in registry.execute("permission", [], ctx)
+        assert "plan" in registry.execute("permission", ["plan"], ctx)
+        assert engine.permission_policy.mode.value == "plan"
+
+    def test_permission_invalid(self):
+        engine = self._engine()
+        registry = CommandRegistry()
+        for cmd in create_builtin_commands(registry):
+            registry.register(cmd)
+        ctx = CommandContext(engine=engine, cwd=".")
+        assert "Unknown mode" in registry.execute("permission", ["bogus"], ctx)
+
+    def test_skills_and_rules_noop(self):
+        engine = self._engine()
+        registry = CommandRegistry()
+        for cmd in create_builtin_commands(registry):
+            registry.register(cmd)
+        ctx = CommandContext(engine=engine, cwd=".")
+        # 默认无 skills/rules 也应返回非错误文本
+        assert "No skills" in registry.execute("skills", [], ctx)

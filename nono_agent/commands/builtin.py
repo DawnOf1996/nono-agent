@@ -84,6 +84,89 @@ class ClearCommand(_SimpleCommand):
         return "Conversation cleared."
 
 
+class RulesCommand(_SimpleCommand):
+    _name = "rules"
+    _description = "List effective rules"
+
+    def execute(self, args: list[str], ctx: CommandContext) -> str:
+        if ctx.engine is None:
+            return "Rules: (no engine attached)"
+        from nono_agent.rules.merge import list_effective_rules
+
+        rules = list_effective_rules(ctx.engine.rule_loader.load(ctx.cwd))
+        if not rules:
+            return "No rules loaded."
+        lines = [f"- {r.name} ({r.scope}, {r.source})" for r in rules]
+        return "Effective rules:\n" + "\n".join(lines)
+
+
+class SkillsCommand(_SimpleCommand):
+    _name = "skills"
+    _description = "List available skills"
+
+    def execute(self, args: list[str], ctx: CommandContext) -> str:
+        if ctx.engine is None:
+            return "Skills: (no engine attached)"
+        skills = ctx.engine.skills
+        if not skills:
+            return "No skills loaded."
+        lines = [f"- {s.name}: {s.description}" for s in skills]
+        return "Available skills:\n" + "\n".join(lines)
+
+
+class PermissionCommand(_SimpleCommand):
+    _name = "permission"
+    _description = "Show or set permission mode (default/accept_edits/plan/bypass)"
+
+    def execute(self, args: list[str], ctx: CommandContext) -> str:
+        if ctx.engine is None:
+            return "Permission: (no engine attached)"
+        from nono_agent.permissions import PermissionMode
+
+        policy = ctx.engine.permission_policy
+        if args:
+            try:
+                mode = PermissionMode(args[0])
+            except ValueError:
+                return f"Unknown mode '{args[0]}'. Options: {[m.value for m in PermissionMode]}"
+            policy.set_mode(mode)
+            return f"Permission mode set to '{mode.value}'."
+        return f"Permission mode: {policy.mode.value}"
+
+
+class McpCommand(_SimpleCommand):
+    _name = "mcp"
+    _description = "List configured MCP servers"
+
+    def execute(self, args: list[str], ctx: CommandContext) -> str:
+        from pathlib import Path
+
+        from nono_agent.mcp.config import load_mcp_config
+
+        servers = load_mcp_config(Path(ctx.cwd) / ".nono" / "mcp.json")
+        if not servers:
+            return "No MCP servers configured (.nono/mcp.json)."
+        lines = [
+            f"- {name}: {s.transport}" + (f" ({s.command})" if s.command else "")
+            for name, s in servers.items()
+        ]
+        return "MCP servers:\n" + "\n".join(lines)
+
+
+class PluginsCommand(_SimpleCommand):
+    _name = "plugins"
+    _description = "List loaded plugins"
+
+    def execute(self, args: list[str], ctx: CommandContext) -> str:
+        from nono_agent.plugins import FileSystemPluginLoader
+
+        manifests = FileSystemPluginLoader().load(ctx.cwd)
+        if not manifests:
+            return "No plugins loaded."
+        lines = [f"- {m.name} v{m.version}: {m.description}" for m in manifests]
+        return "Plugins:\n" + "\n".join(lines)
+
+
 def create_builtin_commands(registry: object | None = None) -> list[SlashCommand]:
     """创建内置 Slash 命令列表。"""
     commands: list[SlashCommand] = [
@@ -91,6 +174,11 @@ def create_builtin_commands(registry: object | None = None) -> list[SlashCommand
         CostCommand(),
         ContextCommand(),
         ClearCommand(),
+        RulesCommand(),
+        SkillsCommand(),
+        PermissionCommand(),
+        McpCommand(),
+        PluginsCommand(),
     ]
     commands.append(HelpCommand(registry))
     return commands
