@@ -25,7 +25,7 @@ def ctx(tmp_path):
 
 
 class TestBuiltinFactory:
-    def test_creates_seven_tools(self):
+    def test_creates_eight_tools(self):
         tools = create_builtin_tools()
         names = {t.name for t in tools}
         assert names == {
@@ -36,6 +36,7 @@ class TestBuiltinFactory:
             "glob",
             "grep",
             "ask_user_question",
+            "todo_write",
         }
 
 
@@ -172,6 +173,34 @@ class TestBash:
         b = BashTool()
         assert b.should_prompt_for_permission({"command": "ls -la"}, None) is False
         assert b.should_prompt_for_permission({"command": "rm -rf /tmp/x"}, None) is True
+
+
+class TestTodoWrite:
+    async def test_valid_todos(self, ctx):
+        from nono_agent.tools.builtin import TodoWriteTool
+
+        tool = TodoWriteTool()
+        result = await tool.execute(
+            {
+                "todos": [
+                    {"content": "do a", "status": "completed"},
+                    {"content": "do b", "status": "in_progress"},
+                ]
+            },
+            ctx,
+        )
+        assert not result.is_error
+        assert "2 todo" in result.content
+
+    async def test_invalid_status(self, ctx):
+        from nono_agent.tools.builtin import TodoWriteTool
+
+        tool = TodoWriteTool()
+        result = await tool.execute(
+            {"todos": [{"content": "x", "status": "bogus"}]}, ctx
+        )
+        assert result.is_error
+        assert "invalid status" in result.content
 
 
 class TestPathEscapeBlocked:
