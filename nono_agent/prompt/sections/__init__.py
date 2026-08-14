@@ -4,12 +4,14 @@ from nono_agent.prompt.section import PromptSection
 from nono_agent.prompt.sections.env_info import EnvInfoSection
 from nono_agent.prompt.sections.identity import IdentitySection
 from nono_agent.prompt.sections.rules_section import RulesSection
+from nono_agent.prompt.sections.skills_section import SkillsSection
 from nono_agent.prompt.sections.tools_guidance import ToolsGuidanceSection
 
 __all__ = [
     "EnvInfoSection",
     "IdentitySection",
     "RulesSection",
+    "SkillsSection",
     "ToolsGuidanceSection",
     "create_default_sections",
 ]
@@ -22,4 +24,5 @@ def create_default_sections() -> list[PromptSection]:
         ToolsGuidanceSection(),
         EnvInfoSection(),
         RulesSection(),
+        SkillsSection(),
     ]

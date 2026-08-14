@@ -27,6 +27,7 @@ class PromptContext:
     cwd: str = "."
     env: dict[str, str] = field(default_factory=dict)
     rules_text: str = ""                       # 已合并的 Rules 文本
+    skills_text: str = ""                      # 可用 Skills 清单文本
     custom_system_prompt: str | None = None    # 覆盖默认 identity
     append_system_prompt: str | None = None    # 永远追加
     tools: list[dict[str, Any]] = field(default_factory=list)

@@ -75,6 +75,9 @@ from nono_agent.rules.loader import FileSystemRuleLoader
 from nono_agent.rules.merge import merge_rules
 from nono_agent.session.store import MessageStore
 from nono_agent.session.transcript import LocalFileTranscriptWriter, TranscriptWriter
+from nono_agent.skills.loader import FileSystemSkillLoader
+from nono_agent.skills.models import Skill
+from nono_agent.skills.skill_tool import SkillTool
 from nono_agent.tools.context import PermissionChecker, ToolUseContext
 from nono_agent.tools.registry import ToolRegistry
 from nono_agent.utils.abort import AbortController
@@ -115,6 +118,7 @@ class QueryEngine:
         rule_loader: FileSystemRuleLoader | None = None,
         prompt_assembler: PromptAssembler | None = None,
         ask_user: Any | None = None,
+        skill_loader: FileSystemSkillLoader | None = None,
     ) -> None:
         self._config = config
         self._initialized = False
@@ -141,9 +145,11 @@ class QueryEngine:
         self._sandbox = PathSandbox(config.cwd)
         self._ignore = IgnoreMatcher.from_workspace(config.cwd)
 
-        # Prompt 组装 + Rules 发现（Phase 1）
+        # Prompt 组装 + Rules 发现（Phase 1）+ Skills（Phase 2）
         self._rule_loader = rule_loader or FileSystemRuleLoader()
         self._prompt_assembler = prompt_assembler or self._create_default_assembler()
+        self._skill_loader = skill_loader or FileSystemSkillLoader()
+        self._skills: list[Skill] = []
 
         # AskUserQuestion 通道（Phase 1 CLI / Phase 3 Server）
         self._ask_user = ask_user
@@ -167,6 +173,11 @@ class QueryEngine:
 
         # 设置 transcript 写入器（延迟初始化，使用 session_id 确定存储路径）
         self._transcript_writer = self._transcript_writer or self._create_default_writer()
+
+        # 加载 Skills 并注册 SkillTool（Phase 2）
+        self._skills = self._skill_loader.load(self._config.cwd)
+        if self._skills and not self._tool_registry.has("skill"):
+            self._tool_registry.register(SkillTool(self._skills))
 
         self._initialized = True
         logger.info("QueryEngine initialized (session=%s)", self._session_id)
@@ -387,6 +398,11 @@ class QueryEngine:
         self._abort_controller.abort(reason)
         logger.info("Query aborted: %s", reason)
 
+    def clear_session(self) -> None:
+        """清空当前会话的消息存储（/clear 命令）。"""
+        self._store.replace([])
+        logger.info("Session cleared (session=%s)", self._session_id)
+
     # ------------------------------------------------------------------
     # 属性访问器 —— 暴露子系统供外部配置
     # ------------------------------------------------------------------
@@ -487,12 +503,16 @@ class QueryEngine:
         import os
 
         rules_text = merge_rules(self._rule_loader.load(self._config.cwd))
+        skills_text = "\n".join(
+            f"- {s.name}: {s.description}" for s in self._skills if s.enabled
+        )
 
         ctx = PromptContext(
             model_id=self._config.effective_model,
             cwd=self._config.cwd,
             env=dict(os.environ),
             rules_text=rules_text,
+            skills_text=skills_text,
             custom_system_prompt=self._config.custom_system_prompt,
             append_system_prompt=self._config.append_system_prompt,
             tools=self._tool_registry.to_api_schema(),

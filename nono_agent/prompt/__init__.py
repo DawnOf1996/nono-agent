@@ -18,6 +18,7 @@ from nono_agent.prompt.sections import (
     EnvInfoSection,
     IdentitySection,
     RulesSection,
+    SkillsSection,
     ToolsGuidanceSection,
     create_default_sections,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "PromptSectionBase",
     "RulesSection",
     "SectionRegistry",
+    "SkillsSection",
     "ToolsGuidanceSection",
     "create_default_sections",
 ]
