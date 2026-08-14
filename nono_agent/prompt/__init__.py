@@ -17,6 +17,7 @@ from nono_agent.prompt.section import (
 from nono_agent.prompt.sections import (
     EnvInfoSection,
     IdentitySection,
+    MemorySection,
     RulesSection,
     SkillsSection,
     ToolsGuidanceSection,
@@ -32,6 +33,7 @@ __all__ = [
     "DYNAMIC_BOUNDARY",
     "EnvInfoSection",
     "IdentitySection",
+    "MemorySection",
     "PromptAssembler",
     "PromptContext",
     "PromptSection",

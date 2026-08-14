@@ -56,6 +56,7 @@ from nono_agent.core.types import (
 from nono_agent.hooks.middleware import MiddlewareChain
 from nono_agent.hooks.post_sampling import PostSamplingChain
 from nono_agent.hooks.stop_hooks import StopHookExecutor
+from nono_agent.memory.store import FileSystemMemoryStore
 from nono_agent.observability.cost_tracker import CostTracker, estimate_cost
 from nono_agent.permissions.denial import DenialTracker
 from nono_agent.permissions.policy import PermissionPolicy
@@ -121,6 +122,7 @@ class QueryEngine:
         skill_loader: FileSystemSkillLoader | None = None,
         agent_loader: Any | None = None,
         register_agent_tool: bool = True,
+        memory_store: FileSystemMemoryStore | None = None,
     ) -> None:
         self._config = config
         self._initialized = False
@@ -154,6 +156,7 @@ class QueryEngine:
         self._skills: list[Skill] = []
         self._agent_loader = agent_loader
         self._register_agent_tool = register_agent_tool
+        self._memory_store = memory_store or FileSystemMemoryStore()
 
         # AskUserQuestion 通道（Phase 1 CLI / Phase 3 Server）
         self._ask_user = ask_user
@@ -547,6 +550,10 @@ class QueryEngine:
         skills_text = "\n".join(
             f"- {s.name}: {s.description}" for s in self._skills if s.enabled
         )
+        memories_text = "\n".join(
+            f"- [{m.type}] {m.content}" if m.type else f"- {m.content}"
+            for m in self._memory_store.load()
+        )
 
         ctx = PromptContext(
             model_id=self._config.effective_model,
@@ -554,6 +561,7 @@ class QueryEngine:
             env=dict(os.environ),
             rules_text=rules_text,
             skills_text=skills_text,
+            memories_text=memories_text,
             custom_system_prompt=self._config.custom_system_prompt,
             append_system_prompt=self._config.append_system_prompt,
             tools=self._tool_registry.to_api_schema(),
