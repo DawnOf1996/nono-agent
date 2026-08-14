@@ -95,6 +95,10 @@ class EngineConfig(BaseModel):
     # 结构化输出 JSON Schema（配置后 LLM 会返回符合 schema 的 JSON）
     json_schema: dict[str, Any] | None = None
 
+    # ContextCollapse 默认 summarizer（§3.3）：启用后把 LLM 摘要折叠加入默认管线
+    context_collapse_enabled: bool = False
+    context_collapse_model: str | None = None  # 摘要用模型（None=主模型）
+
     # 详细日志
     verbose: bool = False
 

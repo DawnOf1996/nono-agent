@@ -627,10 +627,25 @@ class QueryEngine:
         return []
 
     def _create_default_pipeline(self) -> PreprocessPipeline:
-        """创建默认预处理管线 —— 4 个内置 stage，按 priority 顺序执行。"""
+        """创建默认预处理管线 —— 4 个内置 stage + 可选 ContextCollapse。"""
         pipeline = PreprocessPipeline()
         pipeline.register(ToolResultBudgetStage())  # priority=10: 截断超长工具结果
         pipeline.register(SnipCompactStage())        # priority=20: 零成本滑动窗口丢弃
         pipeline.register(MicroCompactStage())       # priority=110: 剥离旧 thinking + 截断长文本
+
+        # ContextCollapse（LLM 摘要折叠）默认未启用；配置开关开启后注入
+        if self._config.context_collapse_enabled:
+            from nono_agent.pipeline.context_collapse import ContextCollapseStage
+            from nono_agent.pipeline.summarizer import ProviderSummarizer
+
+            summary_model = self._config.context_collapse_model or self._config.effective_model
+            summarizer = ProviderSummarizer(
+                provider_factory=lambda: self._provider_registry.resolve(
+                    summary_model, self._config.provider
+                ),
+                model=summary_model,
+            )
+            pipeline.register(ContextCollapseStage(summarizer=summarizer))
+
         pipeline.register(AutoCompactStage())        # priority=200: 安全网（80%/95% 阈值）
         return pipeline
