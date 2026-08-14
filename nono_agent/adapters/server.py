@@ -12,11 +12,10 @@ Server 与 CLI 消费同一个 submit_message() AsyncGenerator，
 - CORS 支持
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -37,6 +36,16 @@ def _deny_all_permission_checker(tool_name: str, input_params: dict[str, Any]) -
     return False
 
 
+async def _drain_to_queue(agen: Any, out: asyncio.Queue[Any]) -> None:
+    """把 AsyncGenerator 产出全部倒入队列。"""
+    try:
+        async for item in agen:
+            await out.put(item)
+    except Exception:
+        logger.exception("submit_message stream failed")
+        raise
+
+
 def create_server_app(
     config: EngineConfig | None = None,
     *,
@@ -44,6 +53,9 @@ def create_server_app(
     port: int = 8000,
     cors_origins: list[str] | None = None,
     permission_checker: PermissionChecker | None = _deny_all_permission_checker,
+    api_key: str | None = None,
+    session_ttl: float | None = None,
+    session_ttl_check_interval: float = 60.0,
 ) -> Any:
     """创建 FastAPI 应用实例 —— 提供 agent 的 HTTP API。
 
@@ -54,10 +66,15 @@ def create_server_app(
         cors_origins: 允许的 CORS 来源列表
         permission_checker: 权限检查器，默认拒绝所有写操作。
             传入 None 表示不检查（宽松模式），或传入自定义函数。
+        api_key: 可选鉴权密钥。设置后除 /health 外均需
+            ``Authorization: Bearer <key>`` 或 ``X-API-Key: <key>``。
+        session_ttl: 会话空闲超时（秒）。超过后后台任务清理并关闭会话。
+        session_ttl_check_interval: TTL 清理扫描间隔（秒）。
     """
     try:
         from fastapi import FastAPI, HTTPException
         from fastapi.middleware.cors import CORSMiddleware
+        from fastapi.responses import JSONResponse
         from pydantic import BaseModel
     except ImportError:
         raise ImportError(
@@ -78,8 +95,33 @@ def create_server_app(
     # ---------------------------------------------------------------------------
     sessions: dict[str, QueryEngine] = {}
     session_lock = asyncio.Lock()  # 保护 sessions 字典的并发访问
+    last_activity: dict[str, float] = {}  # 会话最后活跃时间（TTL 用）
+    # AskUser 通道：session_id -> (questions, future)
+    pending_questions: dict[str, tuple[list[dict[str, Any]], asyncio.Future[dict[str, Any]]]] = {}
+    ask_signal: dict[str, asyncio.Queue[dict[str, Any]]] = {}  # session_id -> 信号队列
 
     default_config = config or EngineConfig()
+
+    def _touch(session_id: str) -> None:
+        last_activity[session_id] = time.monotonic()
+
+    def _make_ask_user(session_id: str) -> Any:
+        """构建该会话的 AskUser 回调 —— 发出 SSE 事件并等待答案。"""
+
+        async def ask_user(questions: list[dict[str, Any]]) -> dict[str, Any]:
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[dict[str, Any]] = loop.create_future()
+            pending_questions[session_id] = (questions, future)
+            queue = ask_signal.setdefault(session_id, asyncio.Queue())
+            await queue.put({"type": "ask_user", "questions": questions})
+            try:
+                return await asyncio.wait_for(future, timeout=300)
+            except TimeoutError:
+                raise TimeoutError("AskUserQuestion timed out.") from None
+            finally:
+                pending_questions.pop(session_id, None)
+
+        return ask_user
 
     async def _get_or_create_engine(
         session_id: str,
@@ -88,6 +130,7 @@ def create_server_app(
         """获取或创建引擎实例 —— 统一的初始化入口。"""
         async with session_lock:
             if session_id in sessions:
+                _touch(session_id)
                 return sessions[session_id]
 
             engine_config = EngineConfig(
@@ -97,18 +140,46 @@ def create_server_app(
                 include_partial_messages=True,
             )
             engine = QueryEngine(
-                engine_config, permission_checker=permission_checker
+                engine_config,
+                permission_checker=permission_checker,
+                ask_user=_make_ask_user(session_id),
             )
             await engine.initialize()
             sessions[session_id] = engine
+            _touch(session_id)
             return engine
+
+    async def _ttl_cleanup_task() -> None:
+        """后台任务 —— 周期清理空闲超时的会话。"""
+        while True:
+            await asyncio.sleep(session_ttl_check_interval)
+            now = time.monotonic()
+            expired: list[str] = []
+            async with session_lock:
+                for sid in list(sessions):
+                    if session_ttl is not None and now - last_activity.get(sid, now) > session_ttl:
+                        expired.append(sid)
+                for sid in expired:
+                    engine = sessions.pop(sid, None)
+                    if engine is not None:
+                        try:
+                            await engine.close()
+                        except Exception:
+                            logger.exception("Error closing expired session %s", sid)
+                        last_activity.pop(sid, None)
+                        logger.info("Session %s expired (TTL)", sid)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Any:
         """应用生命周期管理 —— 启动时初始化，关闭时清理所有会话。"""
         logger.info("Nono Agent Server starting up...")
+        ttl_task: asyncio.Task[None] | None = None
+        if session_ttl is not None:
+            ttl_task = asyncio.create_task(_ttl_cleanup_task())
         yield
         # 优雅关闭：逐一关闭所有活跃会话，释放资源
+        if ttl_task is not None:
+            ttl_task.cancel()
         logger.info("Shutting down — closing %d sessions...", len(sessions))
         async with session_lock:
             for sid, engine in list(sessions.items()):
@@ -125,6 +196,18 @@ def create_server_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # 鉴权中间件：除 /health 外均需 API key（若配置）
+    @app.middleware("http")
+    async def auth_middleware(request: Any, call_next: Any) -> Any:
+        if api_key is not None and request.url.path != "/health":
+            auth = request.headers.get("authorization", "")
+            token = (
+                auth[7:] if auth.startswith("Bearer ") else request.headers.get("x-api-key", "")
+            )
+            if token != api_key:
+                return JSONResponse({"detail": "Invalid or missing API key"}, status_code=401)
+        return await call_next(request)
 
     # CORS
     if cors_origins:
@@ -165,6 +248,10 @@ def create_server_app(
         model: str | None = None                     # 模型覆盖（可选）
         skip_system: bool = False                    # 是否过滤临时系统消息
 
+    class AnswerRequest(BaseModel):
+        """AskUser 回答请求 —— 客户端对 ask_user 事件的回应。"""
+        answers: dict[str, Any] = {}                 # {"question_text": selected_label(s)}
+
     # ------------------------------------------------------------------
     # API 端点
     # ------------------------------------------------------------------
@@ -186,39 +273,63 @@ def create_server_app(
         """
         session_id = request.session_id or str(uuid.uuid4())
         engine = await _get_or_create_engine(session_id, model=request.model)
+        _touch(session_id)
 
         async def event_generator() -> Any:
-            """将引擎的 AsyncGenerator 响应转换为 SSE 事件流。
-
-            遍历 submit_message() 产出的 SDKMessage，
-            将每条消息序列化为 SSE event/data 对推送给客户端。
-            """
+            """将引擎 SDK 流与 AskUser 信号合并为 SSE 事件流。"""
+            submit = engine.submit_message(
+                request.message,
+                attachments=request.attachments,
+            )
+            queue = ask_signal.setdefault(session_id, asyncio.Queue())
+            sdk_queue: asyncio.Queue[Any] = asyncio.Queue()
+            sdk_task: asyncio.Task[None] = asyncio.create_task(
+                _drain_to_queue(submit, sdk_queue)
+            )
             try:
-                async for sdk_msg in engine.submit_message(
-                    request.message,
-                    attachments=request.attachments,
-                ):
-                    # 将 Pydantic 模型序列化为字典
-                    msg_dict = sdk_msg.model_dump() if hasattr(sdk_msg, "model_dump") else {}
-                    yield {
-                        "event": sdk_msg.type,
-                        "data": json.dumps(msg_dict, ensure_ascii=False),
-                    }
-
-                    # result 消息表示本轮查询完成
-                    if hasattr(sdk_msg, "type") and sdk_msg.type == "result":
+                while True:
+                    # 优先消费 AskUser 信号
+                    try:
+                        signal = queue.get_nowait()
+                        yield {
+                            "event": "ask_user",
+                            "data": json.dumps(signal, ensure_ascii=False),
+                        }
+                        continue
+                    except asyncio.QueueEmpty:
                         pass
 
+                    # 消费 SDK 消息（非阻塞）
+                    try:
+                        sdk_msg = sdk_queue.get_nowait()
+                        yield {
+                            "event": sdk_msg.type,
+                            "data": json.dumps(sdk_msg.model_dump(), ensure_ascii=False),
+                        }
+                        continue
+                    except asyncio.QueueEmpty:
+                        pass
+
+                    # 都空：SDK 流结束则排空退出，否则让出事件循环
+                    if sdk_task.done():
+                        while not sdk_queue.empty():
+                            sdk_msg = sdk_queue.get_nowait()
+                            yield {
+                                "event": sdk_msg.type,
+                                "data": json.dumps(sdk_msg.model_dump(), ensure_ascii=False),
+                            }
+                        break
+
+                    await asyncio.sleep(0.01)
             except Exception as exc:
                 logger.exception("Error in chat stream for session %s", session_id)
                 yield {
                     "event": "error",
-                    "data": json.dumps({
-                        "error": str(exc),
-                        "session_id": session_id,
-                    }),
+                    "data": json.dumps({"error": str(exc), "session_id": session_id}),
                 }
             finally:
+                if not sdk_task.done():
+                    sdk_task.cancel()
                 yield {"event": "done", "data": ""}
 
         return EventSourceResponse(event_generator())
@@ -311,6 +422,18 @@ def create_server_app(
             raise HTTPException(status_code=404, detail="Session not found")
         engine.abort(request.reason)
         return {"status": "aborted", "session_id": request.session_id}
+
+    @app.post("/session/{session_id}/answer")
+    async def answer(session_id: str, body: AnswerRequest) -> dict[str, str]:
+        """回应用户对 AskUser 事件的回答，唤醒等待中的流。"""
+        pending = pending_questions.get(session_id)
+        if pending is None:
+            raise HTTPException(status_code=404, detail="No pending question for session")
+        _, future = pending
+        if future.done():
+            raise HTTPException(status_code=409, detail="Question already answered")
+        future.set_result(body.answers)
+        return {"status": "answered", "session_id": session_id}
 
     return app
 
