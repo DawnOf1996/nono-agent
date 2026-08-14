@@ -18,6 +18,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from nono_agent.core.types import ToolResult, ToolUseBlock
+from nono_agent.observability.metrics import (
+    METRIC_TOOL_ERRORS,
+    METRIC_TOOL_EXECUTIONS,
+    METRIC_TOOL_LATENCY,
+    record_counter,
+    record_histogram,
+)
 from nono_agent.permissions.policy import PermissionDecision
 from nono_agent.tools.context import ToolUseContext
 from nono_agent.tools.registry import ToolNotFound, ToolRegistry
@@ -248,6 +255,10 @@ class StreamingToolExecutor:
         try:
             result = await tool.execute(block.input, context)
             elapsed = (time.monotonic() - start) * 1000  # 计算执行耗时
+            record_counter(METRIC_TOOL_EXECUTIONS, tool=block.name)
+            record_histogram(METRIC_TOOL_LATENCY, elapsed, tool=block.name)
+            if result.is_error:
+                record_counter(METRIC_TOOL_ERRORS, tool=block.name)
             return ToolExecutionResult(
                 result=result,
                 tool_use_id=block.id,
@@ -257,6 +268,8 @@ class StreamingToolExecutor:
         except Exception as exc:
             # 5. 捕获异常: 将异常信息作为 is_error 结果返回（不抛出）
             elapsed = (time.monotonic() - start) * 1000
+            record_counter(METRIC_TOOL_EXECUTIONS, tool=block.name)
+            record_counter(METRIC_TOOL_ERRORS, tool=block.name)
             return ToolExecutionResult(
                 result=ToolResult(
                     tool_use_id=block.id,

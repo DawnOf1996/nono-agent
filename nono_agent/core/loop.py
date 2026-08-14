@@ -51,6 +51,7 @@ from nono_agent.hooks.middleware import MiddlewareChain
 from nono_agent.hooks.post_sampling import PostSamplingChain
 from nono_agent.hooks.stop_hooks import StopHookExecutor
 from nono_agent.observability.cost_tracker import CostTracker
+from nono_agent.observability.metrics import METRIC_API_REQUESTS, record_counter
 from nono_agent.pipeline.base import PipelineContext, PreprocessPipeline
 from nono_agent.providers.base import LLMProvider
 from nono_agent.recovery import max_output_tokens, prompt_too_long
@@ -186,6 +187,7 @@ async def agentic_loop(
         # message_start -> content_block_start/delta/stop -> message_delta -> message_stop
         # ------------------------------------------------------------------
         yield RequestStartEvent()  # 通知消费者 API 请求开始
+        record_counter(METRIC_API_REQUESTS, model=config.effective_model)
 
         # 累积流式事件的状态
         assistant_content: list[dict[str, Any]] = []  # 累积的 assistant content blocks
