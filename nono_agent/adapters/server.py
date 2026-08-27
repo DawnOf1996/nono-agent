@@ -7,6 +7,7 @@ Server 与 CLI 消费同一个 submit_message() AsyncGenerator，
 特性：
 - 多会话隔离（每个用户拥有独立的 QueryEngine）
 - SSE 流式实时响应
+- 会话事件流只读通道（``GET /session/{id}/events``，脱敏后推送）
 - 健康检查端点
 - 优雅关闭
 - CORS 支持
@@ -22,6 +23,12 @@ from typing import Any
 
 from nono_agent.core.config import EngineConfig
 from nono_agent.core.engine import QueryEngine
+from nono_agent.session.header import VersionMismatchError
+from nono_agent.session.redact import redact_events
+from nono_agent.session.transcript import (
+    DEFAULT_SESSION_DIR,
+    LocalFileTranscriptWriter,
+)
 from nono_agent.tools.context import PermissionChecker
 
 logger = logging.getLogger(__name__)
@@ -412,6 +419,61 @@ def create_server_app(
             turn_count=len(messages),
             total_tokens=0,
         )
+
+    @app.get("/session/{session_id}/events")
+    async def session_events(
+        session_id: str,
+        after_seq: int = 0,
+        follow: bool = True,
+        poll_interval: float = 0.5,
+    ) -> Any:
+        """按 SSE 推送该会话的事件流 —— 可观测性的读取通道。
+
+        载荷经 ``redact_events`` 脱敏后再出网：磁盘上的事件流逐字真实，
+        外发副本不带凭据。信封字段（seq/type/timestamp）保持原值，
+        客户端可用 ``after_seq`` 断点续读。
+
+        Args:
+            session_id: 目标会话 ID。
+            after_seq: 只推送 ``seq > after_seq`` 的事件（断点续读游标）。
+            follow: 是否在追平后继续等待新事件；False 表示推完历史即结束。
+            poll_interval: follow 模式下的轮询间隔（秒）。
+        """
+        writer = _events_writer(session_id)
+
+        async def event_generator() -> Any:
+            cursor = after_seq
+            while True:
+                try:
+                    events = await writer.read_events_from(cursor + 1)
+                except VersionMismatchError as exc:
+                    yield {"event": "error", "data": json.dumps({"error": str(exc)})}
+                    return
+
+                for event in redact_events(events):
+                    cursor = event.seq
+                    yield {
+                        "event": "session_event",
+                        "id": str(event.seq),
+                        "data": event.model_dump_json(),
+                    }
+
+                if not follow:
+                    yield {"event": "done", "data": json.dumps({"last_seq": cursor})}
+                    return
+                await asyncio.sleep(poll_interval)
+
+        return EventSourceResponse(event_generator())
+
+    def _events_writer(session_id: str) -> Any:
+        """取该会话的事件流读取器 —— 活跃会话复用其写入器，否则按默认路径打开。"""
+        engine = sessions.get(session_id)
+        if engine is not None and engine.transcript_writer is not None:
+            return engine.transcript_writer
+        session_file = DEFAULT_SESSION_DIR / f"{session_id}.jsonl"
+        if not session_file.exists():
+            raise HTTPException(status_code=404, detail="Session log not found")
+        return LocalFileTranscriptWriter(session_file)
 
     @app.post("/abort")
     async def abort_session(request: AbortRequest) -> dict[str, str]:

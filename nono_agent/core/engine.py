@@ -22,11 +22,8 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import AsyncGenerator
-from pathlib import Path
+from collections.abc import AsyncGenerator, Callable
 from typing import Any
-
-from pydantic import TypeAdapter
 
 from nono_agent.core.config import EngineConfig, QueryConfig, RuntimeGates
 from nono_agent.core.loop import agentic_loop
@@ -56,9 +53,17 @@ from nono_agent.core.types import (
 from nono_agent.hooks.middleware import MiddlewareChain
 from nono_agent.hooks.post_sampling import PostSamplingChain
 from nono_agent.hooks.stop_hooks import StopHookExecutor
-from nono_agent.memory.store import FileSystemMemoryStore
+from nono_agent.memory.manager import MemoryManager
+from nono_agent.memory.models import STATUS_ACCEPTED, MemoryRecord
+from nono_agent.memory.store import FileSystemMemoryStore, MemoryStore
+from nono_agent.observability.metrics import (
+    METRIC_SESSION_DESYNC,
+    TAG_SESSION_ID,
+    record_counter,
+    record_event_metric,
+)
 from nono_agent.observability.token_tracker import TokenTracker
-from nono_agent.permissions.denial import DenialTracker
+from nono_agent.permissions.denial import Denial, DenialTracker
 from nono_agent.permissions.policy import PermissionPolicy
 from nono_agent.permissions.sandbox import IgnoreMatcher, PathSandbox
 from nono_agent.pipeline.auto_compact import AutoCompactStage
@@ -74,8 +79,39 @@ from nono_agent.providers.base import ProviderRegistry, create_default_registry
 from nono_agent.recovery.chain import RecoveryChain
 from nono_agent.rules.loader import FileSystemRuleLoader
 from nono_agent.rules.merge import merge_rules
+from nono_agent.session.derive import (
+    ReconstructionError,
+    derive_messages,
+    derived_to_messages,
+    fold_request_header,
+    messages_to_derived,
+    verify_reconstruction,
+)
+from nono_agent.session.events import (
+    EVENT_ASSISTANT_CHUNK,
+    EVENT_ASSISTANT_MESSAGE,
+    EVENT_COMPACT_BOUNDARY,
+    EVENT_MEMORY_RETRIEVE,
+    EVENT_MEMORY_WRITE,
+    EVENT_PERMISSION_DENIAL,
+    EVENT_REQUEST_HEADER,
+    EVENT_TOOL_CALL,
+    EVENT_TOOL_RESULT,
+    EVENT_TURN_END,
+    EVENT_TURN_START,
+    EVENT_USAGE,
+    EVENT_USER_MESSAGE,
+    SessionEvent,
+)
+from nono_agent.session.fork import fork_transcript
+from nono_agent.session.header import make_header
+from nono_agent.session.request_header import canonical_header, next_reason
 from nono_agent.session.store import MessageStore
-from nono_agent.session.transcript import LocalFileTranscriptWriter, TranscriptWriter
+from nono_agent.session.transcript import (
+    DEFAULT_SESSION_DIR,
+    LocalFileTranscriptWriter,
+    TranscriptWriter,
+)
 from nono_agent.skills.loader import FileSystemSkillLoader
 from nono_agent.skills.models import Skill
 from nono_agent.skills.skill_tool import SkillTool
@@ -84,12 +120,6 @@ from nono_agent.tools.registry import ToolRegistry
 from nono_agent.utils.abort import AbortController
 
 logger = logging.getLogger(__name__)
-
-# 用于反序列化 Message 判别联合类型的 TypeAdapter
-_message_adapter: TypeAdapter[Message] = TypeAdapter(Message)
-
-# 默认会话文件存储目录
-DEFAULT_SESSION_DIR = Path.home() / ".nono-agent" / "sessions"
 
 
 class QueryEngine:
@@ -122,7 +152,8 @@ class QueryEngine:
         skill_loader: FileSystemSkillLoader | None = None,
         agent_loader: Any | None = None,
         register_agent_tool: bool = True,
-        memory_store: FileSystemMemoryStore | None = None,
+        memory_store: MemoryStore | None = None,
+        memory_manager: MemoryManager | None = None,
     ) -> None:
         self._config = config
         self._initialized = False
@@ -140,7 +171,8 @@ class QueryEngine:
         self._store = MessageStore()             # 消息存储
         self._token_tracker = TokenTracker()     # Token 跟踪器
         self._abort_controller = AbortController()  # 取消控制器
-        self._transcript_writer = transcript_writer  # 磁盘持久化写入器
+        self._transcript_writer = transcript_writer  # 事件流写入器（落盘只有事件）
+        self._owns_writer = transcript_writer is None  # 默认写入器由引擎按会话 ID 创建
         self._permission_checker = permission_checker  # 权限检查器（CLI/Server 注入）
 
         # 权限体系（Phase 1）：策略 + 拒绝追踪 + 路径沙箱 + Ignore
@@ -156,7 +188,15 @@ class QueryEngine:
         self._skills: list[Skill] = []
         self._agent_loader = agent_loader
         self._register_agent_tool = register_agent_tool
-        self._memory_store = memory_store or FileSystemMemoryStore()
+        self._memory_store: MemoryStore = memory_store or FileSystemMemoryStore()
+        self._memory_manager = memory_manager or MemoryManager(self._memory_store)
+
+        # 事件溯源会话日志：待写事件队列（同步 stage + 异步 flush，保证追加顺序）
+        self._pending_events: list[SessionEvent] = []
+        self._header_logged = False           # 本实例是否已写过 request/header
+        self._last_header: dict[str, Any] | None = None
+        self._observer_disposers: list[Callable[[], None]] = []
+        self._register_event_observers()
 
         # AskUserQuestion 通道（Phase 1 CLI / Phase 3 Server）
         self._ask_user = ask_user
@@ -178,8 +218,20 @@ class QueryEngine:
         if self._initialized:
             return
 
-        # 设置 transcript 写入器（延迟初始化，使用 session_id 确定存储路径）
-        self._transcript_writer = self._transcript_writer or self._create_default_writer()
+        # 设置事件流写入器（延迟初始化，使用 session_id 确定存储路径）
+        writer = self._transcript_writer or self._create_default_writer()
+        self._transcript_writer = writer
+
+        # 新会话首次初始化写入 SessionHeader（承载格式版本门）
+        if await writer.read_header() is None:
+            await writer.write_header(
+                make_header(self._session_id, cwd=self._config.cwd)
+            )
+
+        # 事件流就是会话本身：指向一条已有事件流意味着接着这条对话往下走。
+        # 不重建就会一边追加事件、一边用空上下文请求模型，日志与状态从第一轮起就分叉。
+        if not self._store.all_messages():
+            await self._hydrate_from_log(writer)
 
         # 加载 Skills 并注册 SkillTool（Phase 2）
         self._skills = self._skill_loader.load(self._config.cwd)
@@ -205,8 +257,12 @@ class QueryEngine:
         logger.info("QueryEngine initialized (session=%s)", self._session_id)
 
     async def close(self) -> None:
-        """清理资源 —— flush 待写入的 transcript 数据。"""
-        await self._transcript_writer.flush() if self._transcript_writer else None
+        """清理资源 —— 排空待写事件、flush 事件流并注销事件观察者。"""
+        if self._transcript_writer is not None:
+            await self._flush_events()
+            await self._transcript_writer.flush()
+        while self._observer_disposers:
+            self._observer_disposers.pop()()
         logger.info("QueryEngine closed (session=%s)", self._session_id)
 
     async def __aenter__(self) -> QueryEngine:
@@ -232,14 +288,13 @@ class QueryEngine:
 
         CLI 和 Server 适配器都消费这个生成器，区别仅在交付方式。
 
-        内部流程 7 阶段：
+        内部流程 6 阶段：
         1. 快照配置 + 校验
-        2. 添加用户消息到 store + 写入 transcript
-        3. 解析 Provider + 构建系统提示 + 初始化 LoopState
-        4. 运行 agentic_loop（内部 AsyncGenerator）
+        2. 添加用户消息到 store + 追加 user/message 事件
+        3. 解析 Provider + 构建系统提示（写 request/header 事件）+ 初始化 LoopState
+        4. 运行 agentic_loop（内部 AsyncGenerator），逐条追加 assistant/tool/usage 事件
         5. 将 InternalMessage 转换为 SDKMessage
-        6. 持久化 transcript
-        7. 发出 SDKResultMessage（最终结果）
+        6. 追加 turn/end 事件并发出 SDKResultMessage（最终结果）
         """
         await self.initialize()  # 确保引擎已初始化
 
@@ -248,6 +303,7 @@ class QueryEngine:
 
         start_time = time.monotonic()  # 记录开始时间（用于统计耗时）
         self._turn_count += 1
+        self._stage_event(EVENT_TURN_START, turn=self._turn_count)
 
         logger.debug(
             "submit_message: session=%s, turn=%d, input_len=%d",
@@ -269,10 +325,10 @@ class QueryEngine:
             }
         )
         self._store.append(user_msg)
+        self._stage_event(EVENT_USER_MESSAGE, content=user_msg.message.get("content"))
 
-        # 写入 transcript（await —— 确保 --resume 时可用）
-        if self._transcript_writer:
-            await self._transcript_writer.record_append(user_msg)
+        # await 落盘 —— 确保 --resume 能看到本轮输入
+        await self._flush_events()
 
         # 可选回放用户消息给消费者（Server 场景需要）
         if self._config.replay_user_messages:
@@ -289,7 +345,8 @@ class QueryEngine:
         logger.debug("Provider resolved: %s", type(provider).__name__)
 
         # 构建系统提示: 通过 PromptAssembler 组装（替代旧 _build_system_prompt）
-        system_prompt = self._build_system_prompt()
+        system_prompt = self._build_system_prompt(user_input)
+        await self._record_request_header(system_prompt)
 
         # 构建初始循环状态（携带权限策略 / 沙箱 / 拒绝追踪 / Ignore）
         tool_context = ToolUseContext(
@@ -338,24 +395,75 @@ class QueryEngine:
                 initial_state=initial_state,
                 signal=self._abort_controller.signal,
                 token_tracker=self._token_tracker,
+                event_sink=self._stage_event,
             ):
+                # 请求前一致性门禁 —— 此刻 loop 已把本 step 的状态事件全部上报
+                if isinstance(internal_msg, RequestStartEvent):
+                    await self._verify_log_matches_state()
+
                 # Phase 5: 将内部消息转换为 SDK 格式
                 sdk_msgs = self._to_sdk_messages(internal_msg)
                 for sdk_msg in sdk_msgs:
                     yield sdk_msg
 
+                # 流式增量事件（降级模式下只保留合并后的 assistant/message）
+                if isinstance(internal_msg, StreamEvent):
+                    if self._config.log_assistant_chunks:
+                        self._stage_event(
+                            EVENT_ASSISTANT_CHUNK,
+                            chunk=internal_msg.model_dump(exclude_none=True),
+                        )
+
                 # 从 assistant 消息跟踪成本和用量
                 if isinstance(internal_msg, AssistantMessage):
                     last_assistant_msg = internal_msg
+                    self._stage_event(
+                        EVENT_ASSISTANT_MESSAGE,
+                        content=internal_msg.message.get("content"),
+                    )
+                    # 工具调用事件（从 assistant content 的 tool_use blocks 提取）
+                    for block in internal_msg.message.get("content", []):
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            self._stage_event(
+                                EVENT_TOOL_CALL,
+                                call_id=block.get("id"),
+                                name=block.get("name"),
+                                args=block.get("input"),
+                            )
                     usage_dict = internal_msg.message.get("usage", {})
                     if usage_dict:
                         usage = Usage(**usage_dict)
                         # 记录 token 用量（输入/输出/缓存命中/缓存创建）
                         self._token_tracker.record_usage(usage, self._config.effective_model)
+                        self._stage_event(
+                            EVENT_USAGE,
+                            usage=usage_dict,
+                            model=self._config.effective_model,
+                        )
+                    await self._flush_events()
 
-                    # 持久化 assistant 消息（fire-and-forget，不阻塞主循环）
-                    if self._transcript_writer:
-                        await self._transcript_writer.record_append(internal_msg)
+                if isinstance(internal_msg, UserMessage):
+                    if internal_msg.tool_use_result:
+                        # 工具结果事件（从合成 UserMessage 的 tool_result blocks 提取）
+                        for block in internal_msg.message.get("content", []):
+                            if (
+                                isinstance(block, dict)
+                                and block.get("type") == "tool_result"
+                            ):
+                                self._stage_event(
+                                    EVENT_TOOL_RESULT,
+                                    call_id=block.get("tool_use_id"),
+                                    result=block.get("content"),
+                                    is_error=block.get("is_error", False),
+                                )
+                    else:
+                        # 循环合成并入库的用户消息（stop hook 校验错误、截断恢复提示）
+                        # —— 同样是模型可见输入，必须进事件流
+                        self._stage_event(
+                            EVENT_USER_MESSAGE,
+                            content=internal_msg.message.get("content"),
+                        )
+                    await self._flush_events()
 
                 # 检测终止信号: agentic loop 通过 subtype="loop_terminal" 通知结束
                 if isinstance(internal_msg, SystemMessage):
@@ -365,16 +473,19 @@ class QueryEngine:
                         )
                         terminal_error = internal_msg.error
 
+        except ReconstructionError as exc:
+            # 一致性门禁失败：运行时状态有一次变更没进事件流，日志已不可信。
+            # 继续请求只会把偏差滚雪球，所以按 strict 语义终止本轮。
+            logger.error("Session log invariant violated: %s", exc)
+            terminal_reason = "log_reconstruction_desync"
+            terminal_error = {"type": "reconstruction", "message": str(exc)}
+
         except Exception as exc:
             logger.exception("Query engine error during loop")
             terminal_reason = "error_during_execution"  # 未预期的异常
             terminal_error = {"type": "exception", "message": str(exc)}
 
-        # Phase 6: 持久化完整 transcript（作为最终快照）
-        if self._transcript_writer:
-            await self._transcript_writer.record(self._store.all_messages())
-
-        # Phase 7: 发出 SDKResultMessage（最终结果消息）
+        # Phase 6: 发出 SDKResultMessage（最终结果消息）
         elapsed = (time.monotonic() - start_time) * 1000  # 总耗时（毫秒）
 
         # 确定结果子类型: 正常完成 vs 错误终止
@@ -395,6 +506,10 @@ class QueryEngine:
 
         # 结构化输出闭环：配置 json_schema 时尝试把结果文本解析为 JSON
         structured_output = self._parse_structured_output(result_text)
+
+        # 事件流：回合结束（携带终止原因）
+        self._stage_event(EVENT_TURN_END, turn=self._turn_count, reason=reason)
+        await self._flush_events()
 
         # yield 最终结果消息 —— 客户端收到此消息即知本轮对话完成
         logger.debug(
@@ -423,8 +538,18 @@ class QueryEngine:
         logger.info("Query aborted: %s", reason)
 
     def clear_session(self) -> None:
-        """清空当前会话的消息存储（/clear 命令）。"""
+        """清空当前会话的消息存储（/clear 命令）。
+
+        清空是一次状态替换，必须进事件流 —— 否则日志重建仍会带出被清掉的历史，
+        请求前的一致性门禁会报 desync。事件在下一个 await 点随队列落盘。
+        """
         self._store.replace([])
+        self._stage_event(
+            EVENT_COMPACT_BOUNDARY,
+            content="[Session cleared.]",
+            metadata={"strategy": "clear"},
+            kept=[],
+        )
 
     def set_skill_enabled(self, name: str, enabled: bool) -> bool:
         """启用/禁用指定 Skill（返回是否命中）。"""
@@ -437,24 +562,37 @@ class QueryEngine:
     def compact(self, keep_recent: int = 6) -> int:
         """手动压缩（/compact）：保留最近 N 条消息，插入 compact boundary。
 
+        边界事件携带**压缩后的完整窗口**，使 ``derive_messages()`` 能逐字重放出
+        压缩后的上下文；事件在下一个 await 点（下一轮 submit_message 或 close）
+        随队列落盘。
+
+        Args:
+            keep_recent: 保留的最近消息条数。
+
         Returns:
             被移除的消息条数。
         """
-        from nono_agent.core.types import SystemMessage
-
         messages = self._store.all_messages()
         if len(messages) <= keep_recent:
             return 0
 
+        removed = len(messages) - keep_recent
+        content = "[Manual compact: earlier conversation removed.]"
         boundary = SystemMessage(
             subtype="compact_boundary",
-            content="[Manual compact: earlier conversation removed.]",
-            compact_metadata={"removed": len(messages) - keep_recent},
+            content=content,
+            compact_metadata={"removed": removed},
         )
         recent = messages[-keep_recent:]
         self._store.replace([boundary] + recent)
-        logger.info("Manual compact removed %d messages", len(messages) - keep_recent)
-        return len(messages) - keep_recent
+        self._stage_event(
+            EVENT_COMPACT_BOUNDARY,
+            content=content,
+            metadata={"strategy": "manual", "removed": removed},
+            kept=messages_to_derived(self._store.all_messages()),
+        )
+        logger.info("Manual compact removed %d messages", removed)
+        return removed
 
     def _parse_structured_output(self, result_text: str) -> Any:
         """配置 json_schema 时把结果文本解析为 JSON（结构化输出闭环）。
@@ -481,6 +619,11 @@ class QueryEngine:
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    @property
+    def message_store(self) -> MessageStore:
+        """当前会话的内存消息状态（事件流重建的对象）。"""
+        return self._store
 
     @property
     def token_tracker(self) -> TokenTracker:
@@ -515,8 +658,157 @@ class QueryEngine:
         return self._rule_loader
 
     @property
-    def memory_store(self) -> FileSystemMemoryStore:
+    def memory_store(self) -> MemoryStore:
         return self._memory_store
+
+    @property
+    def memory_manager(self) -> MemoryManager:
+        return self._memory_manager
+
+    @property
+    def transcript_writer(self) -> TranscriptWriter | None:
+        return self._transcript_writer
+
+    # ------------------------------------------------------------------
+    # 事件溯源辅助
+    # ------------------------------------------------------------------
+
+    def _register_event_observers(self) -> None:
+        """把权限拒绝与记忆读写接到事件流上。
+
+        这两类事件发生在工具执行和记忆系统内部，不经过循环产出的消息流，
+        只能由各自的追踪器/管理器回调上报。回调是同步的，与 ``_stage_event``
+        的同步入队语义一致，落盘仍在最近的 await 点。
+        """
+
+        def on_denial(denial: Denial) -> None:
+            self._stage_event(
+                EVENT_PERMISSION_DENIAL,
+                tool=denial.tool_name,
+                rule=denial.reason,
+                mode=denial.mode,
+                path=denial.input_params.get("path"),
+            )
+
+        def on_memory_write(record: MemoryRecord) -> None:
+            self._stage_event(
+                EVENT_MEMORY_WRITE,
+                memory_id=record.memory_id,
+                kind=record.kind,
+                adopted=record.status == STATUS_ACCEPTED,
+                importance=record.importance,
+            )
+
+        def on_memory_retrieve(query: str, records: list[MemoryRecord]) -> None:
+            self._stage_event(
+                EVENT_MEMORY_RETRIEVE,
+                query=query,
+                memory_ids=[r.memory_id for r in records],
+                kinds=sorted({r.kind for r in records}),
+                adopted=bool(records),
+            )
+
+        self._observer_disposers.extend(
+            (
+                self._denial_tracker.add_observer(on_denial),
+                self._memory_manager.add_write_observer(on_memory_write),
+                self._memory_manager.add_retrieve_observer(on_memory_retrieve),
+            )
+        )
+
+    def _stage_event(self, type_: str, /, **data: Any) -> None:
+        """把一条事件放入待写队列。
+
+        同步入队让 ``compact()`` 这类同步 API 也能记事件；队列保证追加顺序
+        与调用顺序一致，实际写盘发生在最近的 ``_flush_events()``。
+
+        Args:
+            type_: 事件类型（见 session.events 常量）。
+            data: 事件载荷。
+        """
+        self._pending_events.append(SessionEvent.make(0, type_, **data))
+        record_event_metric(type_, data, session_id=self._session_id)
+
+    async def _flush_events(self) -> None:
+        """按序把待写事件 append 到事件流。"""
+        if self._transcript_writer is None:
+            return
+        while self._pending_events:
+            await self._transcript_writer.append_event(self._pending_events.pop(0))
+
+    async def _verify_log_matches_state(self) -> None:
+        """请求前一致性门禁 —— 校验事件流能重建出当前运行时消息状态。
+
+        校验对象是**会话状态**（``MessageStore``），不是发给 LLM 的数组：
+        预处理管线在深拷贝上工作，请求数组 = 管线(状态) 是状态的纯函数，
+        因此状态可重建即整次请求可重放。任何绕过事件流的状态变更都会在这里暴露。
+
+        Raises:
+            ReconstructionError: ``session_invariant="strict"`` 且事件流与状态不一致。
+        """
+        mode = self._config.session_invariant
+        if mode == "off" or self._transcript_writer is None:
+            return
+
+        # 门禁要读全量事件，队列里的必须先落盘，否则本 step 的事件还看不见
+        await self._flush_events()
+        events = await self._transcript_writer.read_events()
+        try:
+            verify_reconstruction(
+                events, messages_to_derived(self._store.all_messages())
+            )
+        except ReconstructionError as exc:
+            record_counter(
+                METRIC_SESSION_DESYNC, 1.0, **{TAG_SESSION_ID: self._session_id}
+            )
+            if mode == "strict":
+                raise
+            logger.warning("Session log invariant violated (warn mode): %s", exc)
+
+    async def _hydrate_from_log(self, writer: TranscriptWriter) -> None:
+        """用事件流重建内存消息状态（初始化时的隐式接续）。
+
+        Args:
+            writer: 本会话的事件流写入器。
+        """
+        events = await writer.read_events()
+        if not events:
+            return
+        self._store.replace(derived_to_messages(derive_messages(events)))
+        # 接续已有事件流：下次请求写 reason=resume 的 header
+        self._header_logged = False
+        self._last_header = None
+        logger.info(
+            "Session state rebuilt from %d events (session=%s)",
+            len(events),
+            self._session_id,
+        )
+
+    async def _record_request_header(self, system_prompt: str) -> None:
+        """记录 request/header 快照（initial/resume/change，仅在真变化时写）。
+
+        Args:
+            system_prompt: 本次请求组装好的 system prompt 全文。
+        """
+        header = canonical_header(
+            config={
+                "model": self._config.effective_model,
+                "agent_id": self._config.agent_id,
+                "provider": self._config.provider.model_id if self._config.provider else None,
+            },
+            system=system_prompt,
+            tools=self._tool_registry.to_api_schema(),
+        )
+        baseline = self._last_header
+        if baseline is None and self._transcript_writer is not None:
+            # 本实例首次请求：以日志中最后一条 header 作为基线，区分 initial / resume
+            baseline = fold_request_header(await self._transcript_writer.read_events())
+        reason = next_reason(baseline, header, instance_logged=self._header_logged)
+        if reason is not None:
+            self._stage_event(EVENT_REQUEST_HEADER, header=header, reason=reason)
+            self._last_header = header
+            self._header_logged = True
+        await self._flush_events()
 
     # ------------------------------------------------------------------
     # 会话管理
@@ -528,30 +820,26 @@ class QueryEngine:
         *,
         skip_system: bool = False,
     ) -> list[Message]:
-        """恢复之前的会话 —— 通过 TranscriptWriter 协议统一读取。
+        """恢复之前的会话 —— 读事件流 + derive 确定性重建消息。
 
-        将当前引擎切换到指定 session_id（包括 writer 和 SDK 消息的 session_id），
-        使得后续的读写都走同一个 transcript 存储。
+        将当前引擎切换到指定 session_id；引擎自建的默认写入器会重新指向目标会话，
+        显式注入的写入器保持不变（由调用方决定读哪条事件流）。
 
         Args:
-            session_id: 要恢复的会话 ID
-            skip_system: 是否过滤临时系统消息（api_retry / local_command）
+            session_id: 要恢复的会话 ID。
+            skip_system: 是否过滤临时系统消息（api_retry / local_command）。
+
+        Returns:
+            重建出的消息列表（已写入内存 store）。
         """
-        # 切换到目标 session_id
         self._session_id = session_id
 
-        # 重建 writer 指向目标会话文件
-        self._transcript_writer = self._create_default_writer()
+        if self._owns_writer:
+            self._transcript_writer = self._create_default_writer()
 
-        # 通过协议统一读取 → 反序列化
-        raw_messages = await self._transcript_writer.read()
-        messages: list[Message] = []
-        for raw in raw_messages:
-            try:
-                msg = _message_adapter.validate_python(raw)
-                messages.append(msg)
-            except Exception:
-                continue  # 跳过无法反序列化的消息
+        writer = self._transcript_writer
+        events = await writer.read_events() if writer is not None else []
+        messages = derived_to_messages(derive_messages(events))
 
         # 可选过滤临时系统消息
         if skip_system:
@@ -562,17 +850,61 @@ class QueryEngine:
             ]
 
         self._store.replace(messages)
+        # 换实例接续同一条事件流：下次请求写 reason=resume 的 header
+        self._header_logged = False
+        self._last_header = None
         logger.info("Resumed session %s with %d messages", session_id, len(messages))
         return messages
+
+    async def fork_session(
+        self,
+        boundary_seq: int,
+        new_session_id: str,
+        *,
+        target: TranscriptWriter | None = None,
+    ) -> TranscriptWriter:
+        """在事件流 ``boundary_seq`` 处剪一刀复制成新会话。
+
+        新会话继承剪切点之前的历史，元信息记录 ``parent_session``。
+        当前引擎仍留在原会话上。
+
+        Args:
+            boundary_seq: 剪切点（含此 seq）。
+            new_session_id: 新会话 ID。
+            target: 新会话的事件流写入器；None 时按默认后端为新 ID 创建。
+
+        Returns:
+            新会话的事件流写入器。
+
+        Raises:
+            RuntimeError: 引擎尚未初始化（没有可读的事件流）。
+        """
+        if self._transcript_writer is None:
+            raise RuntimeError("fork_session requires an initialized engine")
+
+        await self._flush_events()
+        destination = target or self._create_writer_for(new_session_id)
+        await fork_transcript(
+            self._transcript_writer, destination, boundary_seq, new_session_id
+        )
+        logger.info(
+            "Forked session %s at seq=%d into %s",
+            self._session_id, boundary_seq, new_session_id,
+        )
+        return destination
 
     # ------------------------------------------------------------------
     # 内部辅助方法
     # ------------------------------------------------------------------
 
     def _create_default_writer(self) -> LocalFileTranscriptWriter:
-        """为当前 session_id 创建默认本地文件 TranscriptWriter。"""
-        session_file = DEFAULT_SESSION_DIR / f"{self._session_id}.jsonl"
-        return LocalFileTranscriptWriter(session_file)
+        """为当前 session_id 创建默认本地事件流写入器。"""
+        return self._create_writer_for(self._session_id)
+
+    @staticmethod
+    def _create_writer_for(session_id: str) -> LocalFileTranscriptWriter:
+        """为指定 session_id 创建默认本地事件流写入器（JSONL 每行一个事件）。"""
+        return LocalFileTranscriptWriter(DEFAULT_SESSION_DIR / f"{session_id}.jsonl")
 
     def _create_default_assembler(self) -> PromptAssembler:
         """创建默认 PromptAssembler（注册内置 section）。"""
@@ -581,11 +913,12 @@ class QueryEngine:
             registry.register(section)
         return PromptAssembler(registry)
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, query: str = "") -> str:
         """通过 PromptAssembler 组装系统提示 —— 替代旧的一次性字符串拼接。
 
-        静态段（identity / tools_guidance）+ 动态段（env_info / rules）。
+        静态段（identity / tools_guidance）+ 动态段（env_info / rules / memory）。
         custom_system_prompt 覆盖 identity；append_system_prompt 永远追加。
+        Memory 经 MemoryManager 检索注入（top-k + token 预算），替代全量 load。
         """
         import os
 
@@ -593,9 +926,14 @@ class QueryEngine:
         skills_text = "\n".join(
             f"- {s.name}: {s.description}" for s in self._skills if s.enabled
         )
+        retrieved = self._memory_manager.retrieve(
+            query,
+            agent_id=self._config.agent_id,
+            k=self._config.memory_retrieval_k,
+            token_budget=self._config.memory_retrieval_token_budget,
+        )
         memories_text = "\n".join(
-            f"- [{m.type}] {m.content}" if m.type else f"- {m.content}"
-            for m in self._memory_store.load()
+            f"- [{m.kind}] {m.content}" for m in retrieved
         )
 
         ctx = PromptContext(

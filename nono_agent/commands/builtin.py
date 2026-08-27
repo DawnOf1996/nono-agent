@@ -190,7 +190,9 @@ class MemoryCommand(_SimpleCommand):
         if not memories:
             return "No memories stored."
         lines = [
-            f"- [{m.type or 'general'}] {m.name}: {m.content}" for m in memories
+            f"- [{m.kind}·{m.status}] {m.content}"
+            + (f"  (agent={m.agent_id})" if m.agent_id else "")
+            for m in memories
         ]
         return "Memories:\n" + "\n".join(lines)
 

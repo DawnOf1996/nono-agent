@@ -19,8 +19,9 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 | MCP 客户端（stdio tools/resources 桥接）+ Plugins | — |
 | Memory（memdir）+ Checkpoint + Task 工具族 | — |
 | 工具协议、注册表、流式执行器 + CI（pytest+ruff+mypy） | — |
-| `TranscriptWriter` + NDJSON + SQLite | — |
-| CLI + Server（SSE，含鉴权/TTL/AskUser 回调） | — |
+| 事件溯源会话日志（`TranscriptWriter` + JSONL/SQLite，落盘只有事件）+ 请求前一致性门禁 | — |
+| 可观测性：TokenTracker + structlog + Metrics（事件流投影）+ 脱敏导出 + 不调模型回放 | — |
+| CLI + Server（SSE，含鉴权/TTL/AskUser 回调 + 会话事件流通道） | — |
 
 详细架构见 [docs/NonoAgent-Architecture.md](docs/NonoAgent-Architecture.md)，规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
@@ -94,7 +95,8 @@ python -m nono_agent.adapters.cli sessions   # 列出历史会话
 ```bash
 python examples/server_basic.py
 # POST /session/new
-# POST /chat  （SSE 流）
+# POST /chat                     （SSE 流）
+# GET  /session/<id>/events      （会话事件流，SSE，脱敏后推送）
 ```
 
 更多示例见 `examples/`。
@@ -105,6 +107,8 @@ python examples/server_basic.py
 - **不可变配置 + 运行时快照：** 避免循环内读到变化的环境状态
 - **强类型状态机：** 转移 / 终止原因穷举
 - **Fail-closed 工具默认：** 默认非并发安全、默认假定有写副作用
+- **事件溯源会话日志：** 引擎只向事件流追加 `SessionEvent`，落盘只有事件；消息数组由 `derive_messages()` 推导，resume / fork / 回放都走同一条日志
+- **模型可见 ⟺ 日志化：** 每次 LLM 请求前校验「事件流重建 == 会话状态」，不一致即终止本轮 —— 绕过日志改上下文没有存活空间
 - **协议可插拔：** Provider / Tool / Pipeline / Middleware / Transcript / Permission
 
 ## 文档

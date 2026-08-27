@@ -136,3 +136,80 @@ METRIC_TURN_DURATION = "nono_agent.turn.duration_ms"   # 每轮总耗时
 METRIC_CONTEXT_TOKENS = "nono_agent.context.tokens"   # 当前上下文 token 数
 METRIC_MESSAGE_COUNT = "nono_agent.messages.count"     # 当前消息数
 METRIC_TOTAL_TOKENS = "nono_agent.tokens.total"        # 当前累计 token 数
+
+# 记忆相关指标（对齐 MemoryManager）
+METRIC_MEMORY_RETRIEVE = "nono_agent.memory.retrieve"   # 记忆检索次数
+METRIC_MEMORY_WRITE = "nono_agent.memory.write"         # 记忆写入次数
+METRIC_MEMORY_REFLECT = "nono_agent.memory.reflect"     # 反思触发次数
+
+# 会话可观测性
+METRIC_SESSION_EVENTS = "nono_agent.session.events"      # 写入事件流的事件数
+METRIC_SESSION_TURNS = "nono_agent.session.turns"        # 完成的回合数
+METRIC_SESSION_STEPS = "nono_agent.session.steps"        # 完成的 step 数
+METRIC_PERMISSION_DENIALS = "nono_agent.permission.denials"  # 权限拒绝次数
+METRIC_SESSION_DESYNC = "nono_agent.session.desync"      # 日志重建不一致次数
+
+# ---------------------------------------------------------------------------
+# 标签约定（tag 名常量）
+#
+# 所有指标统一使用以下 tag 名，实现「session/agent/model/tool/kind」同源关联，
+# 与事件流的 session_id / turn / step / seq 构成可互查的主键体系：
+#   record_counter(METRIC_API_REQUESTS, session_id=..., agent_id=..., model=...)
+# ---------------------------------------------------------------------------
+TAG_SESSION_ID = "session_id"
+TAG_AGENT_ID = "agent_id"
+TAG_MODEL = "model"
+TAG_TOOL = "tool"
+TAG_KIND = "kind"
+TAG_REASON = "reason"
+TAG_EVENT = "event"
+
+
+# ---------------------------------------------------------------------------
+# 事件流 → 指标
+#
+# 事件流是唯一事实来源，指标是它的聚合投影：同一次运行既能按 seq 逐条回看，
+# 也能按标签聚合成曲线。映射表把事件类型翻译成 (指标名, 从载荷取哪些标签)。
+# ---------------------------------------------------------------------------
+_EVENT_METRICS: dict[str, tuple[str, dict[str, str]]] = {
+    # 事件类型 → (指标名, {载荷字段: 标签名})
+    "turn/end": (METRIC_SESSION_TURNS, {"reason": TAG_REASON}),
+    "step/end": (METRIC_SESSION_STEPS, {"reason": TAG_REASON}),
+    "tool/call": (METRIC_TOOL_EXECUTIONS, {"name": TAG_TOOL}),
+    "api/retry": (METRIC_API_ERRORS, {"reason": TAG_REASON}),
+    "compact/boundary": (METRIC_COMPACT_OPERATIONS, {}),
+    "permission/denial": (METRIC_PERMISSION_DENIALS, {"tool": TAG_TOOL}),
+    "memory/write": (METRIC_MEMORY_WRITE, {"kind": TAG_KIND}),
+    "memory/retrieve": (METRIC_MEMORY_RETRIEVE, {}),
+}
+
+
+def record_event_metric(
+    event_type: str, data: dict[str, Any], *, session_id: str
+) -> None:
+    """把一条会话事件投影为指标。
+
+    每条事件都计入 ``METRIC_SESSION_EVENTS``（按事件类型分标签），映射表命中的
+    事件类型再额外计入对应的领域指标。载荷里缺失的标签取 ``unknown``，
+    保证同一指标的标签集稳定，聚合后端不会因维度漂移而分裂时间序列。
+
+    Args:
+        event_type: 事件类型（``session.events`` 的 ``EVENT_*`` 常量值）。
+        data: 事件载荷。
+        session_id: 会话 ID，作为所有指标的公共标签。
+    """
+    record_counter(
+        METRIC_SESSION_EVENTS,
+        1.0,
+        **{TAG_SESSION_ID: session_id, TAG_EVENT: event_type},
+    )
+
+    mapping = _EVENT_METRICS.get(event_type)
+    if mapping is None:
+        return
+
+    metric_name, tag_sources = mapping
+    tags = {TAG_SESSION_ID: session_id}
+    for payload_key, tag_name in tag_sources.items():
+        tags[tag_name] = str(data.get(payload_key, "unknown"))
+    record_counter(metric_name, 1.0, **tags)

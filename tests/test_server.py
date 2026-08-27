@@ -45,3 +45,106 @@ class TestAskUserAnswer:
         with _client(api_key=None) as client:
             resp = client.post("/session/x/answer", json={"answers": {}})
             assert resp.status_code == 404
+
+
+class TestSessionEventChannel:
+    """GET /session/{id}/events —— 事件流只读通道（脱敏后推送）。"""
+
+    def _write_session(self, tmp_path, monkeypatch, events):
+        import asyncio
+
+        from nono_agent.adapters import server as server_module
+        from nono_agent.session import transcript as transcript_module
+        from nono_agent.session.events import SessionEvent
+        from nono_agent.session.transcript import LocalFileTranscriptWriter
+
+        session_dir = tmp_path / "sessions"
+        monkeypatch.setattr(server_module, "DEFAULT_SESSION_DIR", session_dir)
+        monkeypatch.setattr(transcript_module, "DEFAULT_SESSION_DIR", session_dir)
+
+        writer = LocalFileTranscriptWriter(session_dir / "sid.jsonl")
+
+        async def write():
+            for type_, data in events:
+                await writer.append_event(SessionEvent.make(0, type_, **data))
+
+        asyncio.run(write())
+        return writer
+
+    def _read_sse(self, client, url):
+        with client.stream("GET", url) as resp:
+            assert resp.status_code == 200
+            return "".join(resp.iter_text())
+
+    def test_missing_session_returns_404(self, tmp_path, monkeypatch):
+        self._write_session(tmp_path, monkeypatch, [])
+        with _client(api_key=None) as client:
+            resp = client.get("/session/nope/events?follow=false")
+            assert resp.status_code == 404
+
+    def test_streams_events_and_terminates_without_follow(self, tmp_path, monkeypatch):
+        from nono_agent.session.events import EVENT_TURN_END, EVENT_USER_MESSAGE
+
+        self._write_session(
+            tmp_path,
+            monkeypatch,
+            [
+                (EVENT_USER_MESSAGE, {"content": "hi"}),
+                (EVENT_TURN_END, {"turn": 1, "reason": "COMPLETED"}),
+            ],
+        )
+        with _client(api_key=None) as client:
+            body = self._read_sse(client, "/session/sid/events?follow=false")
+
+        assert body.count("event: session_event") == 2
+        assert "user/message" in body
+        assert '"last_seq": 2' in body
+
+    def test_after_seq_resumes_from_cursor(self, tmp_path, monkeypatch):
+        from nono_agent.session.events import EVENT_TURN_END, EVENT_USER_MESSAGE
+
+        self._write_session(
+            tmp_path,
+            monkeypatch,
+            [
+                (EVENT_USER_MESSAGE, {"content": "hi"}),
+                (EVENT_TURN_END, {"turn": 1, "reason": "COMPLETED"}),
+            ],
+        )
+        with _client(api_key=None) as client:
+            body = self._read_sse(client, "/session/sid/events?follow=false&after_seq=1")
+
+        assert body.count("event: session_event") == 1
+        assert "turn/end" in body
+        assert "user/message" not in body
+
+    def test_payload_is_redacted(self, tmp_path, monkeypatch):
+        from nono_agent.session.events import EVENT_TOOL_RESULT
+
+        secret = "sk-abcdefghijklmnopqrstuvwxyz012345"
+        self._write_session(
+            tmp_path,
+            monkeypatch,
+            [(EVENT_TOOL_RESULT, {"call_id": "t1", "result": f"key={secret}"})],
+        )
+        with _client(api_key=None) as client:
+            body = self._read_sse(client, "/session/sid/events?follow=false")
+
+        assert secret not in body
+        assert "redacted" in body
+
+        # 磁盘上的事件流仍然逐字真实
+        log = (tmp_path / "sessions" / "sid.jsonl").read_text(encoding="utf-8")
+        assert secret in log
+
+    def test_legacy_log_reports_error_event(self, tmp_path, monkeypatch):
+        """事件格式之前的消息副本 transcript 必须报错，而不是静默当空流。"""
+        self._write_session(tmp_path, monkeypatch, [])
+        session_file = tmp_path / "sessions" / "sid.jsonl"
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text('{"role": "user", "content": "old"}\n', encoding="utf-8")
+
+        with _client(api_key=None) as client:
+            body = self._read_sse(client, "/session/sid/events?follow=false")
+
+        assert "event: error" in body

@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from typing import Any
 
 from nono_agent.core.config import EngineConfig, QueryConfig
@@ -50,12 +51,25 @@ from nono_agent.core.types import (
 from nono_agent.hooks.middleware import MiddlewareChain
 from nono_agent.hooks.post_sampling import PostSamplingChain
 from nono_agent.hooks.stop_hooks import StopHookExecutor
-from nono_agent.observability.metrics import METRIC_API_REQUESTS, record_counter
+from nono_agent.observability.metrics import (
+    METRIC_API_REQUESTS,
+    TAG_MODEL,
+    TAG_SESSION_ID,
+    record_counter,
+)
 from nono_agent.observability.token_tracker import TokenTracker
 from nono_agent.pipeline.base import PipelineContext, PreprocessPipeline
 from nono_agent.providers.base import FallbackTriggeredError
 from nono_agent.recovery import max_output_tokens, prompt_too_long
 from nono_agent.recovery.chain import RecoveryAction, RecoveryChain, RecoveryDecision
+from nono_agent.session.derive import messages_to_derived
+from nono_agent.session.events import (
+    EVENT_API_RETRY,
+    EVENT_COMPACT_BOUNDARY,
+    EVENT_STEP_END,
+    EVENT_STEP_START,
+    SessionEventSink,
+)
 from nono_agent.session.store import MessageStore
 from nono_agent.tools.executor import StreamingToolExecutor
 from nono_agent.tools.registry import ToolRegistry
@@ -85,6 +99,7 @@ async def agentic_loop(
     initial_state: LoopState,
     signal: AbortSignal,
     token_tracker: TokenTracker | None = None,
+    event_sink: SessionEventSink | None = None,
 ) -> AsyncGenerator[InternalMessage, None]:
     """主 Agentic 循环 —— while(True) 驱动的代理核心。
 
@@ -105,15 +120,44 @@ async def agentic_loop(
     - system_prompt: 系统提示词
     - initial_state: 初始循环状态
     - signal: 取消信号（asyncio.Event 封装）
+    - event_sink: 会话事件汇；循环用它上报引擎观察不到的状态变更
+      （step 边界、``store.replace`` 造成的 compact 边界、API 重试）
 
     这是内部生成器 —— 外层 QueryEngine 负责：
     - SDK 消息格式化
-    - Transcript 持久化
+    - 事件流持久化（消息类事件由引擎从本生成器的产出映射）
     - 成本跟踪聚合
     """
     state = initial_state  # 当前循环状态（每轮迭代后构造新实例）
     current_model = config.effective_model  # 运行时当前模型（fallback 切换后可改变）
     used_fallback = False
+    step = 0  # 已开始的 step 序号（一次 LLM 请求 + 其引起的工具执行）
+
+    def emit(type_: str, /, **data: Any) -> None:
+        """上报事件（未注入 sink 时为 no-op）。"""
+        if event_sink is not None:
+            event_sink(type_, **data)
+
+    def emit_step_end(reason: str) -> None:
+        """收束当前 step —— 每个 step/start 都必须配一条 step/end。
+
+        Args:
+            reason: step 结束原因（completed / next_turn / api_error / aborted …）。
+        """
+        emit(EVENT_STEP_END, turn=state.turn_count, step=step, reason=reason)
+
+    def emit_state_replaced(strategy: str, content: str, **metadata: Any) -> None:
+        """``store.replace()`` 之后同步会话状态 —— 携带替换后的完整窗口。
+
+        没有这条事件，日志重建就会停留在替换前的历史，
+        请求前的一致性门禁会（正确地）报 desync。
+        """
+        emit(
+            EVENT_COMPACT_BOUNDARY,
+            content=content,
+            metadata={"strategy": strategy, **metadata},
+            kept=messages_to_derived(store.all_messages()),
+        )
 
     while True:
         # —— 前置检查: 用户取消 ——
@@ -143,8 +187,8 @@ async def agentic_loop(
         # ToolResultBudget → SnipCompact → MicroCompact → ContextCollapse → AutoCompact
         # 目的: 确保发给 LLM 的消息不超过上下文窗口限制
         # ------------------------------------------------------------------
-        # 取边界后的消息快照（compact boundary 之后的消息）
-        messages = store.snapshot_after_boundary()
+        # 取边界后消息的深拷贝 —— 管线可自由改写，不影响已记录的会话状态
+        messages = store.snapshot_for_request()
         # 获取所有工具的 API Schema（用于 LLM function calling）
         api_tools = tool_registry.to_api_schema()
 
@@ -165,10 +209,16 @@ async def agentic_loop(
         pipeline_result = await pipeline.execute(messages, pipeline_ctx)
         messages = pipeline_result.messages
 
-        # 如果管线创建了压缩边界，清理边界前的旧消息
+        # 如果管线创建了压缩边界，清理边界前的旧消息并把新状态写进事件流
         if pipeline_result.compact_boundary_created:
             store.replace(messages)
             store.gc_before_boundary()
+            emit_state_replaced(
+                "pipeline",
+                "[Context compacted by preprocess pipeline.]",
+                model=current_model,
+                estimated_tokens=pipeline_ctx.estimated_tokens,
+            )
 
         # ------------------------------------------------------------------
         # Phase 2: 中间件预处理 (MiddlewareChain)
@@ -190,8 +240,17 @@ async def agentic_loop(
         # 流式事件序列:
         # message_start -> content_block_start/delta/stop -> message_delta -> message_stop
         # ------------------------------------------------------------------
+        # step 边界先入事件流，再 yield RequestStartEvent —— 引擎在处理
+        # RequestStartEvent 时执行请求前一致性门禁，此刻状态事件必须已经齐全
+        step += 1
+        emit(EVENT_STEP_START, turn=state.turn_count, step=step, model=current_model)
+
         yield RequestStartEvent()  # 通知消费者 API 请求开始
-        record_counter(METRIC_API_REQUESTS, model=current_model)
+        record_counter(
+            METRIC_API_REQUESTS,
+            1.0,
+            **{TAG_MODEL: current_model, TAG_SESSION_ID: query_config.session_id},
+        )
 
         # 累积流式事件的状态
         assistant_content: list[dict[str, Any]] = []  # 累积的 assistant content blocks
@@ -265,15 +324,28 @@ async def agentic_loop(
                 logger.warning(
                     "Falling back from %s to %s", exc.original_model, exc.fallback_model
                 )
+                emit(
+                    EVENT_API_RETRY,
+                    attempt=1,
+                    max_retries=1,
+                    delay=0.0,
+                    reason="fallback_model",
+                    from_model=exc.original_model,
+                    to_model=exc.fallback_model,
+                )
+                emit_step_end("fallback_model")
                 yield SystemMessage(
                     subtype="api_retry",
                     content=(
                         f"Model {exc.original_model} unavailable, "
                         f"falling back to {exc.fallback_model}..."
                     ),
+                    retry_attempt=1,
+                    max_retries=1,
                 )
                 continue
             api_error = str(exc)
+            emit_step_end("model_error")
             yield _make_terminal(store, state, TerminalReason.MODEL_ERROR, error=exc)
             return
 
@@ -290,15 +362,45 @@ async def agentic_loop(
             )
             if recovery_result is not None:
                 # 恢复成功 —— 产生了新的 Transition，用 continue 重试
-                transition, new_state = recovery_result
+                transition, new_state, recovery_effect = recovery_result
                 state = new_state
+
+                # 恢复策略若替换了会话状态，先把新窗口写进事件流
+                if recovery_effect.state_replaced:
+                    emit_state_replaced(
+                        recovery_effect.strategy,
+                        f"[Context recovered after {error_type} error.]",
+                        error_type=error_type,
+                        tokens_saved=transition.metadata.get("tokens_saved", 0)
+                        if transition.metadata
+                        else 0,
+                    )
+
+                attempt = state.max_output_tokens_recovery_count or 1
+                emit(
+                    EVENT_API_RETRY,
+                    attempt=attempt,
+                    max_retries=decision.max_attempts,
+                    delay=0.0,
+                    reason=error_type,
+                    action=recovery_effect.strategy,
+                )
+                emit_step_end(f"api_error:{error_type}")
+
+                # 恢复策略注入的消息要进事件流 —— 它们是模型可见输入
+                for injected in recovery_effect.injected_messages:
+                    yield injected
+
                 yield SystemMessage(
                     subtype="api_retry",
                     content=f"Retrying after {error_type} error...",
+                    retry_attempt=attempt,
+                    max_retries=decision.max_attempts,
                 )
                 continue  # 重试本轮
 
             # 恢复失败 —— 终止循环
+            emit_step_end("model_error")
             yield _make_terminal(
                 store, state, TerminalReason.MODEL_ERROR, error=exc
             )
@@ -370,6 +472,7 @@ async def agentic_loop(
 
         if stop_result.is_preventing:
             # Stop hook 明确阻止继续（如安全拦截）—— 直接终止
+            emit_step_end("stop_hook_prevented")
             yield _make_terminal(
                 store, state, TerminalReason.STOP_HOOK_PREVENTED
             )
@@ -398,10 +501,13 @@ async def agentic_loop(
                 transition=transition, state=state
             )
             if vetoed is None:  # 中间件否决，终止循环
+                emit_step_end("hook_stopped")
                 yield _make_terminal(
                     store, state, TerminalReason.HOOK_STOPPED
                 )
                 return
+
+            emit_step_end("stop_hook_blocking")
 
             # 构造新的 LoopState（frozen=True，必须构造新实例）
             state = LoopState(
@@ -422,6 +528,7 @@ async def agentic_loop(
         # ------------------------------------------------------------------
         if not tool_blocks:
             # 无工具调用 —— 模型已完成，终止循环
+            emit_step_end("completed")
             yield _make_terminal(
                 store, state, TerminalReason.COMPLETED
             )
@@ -482,11 +589,16 @@ async def agentic_loop(
                 }
                 for r in tool_results
             ]
-            store.append(UserMessage(
+            aborted_msg = UserMessage(
                 message={"role": "user", "content": tool_result_content},
                 tool_use_result="aborted",
-            ))
+            )
+            store.append(aborted_msg)
+            # 必须 yield —— 引擎据此写 tool/result 事件；否则中止留下的占位结果
+            # 只存在于内存状态，日志重建会缺这条消息
+            yield aborted_msg
 
+            emit_step_end("aborted_tools")
             yield _make_terminal(
                 store, state, TerminalReason.ABORTED_TOOLS
             )
@@ -523,10 +635,13 @@ async def agentic_loop(
             transition=transition, state=state
         )
         if vetoed is None:  # 中间件否决，终止循环
+            emit_step_end("hook_stopped")
             yield _make_terminal(
                 store, state, TerminalReason.HOOK_STOPPED
             )
             return
+
+        emit_step_end("next_turn")
 
         # 构造新的 LoopState（frozen=True，每次转移必须构造新实例）
         state = LoopState(
@@ -625,13 +740,26 @@ def _classify_error(exc: Exception) -> str:
     return "api_error"
 
 
+@dataclass(frozen=True)
+class _RecoveryEffect:
+    """恢复策略对会话状态造成的可观测副作用。
+
+    循环用它决定要往事件流里补哪些事件：``store.replace()`` 需要一条携带新窗口的
+    ``compact/boundary``，注入的消息需要各自的 ``user/message``。
+    """
+
+    strategy: str
+    state_replaced: bool = False
+    injected_messages: tuple[InternalMessage, ...] = ()
+
+
 async def _apply_recovery(
     decision: RecoveryDecision,
     store: MessageStore,
     state: LoopState,
     messages: list[Message],
-) -> tuple[Transition, LoopState] | None:
-    """应用恢复决策并返回新的 Transition + LoopState。
+) -> tuple[Transition, LoopState, _RecoveryEffect] | None:
+    """应用恢复决策并返回新的 Transition + LoopState + 状态副作用。
 
     返回 None 表示决策为 TERMINATE 或 PASS_THROUGH，无法恢复。
 
@@ -660,7 +788,11 @@ async def _apply_recovery(
                 turn_count=state.turn_count,
                 transition=transition,
             )
-            return transition, new_state
+            return (
+                transition,
+                new_state,
+                _RecoveryEffect("reactive_compact", state_replaced=True),
+            )
 
         case RecoveryAction.COLLAPSE_DRAIN_RETRY:
             # 上下文折叠排水: 移除最旧的 N 对消息，然后重试
@@ -677,7 +809,11 @@ async def _apply_recovery(
                 turn_count=state.turn_count,
                 transition=transition,
             )
-            return transition, new_state
+            return (
+                transition,
+                new_state,
+                _RecoveryEffect("collapse_drain", state_replaced=True),
+            )
 
         case RecoveryAction.ESCALATE_MAX_TOKENS:
             # 升级 max_output_tokens 上限: 从默认 8k 升级到 64k
@@ -697,7 +833,7 @@ async def _apply_recovery(
                 turn_count=state.turn_count,
                 transition=transition,
             )
-            return transition, new_state
+            return transition, new_state, _RecoveryEffect("escalate_max_tokens")
 
         case RecoveryAction.RECOVERY_PROMPT:
             # 注入恢复提示: 告诉模型“你的回复被截断了，请继续”
@@ -720,7 +856,13 @@ async def _apply_recovery(
                 turn_count=state.turn_count + 1,
                 transition=transition,
             )
-            return transition, new_state
+            return (
+                transition,
+                new_state,
+                _RecoveryEffect(
+                    "recovery_prompt", injected_messages=(recovery_msg,)
+                ),
+            )
 
         case _:  # TERMINATE / TOKEN_BUDGET_NUDGE / PASS_THROUGH 等不处理
             return None

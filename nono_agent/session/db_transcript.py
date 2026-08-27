@@ -1,7 +1,8 @@
-"""SQLite Transcript 写入器 —— TranscriptWriter 协议的生产级后端起步。
+"""SQLite 事件流写入器 —— TranscriptWriter 协议的生产级后端起步。
 
-每会话一个 SQLite 文件，``messages`` 表以自增 seq 保存 NDJSON 风格的
-JSON 消息行。实现 record / record_append / read / flush 协议。
+每会话一个 SQLite 文件：``events`` 表以自增 seq 保存事件信封，结构化列
+（``type`` / ``timestamp``）可建索引，支撑按类型/时间的回溯查询；
+``session_header`` 表单独保存会话元信息与格式版本。
 """
 
 from __future__ import annotations
@@ -12,98 +13,153 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from nono_agent.core.types import Message
-from nono_agent.session.transcript import serialize_message
+from nono_agent.session.events import SessionEvent
+from nono_agent.session.header import (
+    HEADER_FIELDS,
+    SessionHeader,
+    VersionMismatchError,
+    check_format_version,
+)
+from nono_agent.session.transcript import restrict_permissions
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS messages (
+CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    data TEXT NOT NULL
+    type TEXT NOT NULL,
+    data TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    ignorable INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events (type);
+CREATE TABLE IF NOT EXISTS session_header (
+    session_id TEXT PRIMARY KEY,
+    format_version INTEGER NOT NULL,
+    created_at REAL,
+    cwd TEXT,
+    parent_session TEXT,
+    agent_preset_id TEXT
 )
 """
 
+_SELECT_COLUMNS = "seq, type, data, timestamp, ignorable"
+
 
 class SQLiteTranscriptWriter:
-    """SQLite 后端 Transcript 写入器。"""
+    """SQLite 后端事件流写入器。"""
 
     def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
+        """初始化 SQLite 事件流写入器。
+
+        Args:
+            db_path: 会话数据库文件路径。
+        """
+        self._db_path = Path(db_path)
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
 
     @property
     def db_path(self) -> Path:
+        """会话数据库文件路径。"""
         return self._db_path
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(str(self._db_path))
-            self._conn.execute(_SCHEMA)
+            self._conn.executescript(_SCHEMA)
             self._conn.commit()
+            restrict_permissions(self._db_path)
         return self._conn
 
-    async def record(self, messages: list[Message]) -> None:
-        """全量覆写：清空后写入所有消息。"""
+    # ------------------------------------------------------------------
+    # 事件追加 / 读取
+    # ------------------------------------------------------------------
+
+    async def append_event(self, event: SessionEvent) -> SessionEvent:
+        """追加一条事件；seq 由数据库自增分配。"""
         conn = self._connection()
         with self._lock:
-            conn.execute("DELETE FROM messages")
-            conn.executemany(
-                "INSERT INTO messages (data) VALUES (?)",
-                [(json.dumps(serialize_message(m), ensure_ascii=False),) for m in messages],
+            cur = conn.execute(
+                "INSERT INTO events (type, data, timestamp, ignorable) VALUES (?, ?, ?, ?)",
+                (
+                    event.type,
+                    json.dumps(event.data, ensure_ascii=False),
+                    event.timestamp,
+                    1 if event.ignorable else 0,
+                ),
             )
             conn.commit()
+            if cur.lastrowid is not None:
+                event.seq = cur.lastrowid
+        return event
 
-    async def record_append(self, message: Message) -> None:
-        """追加单条消息。"""
+    async def read_events(self) -> list[SessionEvent]:
+        """读取全部事件（按 seq 升序），跳过 data 列损坏的行。"""
+        check_format_version(await self.read_header())
         conn = self._connection()
         with self._lock:
+            self._reject_legacy(conn)
+            rows = conn.execute(
+                f"SELECT {_SELECT_COLUMNS} FROM events ORDER BY seq"
+            ).fetchall()
+        return self._parse_rows(rows)
+
+    async def read_events_from(self, start_seq: int) -> list[SessionEvent]:
+        """读取 ``seq >= start_seq`` 的事件。"""
+        check_format_version(await self.read_header())
+        conn = self._connection()
+        with self._lock:
+            self._reject_legacy(conn)
+            rows = conn.execute(
+                f"SELECT {_SELECT_COLUMNS} FROM events WHERE seq >= ? ORDER BY seq",
+                (start_seq,),
+            ).fetchall()
+        return self._parse_rows(rows)
+
+    # ------------------------------------------------------------------
+    # SessionHeader
+    # ------------------------------------------------------------------
+
+    async def write_header(self, header: SessionHeader) -> None:
+        """写入（或覆盖）会话元信息。"""
+        conn = self._connection()
+        columns = ", ".join(HEADER_FIELDS)
+        placeholders = ", ".join("?" for _ in HEADER_FIELDS)
+        values = tuple(getattr(header, name) for name in HEADER_FIELDS)
+        with self._lock:
+            conn.execute("DELETE FROM session_header")
             conn.execute(
-                "INSERT INTO messages (data) VALUES (?)",
-                (json.dumps(serialize_message(message), ensure_ascii=False),),
+                f"INSERT INTO session_header ({columns}) VALUES ({placeholders})",
+                values,
             )
             conn.commit()
 
-    async def read(self) -> list[dict[str, Any]]:
-        """读取全部消息（按 seq 顺序），跳过损坏行。"""
+    async def read_header(self) -> SessionHeader | None:
+        """读取会话元信息。"""
         conn = self._connection()
+        columns = ", ".join(HEADER_FIELDS)
         with self._lock:
-            rows = conn.execute("SELECT data FROM messages ORDER BY seq").fetchall()
+            row = conn.execute(f"SELECT {columns} FROM session_header").fetchone()
+        if row is None:
+            return None
+        return SessionHeader.from_dict(dict(zip(HEADER_FIELDS, row, strict=True)))
 
-        messages: list[dict[str, Any]] = []
-        for (data,) in rows:
-            try:
-                messages.append(json.loads(data))
-            except json.JSONDecodeError:
-                continue
-        return messages
-
-    async def read_range(self, start: int, end: int | None = None) -> list[dict[str, Any]]:
-        """按 seq 范围读取消息（含 start，不含 end）。"""
-        conn = self._connection()
-        with self._lock:
-            if end is None:
-                rows = conn.execute(
-                    "SELECT data FROM messages WHERE seq >= ? ORDER BY seq", (start,)
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT data FROM messages WHERE seq >= ? AND seq < ? ORDER BY seq",
-                    (start, end),
-                ).fetchall()
-        return [json.loads(data) for (data,) in rows]
+    # ------------------------------------------------------------------
+    # 生命周期
+    # ------------------------------------------------------------------
 
     async def flush(self) -> None:
-        """强制提交。"""
+        """提交在途事务。"""
         if self._conn is not None:
             with self._lock:
                 self._conn.commit()
 
     async def delete(self) -> None:
-        """删除会话数据（清空表）。"""
+        """删除会话数据（事件与元信息）。"""
         conn = self._connection()
         with self._lock:
-            conn.execute("DELETE FROM messages")
+            conn.execute("DELETE FROM events")
+            conn.execute("DELETE FROM session_header")
             conn.commit()
 
     def close(self) -> None:
@@ -112,3 +168,43 @@ class SQLiteTranscriptWriter:
             with self._lock:
                 self._conn.close()
                 self._conn = None
+
+    # ------------------------------------------------------------------
+    # 内部辅助
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _reject_legacy(conn: sqlite3.Connection) -> None:
+        """事件格式之前的库以 ``messages`` 表存消息副本 —— 拒读而非当作空会话。"""
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+        ).fetchone()
+        if row is not None:
+            raise VersionMismatchError(
+                "session database has a legacy 'messages' table "
+                "(message-copy transcript); event-sourced sessions cannot be read from it"
+            )
+
+    @staticmethod
+    def _parse_rows(rows: list[tuple[Any, ...]]) -> list[SessionEvent]:
+        events: list[SessionEvent] = []
+        for seq, type_, data, timestamp, ignorable in rows:
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            events.append(
+                SessionEvent(
+                    seq=seq,
+                    type=type_,
+                    data=payload,
+                    timestamp=timestamp,
+                    ignorable=bool(ignorable),
+                )
+            )
+        return events
+
+
+__all__ = ["SQLiteTranscriptWriter"]

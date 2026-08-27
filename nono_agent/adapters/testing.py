@@ -382,6 +382,10 @@ def create_test_engine(
     *,
     tools: list[ToolBase] | None = None,
     model: str = "claude-test",
+    transcript_writer: Any | None = None,
+    provider: Any | None = None,
+    config_overrides: dict[str, Any] | None = None,
+    **engine_kwargs: Any,
 ) -> QueryEngine:
     """创建预配置的测试用 QueryEngine。
 
@@ -394,15 +398,13 @@ def create_test_engine(
         responses: MockProvider 的脚本化响应列表
         tools: 要注册的工具列表
         model: 模型名称（用于 Provider 路由）
-
-    Returns:
-        配置完成的 QueryEngine，可直接调用 submit_message() 进行测试
+        transcript_writer: 事件流写入器；None 时引擎按 session_id 建默认本地事件流
+        provider: 替换默认 MockProvider 的 Provider 实例（测试错误恢复路径用）
+        config_overrides: 覆盖 EngineConfig 字段（如 session_invariant）
+        engine_kwargs: 直接透传给 QueryEngine 的其它依赖注入参数
     """
-    # 创建 MockProvider 并注册到 ProviderRegistry
-    mock_provider = MockProvider(responses=responses)
-
     registry = ProviderRegistry()
-    registry.register_instance(model, mock_provider)  # type: ignore
+    registry.register_instance(model, provider or MockProvider(responses=responses))  # type: ignore
 
     # 创建 ToolRegistry 并注册提供的工具
     tool_registry = ToolRegistry()
@@ -414,12 +416,13 @@ def create_test_engine(
     config = EngineConfig(
         model=model,
         include_partial_messages=True,
+        **(config_overrides or {}),
     )
 
-    engine = QueryEngine(
+    return QueryEngine(
         config,
         provider_registry=registry,
         tool_registry=tool_registry,
+        transcript_writer=transcript_writer,
+        **engine_kwargs,
     )
-
-    return engine

@@ -56,6 +56,9 @@ class RecoveryDecision:
     terminal_reason: TerminalReason | None = None
     metadata: dict[str, Any] | None = None
     recovery_message: str | None = None
+    # 本策略允许的最大尝试次数，供 ``api/retry`` 事件与 UI 展示进度用；
+    # 一次性策略为 1。
+    max_attempts: int = 1
 
     @property
     def should_continue(self) -> bool:
@@ -123,6 +126,7 @@ class RecoveryChain:
                 action=RecoveryAction.REACTIVE_COMPACT_RETRY,
                 transition_reason=TransitionReason.REACTIVE_COMPACT_RETRY,
                 metadata={"strategy": "reactive_compact"},
+                max_attempts=self._max_reactive_compact,
             )
 
         # Reactive compact already tried — try collapse drain
@@ -130,6 +134,7 @@ class RecoveryChain:
             action=RecoveryAction.COLLAPSE_DRAIN_RETRY,
             transition_reason=TransitionReason.COLLAPSE_DRAIN_RETRY,
             metadata={"strategy": "collapse_drain"},
+            max_attempts=self._max_reactive_compact,
         )
 
     def _handle_max_output_tokens(
@@ -165,6 +170,7 @@ class RecoveryChain:
                 metadata={
                     "recovery_count": state.max_output_tokens_recovery_count + 1,
                 },
+                max_attempts=self._max_output_recovery,
             )
 
         # Recovery exhausted

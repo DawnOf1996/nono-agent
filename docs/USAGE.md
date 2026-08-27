@@ -99,12 +99,16 @@ curl -N -X POST http://localhost:8000/chat \
 curl http://localhost:8000/sessions
 curl -X DELETE http://localhost:8000/session/<session_id>
 curl -X POST http://localhost:8000/abort -d '{"session_id":"..."}' -H "Content-Type: application/json"
+
+# 观测会话事件流（只读，脱敏后推送；详见 §7.5）
+curl -N http://localhost:8000/session/<session_id>/events
 ```
 
 服务端可选能力（`create_server_app(..., api_key=..., session_ttl=...)`）：
 - **鉴权**：设置 `api_key` 后，除 `/health` 外需 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
 - **会话 TTL**：`session_ttl`（秒）空闲超时后台清理。
 - **AskUser SSE**：流中收到 `ask_user` 事件后，用 `POST /session/<id>/answer` 回填 `{"answers": {...}}`。
+- **事件流通道**：`GET /session/<id>/events` 跟随会话事件（`after_seq` 断点续传、`follow=false` 只取快照）。
 
 ---
 
@@ -193,19 +197,141 @@ curl -X POST http://localhost:8000/abort -d '{"session_id":"..."}' -H "Content-T
 
 ---
 
-## 7. 测试
+## 7. 会话日志与可观测性
 
-### 7.1 一键跑全套
+会话日志是**事件溯源**的：引擎只向事件流追加 `SessionEvent`，落盘内容只有事件，消息数组由 `derive_messages()` 推导。默认后端是本地 JSONL，无需任何配置即启用。
+
+### 7.1 事件流落在哪里
+
+```
+~/.nono-agent/sessions/<session_id>.jsonl         # 每行一个 SessionEvent（append-only）
+~/.nono-agent/sessions/<session_id>.header.json   # SessionHeader（含 format_version）
+```
+
+事件流逐字保留提示词、工具输出与请求配置，因此文件按 `0600`、目录按 `0700` 落盘。外发副本（导出、SSE 推送）走 `redact_events()` 脱敏，见 §7.4。
 
 ```bash
-uv run pytest -q            # 249 个测试
+# 列出本地会话（session id + 事件数）
+uv run python -m nono_agent.adapters.cli sessions
+
+# 直接看某一轮到底发生了什么
+cat ~/.nono-agent/sessions/<session_id>.jsonl | jq -c '{seq, type}'
+
+# 「模型当时被告诉了什么」——请求配置快照
+cat ~/.nono-agent/sessions/<session_id>.jsonl | jq 'select(.type=="request/header") | .data.header'
+```
+
+共 16 个事件类型，权威清单是 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`：
+
+| 类型 | 回答的问题 |
+|------|-----------|
+| `turn/start`、`turn/end` | 一次 `submit_message` 的边界与结束原因 |
+| `step/start`、`step/end` | 一轮里做了几次 LLM 请求、每次为什么结束 |
+| `request/header` | 模型当时被告诉了什么（system prompt / 工具 / 采样配置） |
+| `user/message`、`assistant/message` | 对话本身（含 tool_use blocks） |
+| `assistant/chunk` | 逐 token 增量，用于不调模型重放 UI |
+| `tool/call`、`tool/result` | 调了什么工具、拿到什么结果 |
+| `compact/boundary` | 上下文在哪里被压缩/清空，压缩后保留了什么 |
+| `api/retry` | 重试与 fallback 切换 |
+| `permission/denial` | 被权限规则拦下的操作（审计资产） |
+| `memory/write`、`memory/retrieve` | 写了哪条记忆、检索命中了什么、是否采用 |
+| `usage` | 每步的 token 与模型 |
+
+```bash
+# 一轮里做了几次请求、每次为什么结束
+cat ~/.nono-agent/sessions/<sid>.jsonl | jq -c 'select(.type=="step/end") | .data'
+
+# 上下文被压缩过几次、每次剩多少条消息
+cat ~/.nono-agent/sessions/<sid>.jsonl \
+  | jq -c 'select(.type=="compact/boundary") | {strategy: .data.metadata.strategy, kept: (.data.kept|length)}'
+```
+
+`assistant/chunk` 是事件量最大的一类。只关心合并后的回复时用 `EngineConfig(log_assistant_chunks=False)` 降级，代价是无法逐 token 重放。
+
+### 7.2 换后端 / 读事件 / 分叉
+
+```python
+from nono_agent import QueryEngine, EngineConfig
+from nono_agent.session import SQLiteTranscriptWriter, derive_messages
+
+writer = SQLiteTranscriptWriter("sessions/s1.db")   # events 表 + session_header 表
+async with QueryEngine(EngineConfig(model="..."), transcript_writer=writer) as engine:
+    async for msg in engine.submit_message("hi"):
+        ...
+
+events = await writer.read_events()            # 全量事件
+messages = derive_messages(events)             # 确定性重建模型上下文
+await engine.fork_session(boundary_seq=12, new_session_id="s1-fork")  # 在某步剪一刀
+```
+
+`--resume <session_id>` 走的就是「读事件流 → derive」。把引擎指向一个已有事件流（如上面的 `SQLiteTranscriptWriter`）也会自动接续该会话的上下文。事件格式之前的消息副本 transcript 会被**拒读**（`VersionMismatchError`），不会被当成空会话。
+
+### 7.3 一致性门禁
+
+事件流是模型上下文的唯一真源，所以每次 LLM 请求前会校验「事件流重建出的消息 == 引擎当前的会话状态」。不一致说明有人绕过事件流改了上下文，本轮以 `error_log_reconstruction_desync` 终止，错误信息指向第一条不同的消息。
+
+```python
+EngineConfig(session_invariant="strict")  # 默认：不一致即终止本轮
+EngineConfig(session_invariant="warn")    # 记日志 + session.desync 指标，继续跑
+EngineConfig(session_invariant="off")     # 不校验，省掉每次请求的一次全量事件读取
+```
+
+自定义组件（自研 stage、直接操作 `engine.message_store`）触发它，通常是真漏了事件而非误报。
+
+### 7.4 脱敏导出与回放
+
+```python
+from nono_agent.session import LocalFileTranscriptWriter, redact_events, replay_sdk_messages
+
+events = await LocalFileTranscriptWriter("~/.nono-agent/sessions/s1.jsonl").read_events()
+
+# 外发前脱敏（密钥/token/JWT/私钥块/敏感键名）；信封 seq 不变，仍可按序对齐
+safe = redact_events(events)
+
+# 不调模型，重建当时的 SDK 输出序列（include_chunks=True 则逐 token 重放）
+for msg in replay_sdk_messages(events, session_id="s1"):
+    print(msg.type)
+```
+
+脱敏只作用于读取/导出侧：磁盘上保持逐字真实，否则事件流就不再等于「模型真的看到了什么」，门禁与回放随之失真。
+
+### 7.5 实时事件通道（Server）
+
+```bash
+# 跟随一个会话的事件流（SSE，推送前已脱敏）
+curl -N http://localhost:8000/session/<sid>/events
+
+# 断线重连：从上次收到的 seq 之后继续
+curl -N "http://localhost:8000/session/<sid>/events?after_seq=42"
+
+# 只取历史快照，读完即结束
+curl "http://localhost:8000/session/<sid>/events?follow=false"
+```
+
+每条消息为 `event: session_event`，`id` 是事件 `seq`，`data` 是 `SessionEvent` JSON。
+
+### 7.6 Token / 指标 / 日志
+
+- **每轮汇总**：`SDKResultMessage.usage` / `model_usage`；CLI 每轮结束打印，REPL 里 `/tokens` 查累计、`/context` 查当前消息数。
+- **下钻到步**：`engine.token_tracker.get_step_usages()`，或直接读事件流里的 `usage` 事件（带 `model`）。
+- **指标**：`nono_agent/observability/metrics.py`，默认内存实现，`get_metrics_recorder().snapshot()` 取快照；可 `set_metrics_recorder()` 换 OTel/Prometheus。事件流会自动投影为指标 —— 每个事件计入 `session.events`（带 `event` 标签），关键事件另计入 `session.turns`/`session.steps`/`tool.executions`/`api.errors`/`compact.operations`/`permission.denials`/`memory.*`，全部带 `session_id`。
+- **结构化日志**：`observability/logging.py`（structlog），输出到 stderr，Server 模式可 JSON。
+
+---
+
+## 8. 测试
+
+### 8.1 一键跑全套
+
+```bash
+uv run pytest -q            # 331 个测试
 uv run ruff check .         # lint
 uv run mypy nono_agent/     # 类型检查（strict）
 ```
 
 三者均为 CI 门禁（见 `.github/workflows/ci.yml`）。
 
-### 7.2 测试基础设施（无需真实 API）
+### 8.2 测试基础设施（无需真实 API）
 
 测试用 `MockProvider` / `MockTool` / `create_test_engine`，位于 `nono_agent/adapters/testing.py`：
 
@@ -226,7 +352,7 @@ async with engine:
 - 需要回退测试时，继承 `MockProvider` 抛 `FallbackTriggeredError`（见 `tests/test_fallback.py`）。
 - 结构化输出测试用 `json_schema` 配置 + 返回 JSON 文本（见 `tests/test_structured_output.py`）。
 
-### 7.3 各模块测试入口
+### 8.3 各模块测试入口
 
 | 测试文件 | 覆盖 |
 |----------|------|
@@ -235,11 +361,15 @@ async with engine:
 | `test_mcp.py` | MCP stdio 客户端（mock 服务器） |
 | `test_lsp.py` | LSP 客户端（mock 语言服务器） |
 | `test_agents.py` / `test_skills.py` / `test_plugins.py` / `test_rules.py` | 扩展面 |
-| `test_server.py` | Server 鉴权/AskUser 端点 |
+| `test_server.py` | Server 鉴权/AskUser 端点/事件流 SSE 通道 |
 | `test_budget.py` / `test_fallback.py` / `test_pipeline.py` | 引擎边界 |
-| `test_db_transcript.py` / `test_checkpoint.py` / `test_memory.py` | 持久化 |
+| `test_transcript_events.py` / `test_session_events.py` / `test_engine_events.py` | 事件流后端 / derive 折叠 / 引擎事件发射 |
+| `test_event_coverage.py` | 16 个事件类型逐个有真实发射路径 + 管线 compact/boundary + 指标投影 |
+| `test_session_invariant.py` | 一致性门禁（strict/warn/off）+ 管线深拷贝 + 接续已有事件流 |
+| `test_session_redact.py` / `test_session_replay.py` | 脱敏投影 / 不调模型回放 |
+| `test_checkpoint.py` / `test_memory.py` | 持久化 |
 
-### 7.4 无外部依赖的 mock 技巧
+### 8.4 无外部依赖的 mock 技巧
 
 - MCP / LSP 用 `tmp_path` 写一个临时 Python 脚本当「服务器」，`sys.executable` 启动（见 `tests/test_mcp.py`、`tests/test_lsp.py`）。
 - 需要 git 仓库的测试（worktree）用 `pytest.mark.skipif(shutil.which("git") is None)` 保护。
@@ -247,7 +377,7 @@ async with engine:
 
 ---
 
-## 8. 包结构速览
+## 9. 包结构速览
 
 ```
 nono_agent/
@@ -255,7 +385,7 @@ nono_agent/
 ├── pipeline/      预处理压缩管线（含 ContextCollapse）
 ├── recovery/      错误恢复决策链
 ├── providers/     协议矩阵（anthropic/openai/…/messages_compatible/responses(+compatible)）
-├── session/       MessageStore + Transcript（NDJSON/SQLite + factory）
+├── session/       MessageStore + 事件流 Transcript（JSONL/SQLite + derive + fork）
 ├── tools/         工具协议/注册表/执行器 + builtin/（22 个生产工具）
 ├── prompt/        Prompt Section 组装（静态/动态边界 + 优先级合并）
 ├── rules/ skills/ plugins/ commands/ settings/ permissions/ mcp/ agents/ memory/ checkpoint/

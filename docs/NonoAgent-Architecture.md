@@ -23,9 +23,9 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 | MCP | **未实现** | tools + resources + auth；§2.4 |
 | 子 Agent 三件套 | **未实现** | AgentTool + Definition + run；§2.8 |
 | 权限模式 / Rule / denial / Hooks / Slash | **未实现** | §2.6–§2.7 |
-| 会话持久化（`TranscriptWriter`） | 骨架 | 默认本地 NDJSON；DB/Redis 等后端见 Roadmap |
-| CLI / Server 适配器 | 基本可用 | Server 目前仅 SSE（文档曾提及的 WebSocket 未实现） |
-| 可观测性 | 部分可用 | TokenTracker + 日志可用；Metrics 为 No-Op 占位 |
+| 会话持久化（`TranscriptWriter`） | 事件溯源 | 落盘只有 `SessionEvent`；默认本地 JSONL，另有 SQLite；请求前一致性门禁默认开启；DB/Redis 等后端见 Roadmap |
+| CLI / Server 适配器 | 基本可用 | Server 目前仅 SSE（文档曾提及的 WebSocket 未实现）；含会话事件流通道 |
+| 可观测性 | 可用 | TokenTracker + structlog + Metrics（内存实现，事件流自动投影为指标）；脱敏导出与回放已具备 |
 
 ---
 
@@ -91,7 +91,7 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 | `Tool` | 工具执行 | `ToolRegistry` 注册 |
 | `PreprocessStage` | 预处理管线阶段 | `pipeline.register()` |
 | `EngineMiddleware` | 生命周期钩子 | `MiddlewareChain.add()` |
-| `TranscriptWriter` | 会话持久化 | 构造函数注入 |
+| `TranscriptWriter` | 会话事件流持久化 | 构造函数注入 |
 | `PermissionChecker` | 权限策略 | 构造函数注入 |
 
 ### 2.6 高度透明的设计理念
@@ -117,12 +117,12 @@ nono_agent/
 ├── recovery/             # ✅ RecoveryChain 与策略
 ├── hooks/                # 🔧 引擎内 Middleware/Stop/PostSampling
 ├── adapters/             # 🔧 CLI / Server(SSE) / Testing
-├── observability/        # 🔧 TokenTracker / logging / metrics(占位)
+├── observability/        # 🔧 TokenTracker / logging / metrics(标签约定 + 事件投影)
 ├── utils/                # 🔧 abort / tokens
 │
 │ ─── LLM 与会话 ───────────────────────────────────────────
 ├── providers/            # 🔧 原厂 + compatible 协议矩阵
-├── session/              # 🔧 MessageStore + TranscriptWriter(+DB/Redis 规划)
+├── session/              # 🔧 MessageStore + 事件流 TranscriptWriter + derive/invariant/redact/replay
 │
 │ ─── 工具 ─────────────────────────────────────────────────
 ├── tools/                # 🔧 protocol / registry / executor / context
@@ -154,7 +154,7 @@ nono_agent/
 | `observability/` | Token、日志、指标 | 业务决策 |
 | `utils/` | Abort、token 等无领域原语 | 领域策略 |
 | `providers/` | LLM 协议适配与路由 | 工具执行、会话存储 |
-| `session/` | 内存消息 + Transcript 多后端 | 跨会话 Memory |
+| `session/` | 内存消息 + 事件流多后端 + derive 重建 + 一致性门禁 + 脱敏/回放 | 跨会话 Memory |
 | `tools/` | Tool 协议、注册、执行、上下文 | 权限策略实现 |
 | `tools/builtin/` | Bash/Read/Edit/AskUser/LSP/Worktree 等 | MCP/Skill/Agent 桥接实现可外置再注册 |
 | `prompt/` | Section 组装、静/动态边界、优先级 | 文件发现（消费 rules/memory 视图） |
@@ -213,7 +213,7 @@ graph TB
 
     subgraph Session
         MS[MessageStore<br/>运行时内存]
-        TW[TranscriptWriter<br/>可插拔持久化]
+        TW[TranscriptWriter<br/>可插拔事件流]
         TT[TokenTracker<br/>Token 跟踪]
     end
 
@@ -237,7 +237,7 @@ graph TB
 
 ## 4. Engine → Loop 流程示意图
 
-### 4.1 submit_message() 七阶段流程
+### 4.1 submit_message() 六阶段流程
 
 ```mermaid
 sequenceDiagram
@@ -255,7 +255,7 @@ sequenceDiagram
 
     Note over QE: Phase 2: 添加用户消息
     QE->>QE: store.append UserMessage
-    QE->>QE: transcript.record_append
+    QE->>QE: transcript.append_event user/message
     opt replay_user_messages
         QE-->>SDK: SDKUserMessageReplay
     end
@@ -263,24 +263,25 @@ sequenceDiagram
     Note over QE: Phase 3 解析 Provider 并构建上下文
     QE->>QE: provider_registry.resolve
     QE->>QE: _build_system_prompt
+    QE->>QE: transcript.append_event request/header
     QE->>QE: 构建 LoopState
 
-    Note over QE,ALoop: Phase 4 运行 agentic_loop
+    Note over QE,ALoop: Phase 4 运行 agentic_loop（注入 event_sink）
     QE->>ALoop: agentic_loop 所有子系统
-    ALoop-->>QE: yield InternalMessage
-    QE-->>SDK: yield SDKMessage 转换后
 
     loop for each InternalMessage from ALoop
+        ALoop->>QE: event_sink step/start、api/retry、compact/boundary
         ALoop-->>QE: InternalMessage
+        opt RequestStartEvent 且 session_invariant 非 off
+            QE->>QE: 一致性门禁 derive_messages == 会话状态
+        end
         QE->>QE: _to_sdk_messages
-        QE->>QE: 记录 cost 和 transcript
+        QE->>QE: 记录 usage 并追加 assistant/tool 事件
         QE-->>SDK: yield SDKMessage
     end
 
-    Note over QE: Phase 6 持久化完整 transcript
-    QE->>QE: transcript.record all_messages
-
-    Note over QE: Phase 7 发出最终结果
+    Note over QE: Phase 6 追加 turn/end 事件并发出最终结果
+    QE->>QE: transcript.append_event turn/end
     QE-->>SDK: yield SDKResultMessage
     SDK-->>Adapter: 流式渲染
     Adapter-->>User: 展示结果
@@ -428,20 +429,61 @@ TS 版使用三个独立数组（`mutableMessages`, `messages`, `messagesForQuer
 
 | 层 | 组件 | 职责 |
 |----|------|------|
-| 运行时 | `MessageStore` | 进程内单一数据源；`snapshot_after_boundary()` / `gc_before_boundary()` |
-| 持久化 | `TranscriptWriter` | 跨进程可恢复；默认 `LocalFileTranscriptWriter`（NDJSON） |
+| 运行时 | `MessageStore` | 进程内当前上下文窗口；`snapshot_for_request()`（深拷贝）/ `gc_before_boundary()` |
+| 持久化 | `TranscriptWriter` | append-only 事件流；默认 `LocalFileTranscriptWriter`（JSONL，每行一个 `SessionEvent`） |
 
-持久化通过 Protocol 注入，后续可替换为 **SQLite / PostgreSQL / Redis / 对象存储** 等实现，引擎与适配器无需改循环逻辑。扩展规划见 [ROADMAP.md §2.5](./ROADMAP.md)。
+持久化通过 Protocol 注入，后续可替换为 **PostgreSQL / Redis / 对象存储** 等实现，引擎与适配器无需改循环逻辑。扩展规划见 [ROADMAP.md §2.5](./ROADMAP.md)。
 
-### 5.2 中间件链 vs 分散钩子
+### 5.2 会话日志：事件溯源，落盘只有事件
+
+引擎不再往磁盘写「消息副本」，只向事件流追加 `SessionEvent`：
+
+```
+引擎只 append 事件
+        │
+        ▼
+TranscriptWriter（协议）
+  ├─ LocalFile：~/.nono-agent/sessions/<sid>.jsonl  ← 每行一个 SessionEvent
+  │              ~/.nono-agent/sessions/<sid>.header.json ← SessionHeader（含格式版本）
+  └─ SQLite：events 表 + session_header 表
+        │
+        ▼
+resume / fork / invariant：read_events() → derive_messages()
+```
+
+| 要素 | 位置 | 说明 |
+|------|------|------|
+| 事件信封 | `session/events.py` | `seq / type / data / timestamp / ignorable`；`KNOWN_EVENT_TYPES` 是类型清单 |
+| 消息推导 | `session/derive.py` | `derive_messages()` 纯函数；`compact/boundary` 携带压缩后的完整窗口；连续 `tool/result` 并入同一条消息 |
+| 一致性门禁 | `session/derive.py` + `core/engine.py` | 每次 LLM 请求前校验「事件流重建 == 会话状态」；`session_invariant` 可选 strict/warn/off |
+| 请求快照 | `session/request_header.py` | `request/header` 只在 `initial` / `resume` / `change` 时写一条 |
+| 版本门 | `session/header.py` | `format_version` 不符直接拒读；事件格式之前的消息副本 transcript 同样拒读，不静默当空会话 |
+| 分叉 | `session/fork.py` | 在某个 `seq` 剪一刀复制成新会话，`parent_session` 记录谱系 |
+| 脱敏 / 回放 | `session/redact.py`、`session/replay.py` | 读取侧脱敏投影；不调模型重建 SDK 输出流 |
+
+事件只追加不改写，因此协议没有全量覆写接口 —— 覆写会与追加交错并破坏事件流。`ignorable` 让旧版本能跳过新增事件类型；未标 `ignorable` 的未知事件让重建失败，而不是悄悄丢上下文。
+
+### 5.2.1 谁有资格写事件
+
+事件流要成为真源，就得覆盖**所有**会改变模型可见上下文的路径。引擎只能看到循环产出的消息流，而循环内部的 step 边界、`store.replace()`、重试计数它看不见；工具与记忆内部的行为更看不见。因此发射权按信息所在位置分三处：
+
+| 发射者 | 机制 | 负责的事件 |
+|--------|------|-----------|
+| `QueryEngine` | `_stage_event()`（唯一落盘入口，同时投影为指标） | `turn/*`、`request/header`、`user/message`、`assistant/*`、`tool/*`、`usage`、手动 `compact`/`clear` 的 `compact/boundary` |
+| `agentic_loop` | `SessionEventSink` 协议注入 | `step/*`、`api/retry`、循环内每次 `store.replace()` 的 `compact/boundary` |
+| 工具 / 记忆 | `DenialTracker.add_observer()`、`MemoryManager.add_*_observer()` | `permission/denial`、`memory/write`、`memory/retrieve` |
+
+与之配套的两条约束让门禁得以成立：管线拿到的是 `snapshot_for_request()` 的**深拷贝**（stage 无法就地改写已记录历史），循环注入的合成消息（stop-hook 校验、截断恢复提示、中止占位工具结果）**全部 yield** 给引擎。设计细节见 [Session-Observability-Design.md §6](./Session-Observability-Design.md)。
+
+### 5.3 中间件链 vs 分散钩子
 
 TS 版在多个位置分散调用 hook。Python 版用 `MiddlewareChain` 统一 6 个生命周期点，支持否决（`on_transition` 返回 `None` 终止循环），异常不中断链。
 
-### 5.3 恢复链 vs 内联错误处理
+### 5.4 恢复链 vs 内联错误处理
 
 TS 版的错误恢复逻辑散落在循环体内。Python 版 `RecoveryChain` 集中决策，使用 `match/case` 穷举匹配，恢复策略按优先级递进。
 
-### 5.4 AsyncGenerator vs 回调
+### 5.5 AsyncGenerator vs 回调
 
 引擎使用 `AsyncGenerator` 而非回调或事件总线，使数据流方向明确、生命周期可控、取消机制自然（Generator 关闭即取消）。
 
@@ -459,7 +501,7 @@ QueryEngine.__init__(
     stop_hook_executor: StopHookExecutor,    # 可选：Stop hook 执行器
     post_sampling_chain: PostSamplingChain,  # 可选：采样后钩子链
     recovery_chain: RecoveryChain,           # 可选：恢复链
-    transcript_writer: TranscriptWriter,     # 可选：会话持久化
+    transcript_writer: TranscriptWriter,     # 可选：会话事件流（默认本地 JSONL）
     permission_checker: PermissionChecker,   # 可选：权限检查器（CLI/Server注入）
 )
 ```

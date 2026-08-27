@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,6 +37,26 @@ class DenialTracker:
 
     def __init__(self) -> None:
         self._denials: list[Denial] = []
+        self._observers: list[Callable[[Denial], None]] = []
+
+    def add_observer(self, observer: Callable[[Denial], None]) -> Callable[[], None]:
+        """注册拒绝回调 —— 引擎用它把拒绝写入会话事件流。
+
+        拒绝发生在工具执行内部，引擎观察不到，只能由本追踪器回调上报。
+
+        Args:
+            observer: 每次 ``record()`` 后同步调用的回调。
+
+        Returns:
+            注销该回调的函数。
+        """
+        self._observers.append(observer)
+
+        def dispose() -> None:
+            if observer in self._observers:
+                self._observers.remove(observer)
+
+        return dispose
 
     def record(
         self,
@@ -44,15 +65,16 @@ class DenialTracker:
         input_params: dict[str, Any] | None = None,
         mode: str = "default",
     ) -> None:
-        """记录一次拒绝。"""
-        self._denials.append(
-            Denial(
-                tool_name=tool_name,
-                reason=reason,
-                input_params=input_params or {},
-                mode=mode,
-            )
+        """记录一次拒绝并通知观察者。"""
+        denial = Denial(
+            tool_name=tool_name,
+            reason=reason,
+            input_params=input_params or {},
+            mode=mode,
         )
+        self._denials.append(denial)
+        for observer in self._observers:
+            observer(denial)
 
     def list(self) -> list[dict[str, Any]]:
         """返回所有拒绝记录（字典列表，可直接进入 SDK 契约）。"""

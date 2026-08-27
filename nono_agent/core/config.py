@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -112,6 +112,24 @@ class EngineConfig(BaseModel):
 
     # 会话 ID（不填则自动生成）
     session_id: str = Field(default_factory=_gen_session_id)
+
+    # 记忆作用域：所属 agent（None=不按 agent 隔离；小镇场景每个 NPC 一个 id）
+    agent_id: str | None = None
+
+    # 记忆检索预算（对齐 MemoryManager.retrieve 的 top-k / token 上限）
+    memory_retrieval_k: int = 10
+    memory_retrieval_token_budget: int = 2000
+
+    # 会话日志一致性门禁：每次 LLM 请求前校验「事件流重建 == 运行时消息状态」
+    # - strict: 不一致则终止本轮（log_reconstruction_desync）
+    # - warn:   只记日志与指标，不打断
+    # - off:    不校验（长会话省一次全量事件读取）
+    session_invariant: Literal["strict", "warn", "off"] = "strict"
+
+    # 是否把流式增量（assistant/chunk）写入事件流。
+    # 开启后可在不调 LLM 的情况下逐字回放 UI，代价是事件量随输出 token 线性增长；
+    # 关闭为降级模式，只保留合并后的 assistant/message。
+    log_assistant_chunks: bool = True
 
     model_config = ConfigDict(frozen=True)  # 不可变，防止运行期意外修改配置
 

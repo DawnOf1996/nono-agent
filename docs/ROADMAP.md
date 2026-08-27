@@ -41,9 +41,9 @@
 | Agent Teams / Coordinator                       | 未开始   | **P2 / 可选**；见 §6                                  |
 | Bridge / Remote / Cron                          | 未开始   | **默认非目标**；见 §6                                    |
 | CLI 适配器                                         | 可用需打磨 | REPL / resume / 流式渲染可用                            |
-| Server 适配器（SSE）                                 | 可用需打磨 | 多会话 + SSE + 鉴权 + TTL + AskUser 回调；无 WebSocket   |
-| 会话持久化（Transcript）                               | 可用需打磨 | Protocol + NDJSON + SQLite；缺 Redis/Postgres         |
-| TokenTracker / 日志                               | 可用需打磨 | Metrics 最小可用（内存 counter/histogram/gauge）          |
+| Server 适配器（SSE）                                 | 可用需打磨 | 多会话 + SSE + 鉴权 + TTL + AskUser 回调 + 事件流通道；无 WebSocket |
+| 会话持久化（事件流 Transcript）                          | 可用需打磨 | 事件溯源 + 请求前一致性门禁 + 脱敏/回放；JSONL + SQLite；缺 Redis/Postgres、zstd |
+| TokenTracker / 日志 / 指标                          | 可用需打磨 | 内存 counter/histogram/gauge + 标签约定 + 事件流投影；structlog 未绑关联键 |
 | 文档 / README                                     | 进行中   | 本文档与 README 对齐中                                   |
 
 
@@ -297,9 +297,9 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 
 对标 CC Team/SendMessage/coordinator。**不阻塞** Phase 1–3；见 §6。
 
-### 2.9 会话消息持久化扩展（优先级：P1）
+### 2.9 会话事件流持久化扩展（优先级：P1）
 
-`TranscriptWriter` Protocol；已有 LocalFile NDJSON + SQLite + 工厂切换。规划：Postgres/MySQL、Redis、可选 S3。配套：schema 版本、`list_sessions`/`delete`/`read_range`。
+`TranscriptWriter` Protocol 已是事件溯源语义（落盘只有 `SessionEvent`）；已有 LocalFile JSONL（默认）+ SQLite `events`/`session_header` + 工厂切换 + `fork_transcript`，16 类事件全量实装，请求前一致性门禁默认 `strict`，另有读取侧脱敏与不调模型回放。规划：Postgres/MySQL、Redis、可选 S3；JSONL 可选 zstd 压缩；增量 derive；回溯面板。设计见 [Session-Observability-Design.md](./Session-Observability-Design.md)。
 
 ### 2.10 Provider 协议矩阵扩展（优先级：P1）
 
@@ -338,7 +338,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 | ------------------------ | ----- | ------------------ |
 | Responses 原厂 Provider    | 已实现   | 待真实 API 验证后供兼容层复用    |
 | Server WebSocket         | 仅 SSE | 按需                 |
-| Metrics                  | 最小可用 | 内存 counter/histogram/gauge |
+| Metrics                  | 可用需打磨 | 内存 counter/histogram/gauge + 标签约定 + 事件流投影；无持久化后端 |
 | ContextCollapse 默认启用     | 可配置   | `context_collapse_enabled` 开关 |
 | `json_schema` 闭环         | 可用需打磨 | response_format + structured_output 解析；深度 schema 校验待做 |
 | 预算硬门控                    | 已实现   | loop 强制终止          |
@@ -409,10 +409,14 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 ### 3.6 会话与持久化
 
-- [ ] `LocalFileTranscriptWriter`：损坏行恢复、并发多进程写入、eager_flush 行为验证
-- [ ] `record` 全量覆写 vs `record_append` 在 compact / resume 路径上的一致性
-- [ ] 协议是否需扩展（如 `list_sessions` / `delete` / `read_range`）以支撑 DB/Redis 后端
-- [ ] 压缩后 transcript / resume 一致性（与管线协同）
+- [x] 落盘只存事件：`TranscriptWriter` 改事件溯源语义，去掉全量覆写接口
+- [x] `LocalFileTranscriptWriter`：残行跳过、重启后 seq 续接、事件格式之前的 transcript 拒读、`0600` 权限
+- [x] 事件目录全量实装（16 类）：`step/*`、`assistant/chunk`、`api/retry`、`permission/denial`、`memory/*` 接入
+- [x] 状态变更全事件化 + 管线深拷贝 → 请求前 `verify_reconstruction` 强门禁（`session_invariant` strict/warn/off）
+- [x] 读取侧脱敏（`redact_events`）与不调模型回放（`replay_sdk_messages`）
+- [ ] 并发多进程写同一事件流（当前只保证单进程内追加有序）
+- [ ] JSONL zstd 压缩 + write-behind 批量；增量 derive（缓存上次结果，只折叠新事件）
+- [ ] 协议是否需扩展（如 `list_sessions` / `delete`）以支撑 DB/Redis 后端
 
 
 
@@ -423,12 +427,16 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 - [x] Server：会话 TTL、并发限制、鉴权、优雅关闭压测
 - [x] Server：可注入非文件 Transcript 后端（为 DB 多会话做准备）
 - [x] SDKMessage 对外契约稳定化（版本字段、`permission_denials`、AskUser 事件）
+- [x] Server：`GET /session/{id}/events` 会话事件流 SSE 通道（脱敏、`after_seq` 续传、`follow`）
+- [ ] Server：基于事件流的回溯面板 UI
 
 
 
 ### 3.8 可观测、测试与工程化
 
 - [x] Metrics 真实实现（至少 counter/histogram）
+- [x] Metrics 标签约定 + 事件流投影为指标（`record_event_metric`）
+- [ ] structlog 绑定 `session_id/step/seq`，使日志、事件流、指标三者可互查
 - [x] 扩展单测与集成测（真实 Provider 可选、MCP mock、Transcript 后端 mock）
 - [x] CI：pytest + ruff + mypy
 - [x] README / 示例与真实默认行为一致
@@ -544,7 +552,7 @@ nono_agent/
 ├── observability/                 # 🔧 Token 跟踪 / 日志 / 指标
 │   ├── token_tracker.py
 │   ├── logging.py
-│   └── metrics.py                 # No-Op → 真实实现
+│   └── metrics.py                 # counter/histogram/gauge + 标签约定 + 事件投影
 │
 ├── utils/                         # 🔧 通用原语
 │   ├── abort.py
@@ -563,12 +571,17 @@ nono_agent/
 │   ├── _messages_utils.py         # 📋
 │   └── _responses_utils.py        # 📋
 │
-├── session/                       # 🔧 内存消息 + 持久化
+├── session/                       # 🔧 内存消息 + 事件流持久化
 │   ├── store.py                   # MessageStore ✅
-│   ├── transcript.py              # Protocol + LocalFile ✅
-│   ├── db_transcript.py           # 📋 SQL
+│   ├── events.py                  # SessionEvent 信封 + 类型目录 ✅
+│   ├── header.py                  # SessionHeader + 格式版本门 ✅
+│   ├── derive.py                  # derive_messages + 消息互转 ✅
+│   ├── request_header.py          # request/header 快照与变更判定 ✅
+│   ├── fork.py                    # 按 seq 分叉会话 ✅
+│   ├── transcript.py              # Protocol + LocalFile JSONL 事件流 ✅
+│   ├── db_transcript.py           # SQLite events + session_header ✅
 │   ├── redis_transcript.py        # 📋 Redis
-│   └── factory.py                 # 📋 按配置创建 Writer
+│   └── factory.py                 # 按配置创建 Writer ✅
 │
 │ ─── 工具协议 + 生产工具（拆分迁移）──────────────────────────
 ├── tools/                         # 🔧
@@ -676,7 +689,7 @@ nono_agent/
 | **`recovery/`** | API/循环错误分类与恢复动作（压缩重试、升 max_tokens、终止） | 主动压缩策略实现细节可委托 pipeline | ✅ |
 | **`hooks/`** | **引擎内** Middleware / Stop / PostSampling 链（代码注入） | 用户 `hooks.json` 的加载与沙箱执行（由扩展面适配后挂入本链） | 🔧 |
 | **`adapters/`** | CLI/Server/Testing：消费 `submit_message` 流、权限交互、AskUser 通道、Slash 入口调用 | 业务工具逻辑、Prompt 内容拼装 | 🔧 |
-| **`observability/`** | Token、结构化日志、指标 | 业务决策 | 🔧 Metrics 占位 |
+| **`observability/`** | Token、结构化日志、指标 | 业务决策 | 🔧 Metrics 无持久化后端；structlog 未绑关联键 |
 | **`utils/`** | Abort、token 估算等无业务依赖的原语 | 领域策略 | 🔧 |
 
 #### LLM 与会话
@@ -684,7 +697,7 @@ nono_agent/
 | 包 | 职责 | 不负责 | 现状 |
 |----|------|--------|------|
 | **`providers/`** | LLMProvider Protocol、注册路由、各协议 stream/normalize；原厂与 `*_compatible` | 工具执行、会话存储 | 🔧 兼容层与 Responses 待补 |
-| **`session/`** | 运行时 `MessageStore`；`TranscriptWriter` 持久化抽象与多后端 | 跨会话 Memory（见 `memory/`） | 🔧 仅 LocalFile |
+| **`session/`** | 运行时 `MessageStore`；事件流 `TranscriptWriter` 多后端 + `derive_messages` 重建 | 跨会话 Memory（见 `memory/`） | 🔧 LocalFile + SQLite |
 
 #### 工具
 
@@ -798,6 +811,8 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | CLI 首次运行引导页：检测用户基础配置（模型/协议/密钥）缺失则交互式引导并落盘 `~/.nono-agent/config.json` |
 | 2026-08-14 | observability：CostTracker 整改为 TokenTracker（去价格，只统计输入/输出/缓存命中 token）；移除 `max_budget_usd`、`SDKResult.total_cost_usd`、`estimate_cost` 与定价表 |
 | 2026-08-14 | fix：messages_compatible 补 `stream=true`（否则非流式响应被 SSE 解析跳过导致空输出）；端点自动补 `/v1/messages` |
+| 2026-08-27 | session：会话日志改事件溯源 —— 落盘只有 `SessionEvent`（LocalFile JSONL 默认 / SQLite `events`+`session_header`），`derive_messages()` 重建消息，`resume`/`fork` 走事件流；移除消息副本落盘与全量覆写接口 |
+| 2026-08-27 | session：事件目录全量实装（16 类）+ 请求前一致性门禁 —— 循环经 `SessionEventSink` 上报 `step/*`/`api/retry`/`store.replace()`，`snapshot_for_request()` 改深拷贝，`session_invariant` 默认 `strict`；新增读取侧脱敏、不调模型回放、Metrics 事件投影、`GET /session/{id}/events` SSE 通道、会话文件 `0600` 权限 |
 
 
 ## 附录

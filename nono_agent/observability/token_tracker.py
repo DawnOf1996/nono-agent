@@ -58,6 +58,9 @@ class TokenTracker:
     # 按模型分解的用量明细
     _model_usage: dict[str, ModelTokenUsage] = field(default_factory=dict)
 
+    # 每步（每次 record_usage）的用量记录 —— 支持「下钻到 step」
+    _step_usages: list[dict[str, Any]] = field(default_factory=list)
+
     # ------------------------------------------------------------------
     # 记录方法 —— 累加每次 API 响应的用量
     # ------------------------------------------------------------------
@@ -74,6 +77,17 @@ class TokenTracker:
         mu.cache_read_tokens += usage.cache_read_input_tokens
         mu.cache_creation_tokens += usage.cache_creation_input_tokens
         mu.num_requests += 1
+
+        self._step_usages.append(
+            {
+                "model": model,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_read_tokens": usage.cache_read_input_tokens,
+                "cache_creation_tokens": usage.cache_creation_input_tokens,
+                "total_tokens": usage.total_tokens,
+            }
+        )
 
     def record_api_duration(self, duration_ms: float, model: str = "unknown") -> None:
         """记录 API 调用耗时。"""
@@ -136,9 +150,14 @@ class TokenTracker:
             for model, mu in self._model_usage.items()
         }
 
+    def get_step_usages(self) -> list[dict[str, Any]]:
+        """获取每步用量记录（下钻到 step）。"""
+        return list(self._step_usages)
+
     def reset(self) -> None:
         """重置所有跟踪数据。"""
         self.total_usage = Usage()
         self.total_api_duration_ms = 0.0
         self.total_tool_duration_ms = 0.0
         self._model_usage.clear()
+        self._step_usages.clear()
