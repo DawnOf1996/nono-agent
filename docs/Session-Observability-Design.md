@@ -1,7 +1,7 @@
 # Nono Agent —— 会话存储与可观测性功能设计与优化文档
 
 > **文档角色：** 为 `nono_agent/session/` 与 `nono_agent/observability/` 定义**强观测、可回溯的会话存储**设计方案，并记录已落地范围。
-> **配套文档：** 本文与《记忆系统设计》同组；记忆检索/反思的「使用追溯」以本文事件流为落点。
+> **配套文档：** 本文与《记忆系统设计》同组；记忆检索/反思的「使用追溯」以本文事件流为落点。事件的写出时机、顺序与 `data` 示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。
 > **对标参考：** deepseek-harness 会话日志设计（`learn_docs/02-session-log.md` 及 `packages/core/session` 事件溯源实现）。
 > **当前版本基准：** `0.1.0`；P0/P1/P2 已落地 —— `session/` 为事件溯源（落盘只有 `SessionEvent`，默认 LocalFile JSONL，另有 SQLite `events`/`session_header`），§4.1 事件目录全量实装，请求前一致性门禁默认 `strict`。剩余项见 §11。
 
@@ -36,7 +36,7 @@
 | `MetricsRecorder` | `observability/metrics.py` | counter/histogram/gauge + 标签约定 + `record_event_metric` 事件投影 | 内存实现无持久化（可换 OTel/Prometheus） |
 | `structlog` | `observability/logging.py` | 结构化日志、JSON/彩色输出 | 与事件流**无关联**，无法从日志反查会话 |
 
-**结论：** 落盘内容只有事件；§4.1 的 16 个事件类型全部有真实发射路径；「可证明一致」的强门禁已成立 —— 每次 LLM 请求前校验事件流能重建出运行时状态，任何绕过事件流的状态变更都会被拦下（见 §6）。剩余缺口是存储效率（zstd）、多进程并发写、structlog 与事件流的关联键。
+**结论：** 落盘内容只有事件；§4.1 的 17 个事件类型全部有真实发射路径；「可证明一致」的强门禁已成立 —— 每次 LLM 请求前校验事件流能重建出运行时状态，任何绕过事件流的状态变更都会被拦下（见 §6）。剩余缺口是存储效率（zstd）、多进程并发写、structlog 与事件流的关联键。
 
 ---
 
@@ -69,14 +69,15 @@ SessionEvent {
 
 ### 4.1 事件类型目录（对齐 dsh，映射到 nono-agent Message 类型）
 
-全部 16 个类型都已实装（`KNOWN_EVENT_TYPES` 是权威清单，`tests/test_event_coverage.py` 逐类型断言）。「发射者」一栏说明谁有资格写这条事件 —— 引擎能从循环产出的消息流观察到的由引擎写，循环内部才知道的（step 边界、`store.replace()`、重试次数）由循环通过 `SessionEventSink` 上报，工具/记忆内部发生的由各自的观察者回调上报。
+全部 17 个类型都已实装（`KNOWN_EVENT_TYPES` 是权威清单，`tests/test_event_coverage.py` 逐类型断言）。写出时机、顺序与载荷示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。「发射者」一栏说明谁有资格写这条事件 —— 引擎能从循环产出的消息流观察到的由引擎写，循环内部才知道的（step 边界、`store.replace()`、重试次数）由循环通过 `SessionEventSink` 上报，工具/记忆内部发生的由各自的观察者回调上报。
 
 | 事件类型 | 载荷 | 发射者 | 来源（nono-agent 现有概念） |
 |---------|------|--------|---------------------------|
 | `turn/start` / `turn/end` | `{turn}` / `{turn, reason}` | 引擎 | 一次 `submit_message` 的边界；`reason` 对齐 `SDKResultMessage.subtype` |
 | `step/start` / `step/end` | `{turn, step, model}` / `{turn, step, reason}` | 循环 | 一次 LLM 请求 + 其引起的工具执行；成对出现，`reason` 为 `completed`/`next_turn`/`aborted_tools`/`api_error:*` 等 |
-| `request/header` | `{header, reason: initial\|resume\|change}` | 引擎 | 请求配置快照（见 §5） |
-| `user/message` | `{content}` | 引擎 | `UserMessage`（真实输入 / stop hook 校验错误 / 截断恢复提示） |
+| `request/header` | `{header, reason: initial\|resume\|change}` | 引擎 | 请求配置快照（见 §5）；`config` 含 provider/protocol/model/context_size |
+| `user/input` | `{content, attachments?}` | 引擎 | 用户原始输入（原话）；`turn/start` 之后、`step/start` 之前；不参与 derive |
+| `user/message` | `{content}` | 引擎 | `UserMessage`（组装好的最终用户信息 / stop hook 校验错误 / 截断恢复提示）；`step/start` 之后、`request/header` 之前 |
 | `assistant/chunk` | `{chunk}` | 引擎 | `StreamEvent` 增量；`log_assistant_chunks=False` 为降级模式 |
 | `assistant/message` | `{content}` | 引擎 | `AssistantMessage`（已含 tool_use blocks） |
 | `tool/call` | `{call_id, name, args}` | 引擎 | `ToolUseBlock` |
@@ -99,7 +100,14 @@ SessionEvent {
 
 ```
 header = {
-  config: { provider, model, temperature, max_tokens, stop, reasoning_effort, ... },
+  config: {
+    provider,        # 模型提供商信息（解析出的 Provider 协议标识，如 anthropic / openai_compatible）
+    protocol,        # 模型协议（显式 adapter 优先，否则回退到 provider 标识）
+    model,           # 模型 ID
+    context_size,    # 模型上下文窗口大小（token 数）
+    agent_id,        # 记忆作用域（可空）
+    ...
+  },
   system: str,          # 组装好的 system prompt 全文
   tools: list[dict],    # 有序工具 schema 列表（字节级比对）
 }
@@ -139,7 +147,7 @@ header = {
 1. 按 `seq` 升序逐事件折叠：`user/message` → user，`assistant/message` → assistant，`tool/result` → user `tool_result` 消息（**连续多条并入同一条**，对齐 API 对并行工具结果的要求）；
 2. `compact/boundary` 丢弃此前全部消息，整体重置为事件携带的 `kept` 窗口；
 3. 未识别事件：`ignorable=true` 跳过，否则抛 `ReconstructionError`（宁可拒重建，也不悄悄丢上下文）；
-4. `turn/step/request-header/chunk/tool-call/usage/api-retry/permission/memory` 等事件不参与折叠。
+4. `turn/step/user-input/request-header/chunk/tool-call/usage/api-retry/permission/memory` 等事件不参与折叠 —— `user/input` 只保留原始输入供审计，模型上下文的重建只看 `user/message`。
 
 ### 6.1 门禁成立所依赖的改造
 
@@ -216,7 +224,7 @@ header = {
 - **协议没有全量覆写接口**：覆写会与追加交错并破坏事件流，「修正」用新事件表达（`compact/boundary`、tombstone）。
 - **版本门**：`SESSION_FORMAT_VERSION` 写入 SessionHeader；版本不符**直接拒读**。事件格式之前的消息副本 transcript（JSONL 行缺事件信封字段 / SQLite 存在 `messages` 表）同样拒读，不静默当作空会话。
 - **残行自愈**：JSONL 中非法 JSON 行（写入中断残留）跳过；合法 JSON 但不是事件信封则拒读。
-- **写入策略**：事件先同步入队（使 `compact()`、`clear_session()` 这类同步 API 与循环的同步 sink 都能记事件），在最近的 await 点按序落盘 —— `user/message` 与 `request/header` 在进入循环前 `await` 落盘以保证 resume；`strict` 门禁在每次请求前也会先排空队列。zstd 压缩与 write-behind 批量见 §11。
+- **写入策略**：事件先同步入队（使 `compact()`、`clear_session()` 这类同步 API 与循环的同步 sink 都能记事件），在最近的 await 点按序落盘。顺序为 `turn/start` → `user/input` →（组 prompt 时的 `memory/retrieve`）→（管线压缩时的 `compact/boundary`）→ `step/start` → `user/message` → `request/header`；`user/message` 与 `request/header` 在首个 `RequestStartEvent` 时（即 LLM 调用前）`await` 落盘以保证 resume。`strict` 门禁在每次请求前也会先排空队列。zstd 压缩与 write-behind 批量见 §11。
 - **文件权限**：会话文件 `0600`、会话目录 `0700`。事件流逐字保留提示词、工具输出与请求配置，落盘时就要挡住同机其它用户；不支持 POSIX 权限位的平台上 `chmod` 是无操作。
 
 ---
@@ -325,8 +333,8 @@ header = {
 | `nono_agent/session/db_transcript.py` | `messages` 表 → `events` + `session_header` 表 | ✅ |
 | `nono_agent/session/request_header.py` | `canonical_header()` + `header_equals()` + `next_reason()` | ✅ |
 | `nono_agent/session/fork.py` | `fork_transcript()` 按 seq 分叉 | ✅ |
-| `nono_agent/core/engine.py` | 只 append 事件；请求前写 `request/header` 并跑门禁；观察者接线；空 store 时从事件流重建；`fork_session` | ✅ |
-| `nono_agent/core/loop.py` | 通过 `SessionEventSink` 上报 `step/*`、`api/retry`、`store.replace()`；合成消息全部 yield | ✅ |
+| `nono_agent/core/engine.py` | 只 append 事件；`turn/start` → `user/input` →（`memory/retrieve`）→ `step/start` → `user/message` → `request/header` 的顺序写入；请求前跑门禁；观察者接线；空 store 时从事件流重建；`fork_session` | ✅ |
+| `nono_agent/core/loop.py` | 通过 `SessionEventSink` 上报 `step/*`、`api/retry`、`store.replace()`；合成消息全部 yield；管线压缩后、中间件前追加本轮用户消息 | ✅ |
 | `nono_agent/permissions/denial.py` | `DenialTracker.add_observer()` → `permission/denial` | ✅ |
 | `nono_agent/memory/manager.py` | 写入/检索观察者 → `memory/write`、`memory/retrieve` | ✅ |
 | `nono_agent/observability/metrics.py` | 标签常量 + `record_event_metric()` 事件投影 | ✅ |

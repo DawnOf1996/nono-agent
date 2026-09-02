@@ -15,7 +15,7 @@ from nono_agent.plugins import (
 
 
 def _make_plugin(root: Path) -> Path:
-    plugin_dir = root / ".nono" / "plugins" / "my-plugin"
+    plugin_dir = root / ".nono-agent" / "plugins" / "my-plugin"
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.json").write_text(
         json.dumps(

@@ -9,7 +9,7 @@ from nono_agent.tools.context import ToolUseContext
 
 class TestFileSystemSkillLoader:
     def test_load_skill(self, tmp_path):
-        skill_dir = tmp_path / ".nono" / "skills" / "code-review"
+        skill_dir = tmp_path / ".nono-agent" / "skills" / "code-review"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
             "---\nname: code-review\ndescription: Review code\ntools: ['read_file', 'grep']\n---\n"

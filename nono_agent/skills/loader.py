@@ -1,8 +1,8 @@
 """Skills 发现与加载 —— SkillLoader 协议 + 文件系统实现。
 
-发现约定（docs/ROADMAP.md §2.3）：
-- 项目级 ``.nono/skills/<name>/SKILL.md``
-- 用户级 ``~/.nono/skills/<name>/SKILL.md``
+发现约定：
+- 项目级 ``.nono-agent/skills/<name>/SKILL.md``
+- 用户级 ``~/.nono-agent/skills/<name>/SKILL.md``
 - 每个 skill 是一个目录，含 ``SKILL.md``（YAML-ish frontmatter + 正文）
 """
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from nono_agent.paths import project_dir, user_home
 from nono_agent.skills.models import Skill
 
 _SKILL_FILE = "SKILL.md"
@@ -61,13 +62,13 @@ class FileSystemSkillLoader:
         self._user_skills_dir = (
             Path(user_skills_dir)
             if user_skills_dir is not None
-            else Path.home() / ".nono" / "skills"
+            else user_home() / "skills"
         )
 
     def load(self, cwd: str | Path) -> list[Skill]:
         skills: list[Skill] = []
         skills.extend(self._load_dir(self._user_skills_dir, scope="user"))
-        skills.extend(self._load_dir(Path(cwd).resolve() / ".nono" / "skills", scope="project"))
+        skills.extend(self._load_dir(project_dir(cwd) / "skills", scope="project"))
         return skills
 
     def _load_dir(self, skills_dir: Path, *, scope: str) -> list[Skill]:

@@ -34,6 +34,24 @@ from nono_agent.providers._messages_utils import (
 from nono_agent.providers.base import FallbackTriggeredError
 from nono_agent.utils.tokens import estimate_messages_tokens
 
+# loop 从 message_start 取 input/cache，从 message_delta 累加 output。
+# MiniMax 等网关在 start 里把这些字段填 0，真实值放在 message_delta.usage。
+_START_FILLABLE_USAGE_KEYS = (
+    "input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+
+def _normalize_usage(raw: dict[str, Any]) -> dict[str, int]:
+    """把网关 usage 对象收成四类 token 计数；缺省或 None 视为 0。"""
+    return {
+        "input_tokens": int(raw.get("input_tokens", 0) or 0),
+        "output_tokens": int(raw.get("output_tokens", 0) or 0),
+        "cache_read_input_tokens": int(raw.get("cache_read_input_tokens", 0) or 0),
+        "cache_creation_input_tokens": int(raw.get("cache_creation_input_tokens", 0) or 0),
+    }
+
 
 class MessagesCompatibleProvider:
     """Anthropic Messages 协议的非原厂兼容网关 Provider。"""
@@ -49,6 +67,8 @@ class MessagesCompatibleProvider:
         self._timeout = config.timeout if config else 600.0
         self._extra_body: dict[str, Any] = config.extra_body if config else {}
         self._extra_headers: dict[str, str] = config.extra_headers if config else {}
+        # 本轮 message_start 的 usage；message_delta 用它判断哪些字段要回填
+        self._start_usage: dict[str, int] = _normalize_usage({})
 
     def _endpoint(self) -> str:
         base = self._base_url.rstrip("/")
@@ -102,6 +122,7 @@ class MessagesCompatibleProvider:
         **kwargs: Any,
     ) -> AsyncGenerator[Message | Any, None]:
         """通过 httpx 流式调用 Messages 兼容端点，映射为内部 StreamEvent。"""
+        self._start_usage = _normalize_usage({})
         body = self._build_body(model, max_tokens, messages, system_prompt, tools)
 
         try:
@@ -154,20 +175,9 @@ class MessagesCompatibleProvider:
         event_type = event.get("type", "")
 
         if event_type == "message_start":
-            usage = (event.get("message") or {}).get("usage") or {}
-            return MessageStartEvent(
-                message={
-                    "usage": {
-                        "input_tokens": usage.get("input_tokens", 0),
-                        "output_tokens": usage.get("output_tokens", 0),
-                        "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0) or 0,
-                        "cache_creation_input_tokens": usage.get(
-                            "cache_creation_input_tokens", 0
-                        )
-                        or 0,
-                    }
-                }
-            )
+            usage = _normalize_usage((event.get("message") or {}).get("usage") or {})
+            self._start_usage = usage
+            return MessageStartEvent(message={"usage": usage})
 
         if event_type == "content_block_start":
             return ContentBlockStartEvent(
@@ -186,10 +196,18 @@ class MessagesCompatibleProvider:
 
         if event_type == "message_delta":
             delta = event.get("delta") or {}
-            usage = event.get("usage") or {}
+            delta_usage = _normalize_usage(event.get("usage") or {})
+            mapped_usage: dict[str, int] = {
+                "output_tokens": delta_usage["output_tokens"],
+            }
+            # start 已给出的 input/cache 由 loop 在 message_start 写入；
+            # start 为 0 时改从本事件回填，供 loop 做 usage + Usage(**event.usage)。
+            for key in _START_FILLABLE_USAGE_KEYS:
+                if self._start_usage.get(key, 0) == 0 and delta_usage[key]:
+                    mapped_usage[key] = delta_usage[key]
             return MessageDeltaEvent(
                 delta={"stop_reason": delta.get("stop_reason")},
-                usage={"output_tokens": usage.get("output_tokens", 0)},
+                usage=mapped_usage,
             )
 
         if event_type == "message_stop":

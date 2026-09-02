@@ -57,10 +57,14 @@ from nono_agent.memory.manager import MemoryManager
 from nono_agent.memory.models import STATUS_ACCEPTED, MemoryRecord
 from nono_agent.memory.store import FileSystemMemoryStore, MemoryStore
 from nono_agent.observability.metrics import (
+    METRIC_CONTEXT_TOKENS,
+    METRIC_MESSAGE_COUNT,
     METRIC_SESSION_DESYNC,
+    TAG_MODEL,
     TAG_SESSION_ID,
     record_counter,
     record_event_metric,
+    record_gauge,
 )
 from nono_agent.observability.token_tracker import TokenTracker
 from nono_agent.permissions.denial import Denial, DenialTracker
@@ -100,6 +104,7 @@ from nono_agent.session.events import (
     EVENT_TURN_END,
     EVENT_TURN_START,
     EVENT_USAGE,
+    EVENT_USER_INPUT,
     EVENT_USER_MESSAGE,
     SessionEvent,
 )
@@ -118,6 +123,7 @@ from nono_agent.skills.skill_tool import SkillTool
 from nono_agent.tools.context import PermissionChecker, ToolUseContext
 from nono_agent.tools.registry import ToolRegistry
 from nono_agent.utils.abort import AbortController
+from nono_agent.utils.tokens import analyze_context_usage
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +201,7 @@ class QueryEngine:
         self._pending_events: list[SessionEvent] = []
         self._header_logged = False           # 本实例是否已写过 request/header
         self._last_header: dict[str, Any] | None = None
+        self._last_system_prompt: str = ""    # 最近一次组装的系统提示词（供上下文分析复用）
         self._observer_disposers: list[Callable[[], None]] = []
         self._register_event_observers()
 
@@ -305,6 +312,13 @@ class QueryEngine:
         self._turn_count += 1
         self._stage_event(EVENT_TURN_START, turn=self._turn_count)
 
+        # user/input —— 用户这一句的「原始输入」，紧跟在 turn/start 之后、step/start 之前。
+        # 它是观测/审计资产（原话），不参与 derive；组装好的最终消息用 user/message 表达。
+        input_data: dict[str, Any] = {"content": user_input}
+        if attachments:
+            input_data["attachments"] = attachments
+        self._stage_event(EVENT_USER_INPUT, **input_data)
+
         logger.debug(
             "submit_message: session=%s, turn=%d, input_len=%d",
             self._session_id, self._turn_count, len(user_input),
@@ -316,7 +330,9 @@ class QueryEngine:
             gates=RuntimeGates(),
         )
 
-        # Phase 2: 添加用户消息到 store
+        # Phase 2: 组装用户消息（模型可见状态），但**不在 loop 前入库**。
+        # 由 loop 在首个 step 的管线压缩之后追加进 store，避免它落入压缩边界；
+        # user/message 事件由引擎在 step/start 之后（首个 RequestStartEvent）补写。
         user_msg = UserMessage(
             message={
                 "role": "user",
@@ -324,10 +340,8 @@ class QueryEngine:
                     [{"type": "text", "text": user_input}] + attachments,
             }
         )
-        self._store.append(user_msg)
-        self._stage_event(EVENT_USER_MESSAGE, content=user_msg.message.get("content"))
 
-        # await 落盘 —— 确保 --resume 能看到本轮输入
+        # await 落盘 turn/start + user/input —— 确保 --resume 能看到本轮已开始
         await self._flush_events()
 
         # 可选回放用户消息给消费者（Server 场景需要）
@@ -344,9 +358,13 @@ class QueryEngine:
         )
         logger.debug("Provider resolved: %s", type(provider).__name__)
 
-        # 构建系统提示: 通过 PromptAssembler 组装（替代旧 _build_system_prompt）
+        # 构建系统提示: 通过 PromptAssembler 组装（替代旧 _build_system_prompt）。
+        # 期间会触发 memory/retrieve（观察者），因此该事件落在 user/input 之后、step/start 之前。
         system_prompt = self._build_system_prompt(user_input)
-        await self._record_request_header(system_prompt)
+
+        # 计算 request/header（initial/resume/change），但不落盘 —— 推迟到首个
+        # RequestStartEvent 与 user/message 一起写，保证它们在 step/start 之后。
+        pending_header = await self._compute_request_header(system_prompt, provider)
 
         # 构建初始循环状态（携带权限策略 / 沙箱 / 拒绝追踪 / Ignore）
         tool_context = ToolUseContext(
@@ -378,6 +396,25 @@ class QueryEngine:
         terminal_error = None        # 终止异常
         # 最后的 assistant 消息（用于提取结果文本）
         last_assistant_msg: AssistantMessage | None = None
+        # 本轮是否已在 step/start 之后写过 user/message + request/header
+        prelude_staged = False
+
+        def _stage_prelude() -> None:
+            """在首个 step/start 之后写 user/message（组装好的最终用户信息）与 request/header。
+
+            顺序固定为 step/start → user/message → request/header；loop 只会在
+            ``step/start`` 之后 yield ``RequestStartEvent``，此刻同步入队即可保证顺序。
+            """
+            nonlocal prelude_staged
+            if prelude_staged:
+                return
+            prelude_staged = True
+            self._stage_event(EVENT_USER_MESSAGE, content=user_msg.message.get("content"))
+            if pending_header is not None:
+                header, reason = pending_header
+                self._stage_event(EVENT_REQUEST_HEADER, header=header, reason=reason)
+                self._last_header = header
+                self._header_logged = True
 
         try:
             async for internal_msg in agentic_loop(
@@ -396,9 +433,14 @@ class QueryEngine:
                 signal=self._abort_controller.signal,
                 token_tracker=self._token_tracker,
                 event_sink=self._stage_event,
+                turn_user_message=user_msg,
             ):
-                # 请求前一致性门禁 —— 此刻 loop 已把本 step 的状态事件全部上报
+                # 请求前一致性门禁 —— 此刻 loop 已把本 step 的状态事件全部上报。
+                # 先补写 user/message + request/header（放在 step/start 之后），再校验。
                 if isinstance(internal_msg, RequestStartEvent):
+                    _stage_prelude()
+                    # 确保 user/message + request/header 在 LLM 调用前落盘（resume 需要）
+                    await self._flush_events()
                     await self._verify_log_matches_state()
 
                 # Phase 5: 将内部消息转换为 SDK 格式
@@ -435,6 +477,23 @@ class QueryEngine:
                         usage = Usage(**usage_dict)
                         # 记录 token 用量（输入/输出/缓存命中/缓存创建）
                         self._token_tracker.record_usage(usage, self._config.effective_model)
+                        # 同步记录上下文用量分析（总量/占比 + system/tools/messages 分项）
+                        context_usage = self.analyze_context_usage()
+                        self._token_tracker.record_context_usage(context_usage)
+                        # 投影为 gauge 指标 —— 当前上下文占用与消息数
+                        record_gauge(
+                            METRIC_CONTEXT_TOKENS,
+                            context_usage["total_tokens"],
+                            **{
+                                TAG_SESSION_ID: self._session_id,
+                                TAG_MODEL: self._config.effective_model,
+                            },
+                        )
+                        record_gauge(
+                            METRIC_MESSAGE_COUNT,
+                            context_usage["message_count"],
+                            **{TAG_SESSION_ID: self._session_id},
+                        )
                         self._stage_event(
                             EVENT_USAGE,
                             usage=usage_dict,
@@ -507,7 +566,18 @@ class QueryEngine:
         # 结构化输出闭环：配置 json_schema 时尝试把结果文本解析为 JSON
         structured_output = self._parse_structured_output(result_text)
 
-        # 事件流：回合结束（携带终止原因）
+        # 事件流：回合结束（携带终止原因）。
+        # 兜底：loop 若在开出任何 step 之前就终止（取消 / max_turns / token 预算耗尽），
+        # 从未 yield 过 RequestStartEvent，也从未把用户消息追加进 store，这里补上入库，
+        # 并补写 user/message + request/header，使事件流仍能重建出会话状态
+        # （否则下一轮门禁会报 desync）。
+        if not prelude_staged and not any(
+            getattr(m, "uuid", None) == user_msg.uuid
+            for m in self._store.all_messages()
+        ):
+            self._store.append(user_msg)
+        _stage_prelude()
+
         self._stage_event(EVENT_TURN_END, turn=self._turn_count, reason=reason)
         await self._flush_events()
 
@@ -527,6 +597,7 @@ class QueryEngine:
             session_id=self._session_id,
             usage=self._token_tracker.get_total_usage(),
             model_usage=self._token_tracker.get_model_usage(),
+            context_usage=self._token_tracker.get_context_usage(),
             permission_denials=self._denial_tracker.list(),
             errors=[str(terminal_error)] if terminal_error else [],
             structured_output=structured_output,
@@ -593,6 +664,33 @@ class QueryEngine:
         )
         logger.info("Manual compact removed %d messages", removed)
         return removed
+
+    def analyze_context_usage(self) -> dict[str, Any]:
+        """分析当前上下文使用情况 —— 总量、占比与系统提示词/工具/消息的分项。
+
+        返回（键含 ``tokens`` 与 ``ratio`` 两套口径）:
+          - ``context_window``: 生效窗口（provider.model_context > model_context > 默认值）
+          - ``total_tokens`` / ``usage_ratio`` / ``remaining_tokens``
+          - ``system_prompt_tokens`` / ``system_prompt_ratio``
+          - ``tools_tokens`` / ``tools_count`` / ``tools_ratio``
+          - ``messages_tokens`` / ``messages_ratio`` / ``message_count``
+          - ``is_auto_compact_threshold`` / ``is_at_blocking_limit``
+            （与压缩管线 80% / 95% 阈值同口径）
+
+        只读操作，不修改会话状态；系统提示词复用最近一次组装结果，
+        尚未发起请求时按当前配置即时组装。
+        """
+        messages = [
+            m.message for m in self._store.all_messages() if hasattr(m, "message")
+        ]
+        system_prompt = self._last_system_prompt or self._build_system_prompt()
+        tools = self._tool_registry.to_api_schema()
+        return analyze_context_usage(
+            messages,
+            system_prompt=system_prompt,
+            tools=tools,
+            model_context=self._config.effective_model_context,
+        )
 
     def _parse_structured_output(self, result_text: str) -> Any:
         """配置 json_schema 时把结果文本解析为 JSON（结构化输出闭环）。
@@ -784,17 +882,41 @@ class QueryEngine:
             self._session_id,
         )
 
-    async def _record_request_header(self, system_prompt: str) -> None:
-        """记录 request/header 快照（initial/resume/change，仅在真变化时写）。
+    async def _compute_request_header(
+        self, system_prompt: str, provider: Any
+    ) -> tuple[dict[str, Any], str] | None:
+        """计算 request/header 快照（initial/resume/change），返回 ``(header, reason)`` 或 None。
+
+        只计算、不落盘 —— 写入时机在首个 ``step/start`` 之后（由 ``submit_message`` 的
+        ``_stage_prelude`` 完成），保证「step/start → user/message → request/header」顺序。
+
+        载荷里的 ``config`` 携带可回溯所需的模型提供商信息：提供商标识（protocol 名）、
+        协议（adapter）、模型 ID 与上下文窗口大小，配合 system / tools 完整表达
+        「模型当时被告诉了什么」。
 
         Args:
             system_prompt: 本次请求组装好的 system prompt 全文。
+            provider: 已解析的 LLM Provider 实例（取其 ``name`` 作为协议标识）。
+
+        Returns:
+            ``(header, reason)`` 当需要写一条 request/header；配置未变化返回 None。
         """
+        model = self._config.effective_model
+        provider_name = getattr(provider, "name", None)
+        protocol = (
+            self._config.provider.adapter
+            if self._config.provider and self._config.provider.adapter
+            else provider_name
+        )
         header = canonical_header(
             config={
-                "model": self._config.effective_model,
+                "model": model,
                 "agent_id": self._config.agent_id,
-                "provider": self._config.provider.model_id if self._config.provider else None,
+                "provider": provider_name,
+                "protocol": protocol,
+                # 生效的上下文窗口大小 —— 来自模型配置（model_context），
+                # 与压缩管线使用的阈值基准一致
+                "context_size": self._config.effective_model_context,
             },
             system=system_prompt,
             tools=self._tool_registry.to_api_schema(),
@@ -804,11 +926,9 @@ class QueryEngine:
             # 本实例首次请求：以日志中最后一条 header 作为基线，区分 initial / resume
             baseline = fold_request_header(await self._transcript_writer.read_events())
         reason = next_reason(baseline, header, instance_logged=self._header_logged)
-        if reason is not None:
-            self._stage_event(EVENT_REQUEST_HEADER, header=header, reason=reason)
-            self._last_header = header
-            self._header_logged = True
-        await self._flush_events()
+        if reason is None:
+            return None
+        return (header, reason)
 
     # ------------------------------------------------------------------
     # 会话管理
@@ -957,7 +1077,9 @@ class QueryEngine:
         if self._config.append_system_prompt:
             parts.append(self._config.append_system_prompt)
 
-        return "\n\n".join(parts)
+        system_prompt = "\n\n".join(parts)
+        self._last_system_prompt = system_prompt  # 缓存供上下文分析复用
+        return system_prompt
 
     def _to_sdk_messages(self, msg: InternalMessage) -> list[SDKMessage]:
         """将内部消息转换为 SDK 消息格式。

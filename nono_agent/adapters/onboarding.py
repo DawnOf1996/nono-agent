@@ -24,8 +24,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+from nono_agent.paths import user_home
+
 # 用户级基础配置文件路径
-USER_CONFIG_PATH = Path.home() / ".nono-agent" / "config.json"
+USER_CONFIG_PATH = user_home() / "config.json"
 
 # 环境变量（与 cli 的 Provider 解析一致）
 ENV_MODEL = "NONO_MODEL"

@@ -76,6 +76,8 @@ from nono_agent.tools.registry import ToolRegistry
 from nono_agent.utils.abort import AbortSignal
 from nono_agent.utils.tokens import (
     estimate_messages_tokens,
+    estimate_system_prompt_tokens,
+    estimate_tools_tokens,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +102,7 @@ async def agentic_loop(
     signal: AbortSignal,
     token_tracker: TokenTracker | None = None,
     event_sink: SessionEventSink | None = None,
+    turn_user_message: UserMessage | None = None,
 ) -> AsyncGenerator[InternalMessage, None]:
     """主 Agentic 循环 —— while(True) 驱动的代理核心。
 
@@ -122,6 +125,10 @@ async def agentic_loop(
     - signal: 取消信号（asyncio.Event 封装）
     - event_sink: 会话事件汇；循环用它上报引擎观察不到的状态变更
       （step 边界、``store.replace`` 造成的 compact 边界、API 重试）
+    - turn_user_message: 本轮的用户消息（引擎在 loop 之前组装好，但不在 loop 前入库）。
+      循环在首个 step 的预处理管线之后、中间件之前把它追加进 store 与请求消息，
+      保证它不落入管线压缩边界（``compact/boundary`` 的 ``kept`` 不含本句），
+      而 ``user/message`` 事件仍由引擎在 ``step/start`` 之后补写。
 
     这是内部生成器 —— 外层 QueryEngine 负责：
     - SDK 消息格式化
@@ -132,6 +139,7 @@ async def agentic_loop(
     current_model = config.effective_model  # 运行时当前模型（fallback 切换后可改变）
     used_fallback = False
     step = 0  # 已开始的 step 序号（一次 LLM 请求 + 其引起的工具执行）
+    turn_user_appended = False  # 本轮用户消息是否已追加进 store / 请求消息
 
     def emit(type_: str, /, **data: Any) -> None:
         """上报事件（未注入 sink 时为 no-op）。"""
@@ -197,12 +205,21 @@ async def agentic_loop(
             state.turn_count, len(messages), len(api_tools), current_model,
         )
 
-        # 构造管线上下文: 模型 ID + 估算 token 数
+        # 构造管线上下文: 模型 ID + 配置的上下文窗口 + 全量 token 估算。
+        # 总量 = 系统提示词 + 工具 schema + 对话消息（system/tools 计入总上下文，
+        # 但不随消息压缩变化，作为固定开销单独记录，stage 重算时需加回）。
+        overhead_tokens = (
+            estimate_system_prompt_tokens(system_prompt)
+            + estimate_tools_tokens(api_tools)
+        )
+        message_tokens = estimate_messages_tokens(
+            [m.message for m in messages if hasattr(m, "message")]
+        )
         pipeline_ctx = PipelineContext(
             model_id=current_model,
-            estimated_tokens=estimate_messages_tokens(
-                [m.message for m in messages if hasattr(m, "message")]
-            ),
+            context_window=config.effective_model_context,
+            overhead_tokens=overhead_tokens,
+            estimated_tokens=overhead_tokens + message_tokens,
         )
 
         # 执行预处理管线，可能返回压缩后的消息
@@ -219,6 +236,18 @@ async def agentic_loop(
                 model=current_model,
                 estimated_tokens=pipeline_ctx.estimated_tokens,
             )
+            # ``store.replace`` 使 ``store._messages`` 与局部 ``messages`` 共享同一列表；
+            # 重新快照一份独立深拷贝，避免随后追加用户消息时对共享列表双重写入。
+            messages = store.snapshot_for_request()
+
+        # 追加本轮用户消息（组装好的最终用户信息）—— 在管线压缩之后、中间件之前：
+        # - 不落入压缩边界的 kept（否则与 step/start 之后的 user/message 事件重复计数）；
+        # - 中间件仍能看到它；
+        # - store 持有原对象，请求消息持有深拷贝，管线/中间件无法改写已记录的会话状态。
+        if turn_user_message is not None and not turn_user_appended:
+            store.append(turn_user_message)
+            messages.append(turn_user_message.model_copy(deep=True))
+            turn_user_appended = True
 
         # ------------------------------------------------------------------
         # Phase 2: 中间件预处理 (MiddlewareChain)
@@ -291,8 +320,12 @@ async def agentic_loop(
                         elif event.type == "content_block_stop":
                             pass  # 内容块完成，内容已在 delta 中累积
                         elif event.type == "message_delta":
-                            # 消息级增量: 包含 stop_reason 和输出 token 数
-                            stop_reason = event.delta.get("stop_reason")
+                            # 消息级增量: 包含 stop_reason 和输出 token 数。
+                            # 仅包含 usage 的最终 chunk 可能把 stop_reason 置空，
+                            # 因此只在非空时覆盖，避免丢掉真实的停止原因。
+                            delta_stop_reason = event.delta.get("stop_reason")
+                            if delta_stop_reason:
+                                stop_reason = delta_stop_reason
                             if event.usage:
                                 usage = usage + Usage(**event.usage)
                         elif event.type == "message_start":

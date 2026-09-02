@@ -11,20 +11,22 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 
 ### 1.1 实现状态总览
 
+> 状态与 [ROADMAP.md §1](./ROADMAP.md) 对齐；已实现能力以 `可用需打磨` 为主，尚未实现仅剩 P2 可选与非目标项（Teams/Bridge/Cron、WebSocket、DB/Redis 后端等）。
+
 | 层级 | 状态 | 说明 |
 |------|------|------|
-| 核心引擎（`QueryEngine` / `agentic_loop` / 状态机 / 恢复链） | 骨架可用 | 主路径可跑通；边界行为与打磨见 Roadmap |
-| 预处理管线 | 部分可用 | 默认 4 级；`ContextCollapse` 有实现但未进默认管线 |
-| LLM Provider | 部分可用 | 原厂 Anthropic/OpenAI + Chat Completions 兼容可用；Messages/Responses 兼容层与原厂 Responses 见 Roadmap |
-| 工具协议与执行器 | 骨架可用 | 协议/注册表/执行器在；内置工具仅为演示 |
-| Skills | **未实现** | 含 SkillTool；见 Roadmap §2.3 |
-| Rules / Plugins / Settings | **未实现** | 常驻指令、扩展包、分层配置；§1.5 / §2.2 / §2.5 / §2.6.1 |
-| Prompt Section 组装 | **未实现** | 对标 CC Prompt-Assembly；§2.0 |
-| MCP | **未实现** | tools + resources + auth；§2.4 |
-| 子 Agent 三件套 | **未实现** | AgentTool + Definition + run；§2.8 |
-| 权限模式 / Rule / denial / Hooks / Slash | **未实现** | §2.6–§2.7 |
+| 核心引擎（`QueryEngine` / `agentic_loop` / 状态机 / 恢复链） | 可用需打磨 | 主路径可跑通；边界/预算/取消等加固见 Roadmap §3 |
+| 预处理管线 | 可用需打磨 | 默认 4 级；`ContextCollapse` 可配置启用（`context_collapse_enabled` + 默认 summarizer） |
+| LLM Provider | 可用需打磨 | 全矩阵已落地：`anthropic` / `messages_compatible` / `openai` / `responses` / `responses_compatible` |
+| 工具协议与执行器 | 可用需打磨 | 协议/注册表/执行器 + 22 个生产级内置工具（`tools/builtin/`） |
+| Skills | 可用需打磨 | 含 SkillTool；见 Roadmap §2.3 |
+| Rules / Plugins / Settings | 可用需打磨 | 常驻指令、扩展包、分层配置均已落地；见 Roadmap §2.2 / §2.5 / §2.6.1 |
+| Prompt Section 组装 | 可用需打磨 | 对标 CC Prompt-Assembly；§2.0 |
+| MCP | 可用需打磨 | stdio tools/resources 桥接已落地；auth/SSE 见 Roadmap §2.4 |
+| 子 Agent 三件套 | 可用需打磨 | AgentTool + Definition + run；§2.8 |
+| 权限模式 / Rule / denial / Hooks / Slash | 可用需打磨 | §2.6–§2.7 |
 | 会话持久化（`TranscriptWriter`） | 事件溯源 | 落盘只有 `SessionEvent`；默认本地 JSONL，另有 SQLite；请求前一致性门禁默认开启；DB/Redis 等后端见 Roadmap |
-| CLI / Server 适配器 | 基本可用 | Server 目前仅 SSE（文档曾提及的 WebSocket 未实现）；含会话事件流通道 |
+| CLI / Server 适配器 | 可用需打磨 | Server 目前仅 SSE（WebSocket 为规划能力）；含鉴权/TTL/AskUser 回调与会话事件流通道 |
 | 可观测性 | 可用 | TokenTracker + structlog + Metrics（内存实现，事件流自动投影为指标）；脱敏导出与回放已具备 |
 
 ---
@@ -70,7 +72,7 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 使用 `Enum` + `dataclass(frozen=True)` + `match/case` 穷举所有状态转移和终止原因：
 
 - **7 种转移原因** (`TransitionReason`)：NEXT_TURN / MAX_OUTPUT_TOKENS_ESCALATE / MAX_OUTPUT_TOKENS_RECOVERY / REACTIVE_COMPACT_RETRY / COLLAPSE_DRAIN_RETRY / STOP_HOOK_BLOCKING / TOKEN_BUDGET_CONTINUATION
-- **10 种终止原因** (`TerminalReason`)：COMPLETED / ABORTED_STREAMING / ABORTED_TOOLS / PROMPT_TOO_LONG / IMAGE_ERROR / MODEL_ERROR / BLOCKING_LIMIT / STOP_HOOK_PREVENTED / HOOK_STOPPED / MAX_TURNS
+- **11 种终止原因** (`TerminalReason`)：COMPLETED / ABORTED_STREAMING / ABORTED_TOOLS / PROMPT_TOO_LONG / IMAGE_ERROR / MODEL_ERROR / BLOCKING_LIMIT / STOP_HOOK_PREVENTED / HOOK_STOPPED / MAX_TURNS / TASK_BUDGET_EXHAUSTED
 
 每次 `continue` 必须构造新的 `LoopState` 实例，编译器保证所有字段都被显式处理。
 
@@ -104,9 +106,9 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 
 ### 3.1 完整包树与职责
 
-> 目标结构 = **引擎内核（保留）+ LLM/会话（扩展）+ 工具拆分 + 扩展面（新建）**。  
+> 目标结构 = **引擎内核（保留）+ LLM/会话（扩展）+ 工具拆分 + 扩展面（已落地）**。  
 > 详细规划、迁移对照与依赖禁忌见 [ROADMAP.md §5](./ROADMAP.md)。  
-> 标记：`✅` 已有 · `🔧` 已有需扩展 · `📋` 规划 · `P2` 后期
+> 标记：`✅` 已落地 · `🔧` 已落地仍需扩展 · `P2` 后期演进
 
 ```
 nono_agent/
@@ -126,20 +128,20 @@ nono_agent/
 │
 │ ─── 工具 ─────────────────────────────────────────────────
 ├── tools/                # 🔧 protocol / registry / executor / context
-│   └── builtin/          # 📋 生产级工具包（替代演示 builtin.py）
+│   └── builtin/          # ✅ 生产级工具包（22 个内置工具）
 │
 │ ─── 扩展面 ───────────────────────────────────────────────
-├── prompt/               # 📋 PromptSection + Registry + Assembler
-├── rules/                # 📋 常驻指令发现/合并（CLAUDE.md/AGENTS.md 兼容）
-├── skills/               # 📋 Skill 加载 + SkillTool
-├── plugins/              # 📋 扩展包加载（组合下层能力）
-├── commands/             # 📋 Slash MVP（无 UI）
-├── settings/             # 📋 user/project/policy/flag 合并
-├── permissions/          # 📋 Policy / Rule / denial / sandbox
-├── mcp/                  # 📋 client + tools/resources/auth 桥接
-├── agents/               # 📋 AgentTool + Definition + runner
-├── memory/               # P2 MemoryStore / memdir
-└── checkpoint/           # P2 编辑快照回滚
+├── prompt/               # ✅ PromptSection + Registry + Assembler
+├── rules/                # ✅ 常驻指令发现/合并（CLAUDE.md/AGENTS.md 兼容）
+├── skills/               # ✅ Skill 加载 + SkillTool
+├── plugins/              # ✅ 扩展包加载（组合下层能力）
+├── commands/             # ✅ Slash MVP（无 UI）
+├── settings/             # ✅ user/project/policy/flag 合并
+├── permissions/          # ✅ Policy / Rule / denial / sandbox
+├── mcp/                  # 🔧 client + tools/resources 桥接（auth/SSE 待做）
+├── agents/               # ✅ AgentTool + Definition + runner
+├── memory/               # ✅ MemoryStore / memdir（P2 演进中）
+└── checkpoint/           # ✅ 编辑快照回滚
 ```
 
 #### 3.1.1 各包职责一览
@@ -177,14 +179,15 @@ plugins  → rules / skills / mcp / agents / commands / permissions   （只组�
 core ↛ adapters · prompt ↛ tool 执行实现
 ```
 
-#### 3.1.3 迁移要点
+#### 3.1.3 迁移要点（已完成）
 
 - **保留：** 内核七件套 + `providers`/`session`/`tools` 协议层  
-- **拆分：** `tools/builtin.py` → `tools/builtin/`  
-- **抽出：** `_build_system_prompt` → `prompt/`；权限闭包 → `permissions/`  
-- **新建：** 扩展面各包按 Phase 落地，旧路径可短期 re-export  
+- **拆分：** `tools/builtin.py` → `tools/builtin/`（已拆，保留薄 re-export）  
+- **抽出：** `_build_system_prompt` → `prompt/`；权限闭包 → `permissions/`（已抽）  
+- **新建：** 扩展面各包（`prompt/rules/skills/plugins/commands/settings/permissions/mcp/agents/memory/checkpoint`）已全部落地  
 
-项目配置目录（非 Python 包）：`.nono/{settings,rules,agents,skills,plugins,hooks.json,mcp.json,memory}/`。
+项目配置目录（非 Python 包）：`.nono-agent/{settings,rules,agents,skills,plugins,hooks.json,mcp.json}/`。
+用户运行时目录：`~/.nono-agent/{config.json,sessions/,memory/,settings.json,rules/,skills/,plugins/,agents/}`。
 
 ### 3.2 架构总览图
 
@@ -253,26 +256,27 @@ sequenceDiagram
     Note over QE: Phase 1 快照配置与校验
     QE->>QE: 创建 QueryConfig frozen
 
-    Note over QE: Phase 2: 添加用户消息
-    QE->>QE: store.append UserMessage
-    QE->>QE: transcript.append_event user/message
+    Note over QE: Phase 2: 记录 turn 边界与原始输入
+    QE->>QE: transcript.append_event turn/start
+    QE->>QE: transcript.append_event user/input
     opt replay_user_messages
         QE-->>SDK: SDKUserMessageReplay
     end
 
     Note over QE: Phase 3 解析 Provider 并构建上下文
     QE->>QE: provider_registry.resolve
-    QE->>QE: _build_system_prompt
-    QE->>QE: transcript.append_event request/header
-    QE->>QE: 构建 LoopState
+    QE->>QE: _build_system_prompt（触发 memory/retrieve）
+    QE->>QE: _compute_request_header（不落盘）
+    QE->>QE: 构建 LoopState（用户消息由 loop 在管线压缩后追加）
 
     Note over QE,ALoop: Phase 4 运行 agentic_loop（注入 event_sink）
-    QE->>ALoop: agentic_loop 所有子系统
+    QE->>ALoop: agentic_loop 所有子系统 + turn_user_message
 
     loop for each InternalMessage from ALoop
-        ALoop->>QE: event_sink step/start、api/retry、compact/boundary
+        ALoop->>QE: event_sink compact/boundary（管线压缩）、step/start、api/retry
         ALoop-->>QE: InternalMessage
-        opt RequestStartEvent 且 session_invariant 非 off
+        opt RequestStartEvent（首个 step/start 之后）
+            QE->>QE: append_event user/message → request/header
             QE->>QE: 一致性门禁 derive_messages == 会话状态
         end
         QE->>QE: _to_sdk_messages
@@ -306,6 +310,8 @@ sequenceDiagram
         PP->>PP: ToolResultBudget then SnipCompact then MicroCompact then AutoCompact
         PP-->>MS: 压缩后的 messages
     end
+
+    Note over PP,MW: 管线压缩之后、中间件之前追加本轮用户消息（user/message 事件由引擎在 step/start 之后写）
 
     rect rgb(240, 255, 240)
         Note over MW: Phase 2 中间件预处理
@@ -398,7 +404,7 @@ graph LR
 
 ### 4.5 Provider 路由机制
 
-适配器按 **协议 × 原厂/兼容** 选择（兼容层用于非原厂网关，详见 [ROADMAP.md §2.6](./ROADMAP.md)）：
+适配器按 **协议 × 原厂/兼容** 选择（兼容层用于非原厂网关，详见 [ROADMAP.md §2.10](./ROADMAP.md)）：
 
 ```mermaid
 graph TB
@@ -406,10 +412,10 @@ graph TB
 
     Check -->|Yes| AdapterMap[适配器映射]
     AdapterMap -->|anthropic| AP[AnthropicProvider 原厂 Messages]
-    AdapterMap -->|messages_compatible| MC[MessagesCompatible 规划]
-    AdapterMap -->|openai| OCP[OpenAICompatibleProvider Chat兼容]
-    AdapterMap -->|responses| RP[ResponsesProvider 原厂占位]
-    AdapterMap -->|responses_compatible| RC[ResponsesCompatible 规划]
+    AdapterMap -->|messages_compatible| MC[MessagesCompatibleProvider Messages 兼容]
+    AdapterMap -->|openai| OCP[OpenAICompatibleProvider Chat 兼容]
+    AdapterMap -->|responses| RP[ResponsesProvider Responses 原厂]
+    AdapterMap -->|responses_compatible| RC[ResponsesCompatibleProvider Responses 兼容]
 
     Check -->|No| PrefixMatch{model_id 前缀匹配}
     PrefixMatch -->|claude-*| AP2[AnthropicProvider]
@@ -417,8 +423,7 @@ graph TB
     PrefixMatch -->|No match| Error[ValueError: 提示可用适配器]
 ```
 
-> 当前已注册：`anthropic` / `openai` / `responses`（后者调用即失败）。  
-> 规划注册：`messages_compatible` / `responses_compatible`。
+> 当前已注册并可用：`anthropic` / `messages_compatible` / `openai` / `responses` / `responses_compatible` 五个适配器；前缀回退保留 `claude-*` → Anthropic、`gpt-*`/`o1`/`o3`/`o4` → OpenAI。
 ---
 
 ## 5. 关键设计决策
@@ -432,7 +437,7 @@ TS 版使用三个独立数组（`mutableMessages`, `messages`, `messagesForQuer
 | 运行时 | `MessageStore` | 进程内当前上下文窗口；`snapshot_for_request()`（深拷贝）/ `gc_before_boundary()` |
 | 持久化 | `TranscriptWriter` | append-only 事件流；默认 `LocalFileTranscriptWriter`（JSONL，每行一个 `SessionEvent`） |
 
-持久化通过 Protocol 注入，后续可替换为 **PostgreSQL / Redis / 对象存储** 等实现，引擎与适配器无需改循环逻辑。扩展规划见 [ROADMAP.md §2.5](./ROADMAP.md)。
+持久化通过 Protocol 注入，后续可替换为 **PostgreSQL / Redis / 对象存储** 等实现，引擎与适配器无需改循环逻辑。扩展规划见 [ROADMAP.md §2.9](./ROADMAP.md)。
 
 ### 5.2 会话日志：事件溯源，落盘只有事件
 
@@ -453,7 +458,7 @@ resume / fork / invariant：read_events() → derive_messages()
 
 | 要素 | 位置 | 说明 |
 |------|------|------|
-| 事件信封 | `session/events.py` | `seq / type / data / timestamp / ignorable`；`KNOWN_EVENT_TYPES` 是类型清单 |
+| 事件信封 | `session/events.py` | `seq / type / data / timestamp / ignorable`；`KNOWN_EVENT_TYPES` 是类型清单；时机与载荷见 [Session-Event-Catalog.md](./Session-Event-Catalog.md) |
 | 消息推导 | `session/derive.py` | `derive_messages()` 纯函数；`compact/boundary` 携带压缩后的完整窗口；连续 `tool/result` 并入同一条消息 |
 | 一致性门禁 | `session/derive.py` + `core/engine.py` | 每次 LLM 请求前校验「事件流重建 == 会话状态」；`session_invariant` 可选 strict/warn/off |
 | 请求快照 | `session/request_header.py` | `request/header` 只在 `initial` / `resume` / `change` 时写一条 |
@@ -494,6 +499,7 @@ TS 版的错误恢复逻辑散落在循环体内。Python 版 `RecoveryChain` �
 ```
 QueryEngine.__init__(
     config: EngineConfig,                    # 必填：不可变配置
+    *,
     provider_registry: ProviderRegistry,     # 可选：LLM Provider 注册表
     tool_registry: ToolRegistry,             # 可选：工具注册表
     pipeline: PreprocessPipeline,            # 可选：预处理管线
@@ -502,11 +508,21 @@ QueryEngine.__init__(
     post_sampling_chain: PostSamplingChain,  # 可选：采样后钩子链
     recovery_chain: RecoveryChain,           # 可选：恢复链
     transcript_writer: TranscriptWriter,     # 可选：会话事件流（默认本地 JSONL）
-    permission_checker: PermissionChecker,   # 可选：权限检查器（CLI/Server注入）
+    permission_checker: PermissionChecker,   # 可选：权限检查器（CLI/Server 注入）
+    permission_policy: PermissionPolicy,     # 可选：权限模式策略
+    denial_tracker: DenialTracker,           # 可选：拒绝追踪（→ SDKResult）
+    rule_loader: FileSystemRuleLoader,       # 可选：Rules 发现
+    prompt_assembler: PromptAssembler,       # 可选：Prompt Section 组装器
+    ask_user: Callable | None,               # 可选：AskUser 交互回调
+    skill_loader: FileSystemSkillLoader,     # 可选：Skills 发现
+    agent_loader: Any | None,                # 可选：子 Agent 定义加载器
+    register_agent_tool: bool = True,        # 是否注册内置 AgentTool
+    memory_store: MemoryStore,               # 可选：跨会话记忆存储
+    memory_manager: MemoryManager,           # 可选：记忆编排（准入/检索/反思）
 )
 ```
 
-所有子系统"可注入或自动创建"——不传则创建默认实例。这使得测试时可以 mock 任意子系统，生产环境中 CLI 和 Server 只需注入各自的 `PermissionChecker`。
+所有子系统"可注入或自动创建"——不传则创建默认实例。这使得测试时可以 mock 任意子系统，生产环境中 CLI 和 Server 只需注入各自的 `PermissionChecker`（及 `permission_policy` / `denial_tracker` / `ask_user` 等交付相关依赖）。
 
 ---
 
@@ -514,7 +530,7 @@ QueryEngine.__init__(
 
 | 文档 | 内容 |
 |------|------|
-| [ROADMAP.md](./ROADMAP.md) | 未实现能力、打磨项、分阶段规划 |
+| [ROADMAP.md](./ROADMAP.md) | 能力现状、未实现项、打磨项、分阶段规划 |
 | [ROADMAP.md §5](./ROADMAP.md) | **完整包树、各包职责、依赖方向、迁移对照** |
 | [COMMIT.md](./COMMIT.md) | Git 提交规范（Conventional Commits） |
 | [README.md](../README.md) | 安装、快速开始、项目定位 |

@@ -1,6 +1,6 @@
 # Nono Agent —— 使用与测试说明
 
-本文档面向「想跑起来 / 想写测试 / 想接入」的开发者，覆盖安装、三种使用方式（库 / CLI / Server）、配置、内置工具、扩展面与测试方法。所有命令均已在本仓库 `239` 个测试中验证；若某处与代码不符，以 `nono_agent/` 源码为准。
+本文档面向「想跑起来 / 想写测试 / 想接入」的开发者，覆盖安装、三种使用方式（库 / CLI / Server）、配置、内置工具、扩展面与测试方法。所有命令均已在本仓库全部测试中验证；若某处与代码不符，以 `nono_agent/` 源码为准。
 
 ---
 
@@ -150,18 +150,31 @@ curl -N http://localhost:8000/session/<session_id>/events
 
 该文件格式与 `--config` 一致（`model` + `provider{adapter, api_key, base_url}`），之后每次启动自动读取，无需重复输入。
 
-### 3.4 项目侧约定目录 `.nono/`
+用户运行时数据都在 `~/.nono-agent/`：
 
 ```
-.nono/
+~/.nono-agent/
+├── config.json        # 用户基础配置（模型 / 协议 / 密钥）
+├── settings.json      # 用户级分层设置
+├── sessions/          # 会话事件流
+├── memory/            # 跨会话记忆（每条一个 JSON）
+├── rules/             # 用户全局规则
+├── skills/            # 用户全局技能
+├── plugins/           # 用户全局插件
+└── agents/            # 用户全局子 Agent
+```
+
+### 3.4 项目侧约定目录 `.nono-agent/`
+
+```
+.nono-agent/
 ├── settings.json      # 分层设置（default < user < project < policy < flag）
 ├── rules/*.md         # 常驻指令（也可用 AGENTS.md / CLAUDE.md）
 ├── skills/<name>/SKILL.md
 ├── agents/*.md        # 子 Agent 定义
 ├── plugins/<name>/plugin.json
 ├── hooks.json         # 用户态 Hooks
-├── mcp.json           # MCP 服务器声明
-└── memory/*.md        # 跨会话记忆
+└── mcp.json           # MCP 服务器声明
 ```
 
 ---
@@ -188,11 +201,11 @@ curl -N http://localhost:8000/session/<session_id>/events
 
 ## 6. 扩展面速查
 
-- **Rules**：`.nono/rules/*.md`、`AGENTS.md`/`CLAUDE.md` 自动发现并注入 Prompt；frontmatter 支持 `globs`/`priority`。
+- **Rules**：`.nono-agent/rules/*.md`、`AGENTS.md`/`CLAUDE.md` 自动发现并注入 Prompt；frontmatter 支持 `globs`/`priority`。
 - **Skills**：`SKILL.md`（frontmatter：`name`/`description`/`tools`），模型用 `skill` 工具激活。
-- **子 Agent**：`.nono/agents/*.md`；内置 `general-purpose`/`explore`；模型用 `agent` 工具派发。
+- **子 Agent**：`.nono-agent/agents/*.md`；内置 `general-purpose`/`explore`；模型用 `agent` 工具派发。
 - **Plugins**：`plugin.json` 组合注册 rules/skills/agents/mcp/权限/自定义 slash。
-- **MCP**：`.nono/mcp.json` 声明 stdio 服务器，桥接 tools + resources。
+- **MCP**：`.nono-agent/mcp.json` 声明 stdio 服务器，桥接 tools + resources。
 - **权限**：`PermissionMode`（`default/accept_edits/plan/bypass`）+ 可落盘 `PermissionRule`（工具名/path glob/bash 正则）。
 
 ---
@@ -206,6 +219,7 @@ curl -N http://localhost:8000/session/<session_id>/events
 ```
 ~/.nono-agent/sessions/<session_id>.jsonl         # 每行一个 SessionEvent（append-only）
 ~/.nono-agent/sessions/<session_id>.header.json   # SessionHeader（含 format_version）
+~/.nono-agent/memory/<memory_id>.json             # 跨会话记忆记录
 ```
 
 事件流逐字保留提示词、工具输出与请求配置，因此文件按 `0600`、目录按 `0700` 落盘。外发副本（导出、SSE 推送）走 `redact_events()` 脱敏，见 §7.4。
@@ -221,14 +235,15 @@ cat ~/.nono-agent/sessions/<session_id>.jsonl | jq -c '{seq, type}'
 cat ~/.nono-agent/sessions/<session_id>.jsonl | jq 'select(.type=="request/header") | .data.header'
 ```
 
-共 16 个事件类型，权威清单是 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`：
+共 17 个事件类型，权威清单是 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`。写出时机、顺序与每条 `data` 的示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。
 
 | 类型 | 回答的问题 |
 |------|-----------|
 | `turn/start`、`turn/end` | 一次 `submit_message` 的边界与结束原因 |
 | `step/start`、`step/end` | 一轮里做了几次 LLM 请求、每次为什么结束 |
-| `request/header` | 模型当时被告诉了什么（system prompt / 工具 / 采样配置） |
-| `user/message`、`assistant/message` | 对话本身（含 tool_use blocks） |
+| `request/header` | 模型当时被告诉了什么（提供商/协议/上下文大小 + system prompt + 工具） |
+| `user/input` | 用户这一句的原始输入（原话，供审计，不参与重建） |
+| `user/message`、`assistant/message` | 对话本身（组装好的用户信息 + 含 tool_use blocks 的回复） |
 | `assistant/chunk` | 逐 token 增量，用于不调模型重放 UI |
 | `tool/call`、`tool/result` | 调了什么工具、拿到什么结果 |
 | `compact/boundary` | 上下文在哪里被压缩/清空，压缩后保留了什么 |
@@ -324,7 +339,7 @@ curl "http://localhost:8000/session/<sid>/events?follow=false"
 ### 8.1 一键跑全套
 
 ```bash
-uv run pytest -q            # 331 个测试
+uv run pytest -q            # 运行全部测试
 uv run ruff check .         # lint
 uv run mypy nono_agent/     # 类型检查（strict）
 ```
@@ -364,7 +379,7 @@ async with engine:
 | `test_server.py` | Server 鉴权/AskUser 端点/事件流 SSE 通道 |
 | `test_budget.py` / `test_fallback.py` / `test_pipeline.py` | 引擎边界 |
 | `test_transcript_events.py` / `test_session_events.py` / `test_engine_events.py` | 事件流后端 / derive 折叠 / 引擎事件发射 |
-| `test_event_coverage.py` | 16 个事件类型逐个有真实发射路径 + 管线 compact/boundary + 指标投影 |
+| `test_event_coverage.py` | 17 个事件类型逐个有真实发射路径 + 管线 compact/boundary + 指标投影 |
 | `test_session_invariant.py` | 一致性门禁（strict/warn/off）+ 管线深拷贝 + 接续已有事件流 |
 | `test_session_redact.py` / `test_session_replay.py` | 脱敏投影 / 不调模型回放 |
 | `test_checkpoint.py` / `test_memory.py` | 持久化 |

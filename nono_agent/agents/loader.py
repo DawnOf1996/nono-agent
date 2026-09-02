@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from nono_agent.agents.definition import AgentDefinition
+from nono_agent.paths import project_dir, user_home
 from nono_agent.skills.loader import parse_skill_markdown  # 复用 frontmatter 解析
 
 
@@ -24,13 +25,13 @@ class FileSystemAgentLoader:
         self._user_agents_dir = (
             Path(user_agents_dir)
             if user_agents_dir is not None
-            else Path.home() / ".nono" / "agents"
+            else user_home() / "agents"
         )
 
     def load(self, cwd: str | Path) -> list[AgentDefinition]:
         agents: list[AgentDefinition] = []
         agents.extend(self._load_dir(self._user_agents_dir, scope="user"))
-        agents.extend(self._load_dir(Path(cwd).resolve() / ".nono" / "agents", scope="project"))
+        agents.extend(self._load_dir(project_dir(cwd) / "agents", scope="project"))
         return agents
 
     def _load_dir(self, agents_dir: Path, *, scope: str) -> list[AgentDefinition]:

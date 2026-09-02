@@ -33,7 +33,7 @@ class TestMergeRules:
 
 class TestFileSystemRuleLoader:
     def test_load_project_rules(self, tmp_path):
-        rules_dir = tmp_path / ".nono" / "rules"
+        rules_dir = tmp_path / ".nono-agent" / "rules"
         rules_dir.mkdir(parents=True)
         (rules_dir / "style.md").write_text("---\nglobs: ['*.py']\n---\nUse 4 spaces.\n")
 

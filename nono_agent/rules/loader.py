@@ -1,9 +1,9 @@
 """Rules 发现与加载 —— RuleLoader 协议 + 文件系统实现。
 
 发现约定（docs/ROADMAP.md §2.2）：
-- ``.nono/rules/*.md``（项目级，CWD 向上 walk）
+- ``.nono-agent/rules/*.md``（项目级，CWD 向上 walk）
 - ``AGENTS.md`` / ``CLAUDE.md``（项目根，CLAUDE.md 兼容读）
-- ``~/.nono/rules/*.md``（用户全局）
+- ``~/.nono-agent/rules/*.md``（用户全局）
 
 支持 frontmatter 中的 ``globs`` 字段实现条件启用。
 """
@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from nono_agent.paths import CONFIG_DIR_NAME, project_dir, user_home
 from nono_agent.rules.models import Rule
 
 # 项目根指令文件名（兼容 Cursor/CC 约定）
@@ -62,7 +63,7 @@ class FileSystemRuleLoader:
         self._user_rules_dir = (
             Path(user_rules_dir)
             if user_rules_dir is not None
-            else Path.home() / ".nono" / "rules"
+            else user_home() / "rules"
         )
 
     def load(self, cwd: str | Path) -> list[Rule]:
@@ -94,10 +95,10 @@ class FileSystemRuleLoader:
         rules: list[Rule] = []
         seen: set[str] = set()
 
-        # 从 cwd 向上 walk，逐层收集 .nono/rules 与根指令文件
+        # 从 cwd 向上 walk，逐层收集 .nono-agent/rules 与根指令文件
         for directory in _walk_up(cwd):
-            # 1. .nono/rules/*.md
-            rules_dir = directory / ".nono" / "rules"
+            # 1. .nono-agent/rules/*.md
+            rules_dir = project_dir(directory) / "rules"
             if rules_dir.is_dir():
                 for file in sorted(rules_dir.glob("*.md")):
                     rule = self._rule_from_file(file, scope="project", base_priority=10)
@@ -114,8 +115,8 @@ class FileSystemRuleLoader:
                         seen.add(rule.name)
                         rules.append(rule)
 
-            # 仅在仓库根停下（有 .git 或 .nono 目录视为根）
-            if (directory / ".git").exists() or (directory / ".nono").exists():
+            # 仅在仓库根停下（有 .git 或 .nono-agent 目录视为根）
+            if (directory / ".git").exists() or (directory / CONFIG_DIR_NAME).exists():
                 break
 
         # 越靠上（根）的规则优先级更高 → 反转保证根级优先

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 class Rule:
     """单条常驻指令。
 
-    来自文件（.nono/rules/*.md、AGENTS.md、CLAUDE.md、用户全局）或代码注入。
+    来自文件（.nono-agent/rules/*.md、AGENTS.md、CLAUDE.md、用户全局）或代码注入。
     """
 
     name: str                       # 唯一标识（通常为文件名或标题）

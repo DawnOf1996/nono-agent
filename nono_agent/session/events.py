@@ -18,6 +18,7 @@ EVENT_TURN_END = "turn/end"
 EVENT_STEP_START = "step/start"
 EVENT_STEP_END = "step/end"
 EVENT_REQUEST_HEADER = "request/header"
+EVENT_USER_INPUT = "user/input"
 EVENT_USER_MESSAGE = "user/message"
 EVENT_ASSISTANT_CHUNK = "assistant/chunk"
 EVENT_ASSISTANT_MESSAGE = "assistant/message"
@@ -39,6 +40,7 @@ KNOWN_EVENT_TYPES: frozenset[str] = frozenset(
         EVENT_STEP_START,
         EVENT_STEP_END,
         EVENT_REQUEST_HEADER,
+        EVENT_USER_INPUT,
         EVENT_USER_MESSAGE,
         EVENT_ASSISTANT_CHUNK,
         EVENT_ASSISTANT_MESSAGE,
@@ -121,6 +123,7 @@ __all__ = [
     "EVENT_TURN_END",
     "EVENT_TURN_START",
     "EVENT_USAGE",
+    "EVENT_USER_INPUT",
     "EVENT_USER_MESSAGE",
     "KNOWN_EVENT_TYPES",
     "REQUEST_HEADER_REASON_CHANGE",

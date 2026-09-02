@@ -116,8 +116,10 @@ python examples/server_basic.py
 | 文档 | 说明 |
 |------|------|
 | [docs/USAGE.md](docs/USAGE.md) | 使用与测试说明（库 / CLI / Server / 配置 / 工具 / 测试） |
+| [docs/Session-Observability-Design.md](docs/Session-Observability-Design.md) | 会话事件溯源设计（门禁、后端、可观测性） |
+| [docs/Session-Event-Catalog.md](docs/Session-Event-Catalog.md) | 17 类会话事件的时机、顺序与载荷示例 |
 | [docs/NonoAgent-Architecture.md](docs/NonoAgent-Architecture.md) | 设计理念与系统架构 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 未实现能力与打磨规划 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 能力现状、未实现项与打磨规划 |
 | [docs/COMMIT.md](docs/COMMIT.md) | Git 提交规范（Conventional Commits） |
 
 ## 开发

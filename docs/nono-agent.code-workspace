@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../../deepseek-harness"
+		},
+		{
+			"path": "../../simulated-town"
 		}
 	],
 	"settings": {}

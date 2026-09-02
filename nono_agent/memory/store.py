@@ -19,6 +19,7 @@ from nono_agent.memory.models import (
     STATUS_RETIRED,
     MemoryRecord,
 )
+from nono_agent.paths import user_home
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -27,8 +28,8 @@ CREATE TABLE IF NOT EXISTS memories (
 )
 """
 
-# 默认记忆目录（未显式指定 memdir 时使用）
-DEFAULT_MEMORY_DIR = Path.home() / ".nono" / "memory"
+# 默认记忆目录 —— 与 config / sessions 同属用户运行时根目录
+DEFAULT_MEMORY_DIR = user_home() / "memory"
 
 
 @runtime_checkable
@@ -67,6 +68,7 @@ class MemoryStore(Protocol):
 class FileSystemMemoryStore:
     """文件系统记忆存储 —— 每条记忆一个 ``.json`` 文件。
 
+    默认目录是 ``~/.nono-agent/memory``，与用户配置和会话日志同根。
     与早期 memdir ``.md`` 约定不兼容；旧 ``.md`` 文件会被 ``load()`` 忽略。
     """
 

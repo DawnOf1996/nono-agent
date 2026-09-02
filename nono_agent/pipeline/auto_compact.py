@@ -15,8 +15,8 @@ from nono_agent.pipeline.base import PipelineContext
 from nono_agent.utils.tokens import (
     AUTO_COMPACT_THRESHOLD,
     BLOCKING_LIMIT_THRESHOLD,
+    COMPACT_TARGET_RATIO,
     estimate_messages_tokens,
-    get_context_window_size,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,10 +45,7 @@ class AutoCompactStage:
         messages: list[Message],
         context: PipelineContext,
     ) -> bool:
-        if not context.model_id:
-            return False
-        window = get_context_window_size(context.model_id)
-        auto_limit = int(window * AUTO_COMPACT_THRESHOLD)
+        auto_limit = int(context.context_window * AUTO_COMPACT_THRESHOLD)
         return context.estimated_tokens >= auto_limit
 
     async def execute(
@@ -56,7 +53,7 @@ class AutoCompactStage:
         messages: list[Message],
         context: PipelineContext,
     ) -> tuple[list[Message], PipelineContext]:
-        window = get_context_window_size(context.model_id)
+        window = context.context_window
         blocking_limit = int(window * BLOCKING_LIMIT_THRESHOLD)
 
         # 是否超过阻塞上限（95%）
@@ -71,9 +68,7 @@ class AutoCompactStage:
             )
             # Aggressive: keep only system prompt + last 2 turns
             messages = self._aggressive_compact(messages)
-            context.estimated_tokens = estimate_messages_tokens(
-                [m.message for m in messages if hasattr(m, "message")]
-            )
+            context.estimated_tokens = self._reestimate(messages, context)
             context.metadata["compact_boundary_created"] = True
         else:
             # 超过 80% 阈值但未到阻塞上限 —— 激进截断（剥离 thinking + 截断 tool results）
@@ -123,8 +118,8 @@ class AutoCompactStage:
         context: PipelineContext,
     ) -> list[Message]:
         """激进截断 —— 剥离所有 thinking 块 + 截断所有 tool results。"""
-        window = get_context_window_size(context.model_id)
-        target = int(window * 0.60)  # Try to get down to 60%
+        window = context.context_window
+        target = int(window * COMPACT_TARGET_RATIO)  # Try to get down to target
 
         for msg in messages:
             if context.estimated_tokens <= target:
@@ -136,12 +131,17 @@ class AutoCompactStage:
             if isinstance(msg, UserMessage):
                 self._truncate_tool_results(msg, max_tokens=2_000)
 
-        # Re-estimate
-        context.estimated_tokens = estimate_messages_tokens(
-            [m.message for m in messages if hasattr(m, "message")]
-        )
+        # Re-estimate（含系统提示词/工具的固定开销）
+        context.estimated_tokens = self._reestimate(messages, context)
 
         return messages
+
+    @staticmethod
+    def _reestimate(messages: list[Message], context: PipelineContext) -> int:
+        """重新估算 token 总量 —— 消息部分 + 系统提示词/工具的固定开销。"""
+        return estimate_messages_tokens(
+            [m.message for m in messages if hasattr(m, "message")]
+        ) + context.overhead_tokens
 
     @staticmethod
     def _strip_thinking(msg: Message) -> None:

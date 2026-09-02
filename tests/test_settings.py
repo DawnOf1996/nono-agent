@@ -39,8 +39,8 @@ class TestLoadSettings:
         assert len(s.get("permissions.rules", [])) == 1
 
     def test_load_project_settings_from_disk(self, tmp_path):
-        (tmp_path / ".nono").mkdir()
-        (tmp_path / ".nono" / "settings.json").write_text(
+        (tmp_path / ".nono-agent").mkdir()
+        (tmp_path / ".nono-agent" / "settings.json").write_text(
             json.dumps({"permissions": {"mode": "accept_edits"}})
         )
         s = load_settings(tmp_path, user_settings={})

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nono_agent.commands.registry import CommandContext, SlashCommand
+from nono_agent.observability.token_tracker import format_context_usage
 
 
 class _SimpleCommand:
@@ -49,30 +50,50 @@ class ModelCommand(_SimpleCommand):
 
 class TokensCommand(_SimpleCommand):
     _name = "tokens"
-    _description = "Show session token usage"
+    _description = "Show session token usage and context usage breakdown"
 
     def execute(self, args: list[str], ctx: CommandContext) -> str:
         if ctx.engine is None:
             return "Tokens: (no engine attached)"
         tracker = ctx.engine.token_tracker
         usage = tracker.get_total_usage()
-        return (
+        lines = [
             f"Tokens: in={usage.input_tokens} out={usage.output_tokens} "
             f"cache_read={usage.cache_read_input_tokens} "
             f"cache_creation={usage.cache_creation_input_tokens} "
             f"(total {usage.total_tokens})"
-        )
+        ]
+        # 最近一次上下文用量分析快照（每步 API 响应时随用量一起记录）
+        ctx_line = format_context_usage(tracker.get_context_usage())
+        if ctx_line:
+            lines.append(ctx_line)
+        return "\n".join(lines)
 
 
 class ContextCommand(_SimpleCommand):
     _name = "context"
-    _description = "Show context size"
+    _description = "Show context usage breakdown (system/tools/messages)"
 
     def execute(self, args: list[str], ctx: CommandContext) -> str:
         if ctx.engine is None:
             return "Context: (no engine attached)"
-        store = ctx.engine._store
-        return f"Context: {len(store)} messages"
+        usage = ctx.engine.analyze_context_usage()
+        pct = f"{usage['usage_ratio'] * 100:.1f}%"
+        lines = [
+            f"Context: {usage['total_tokens']:,} / {usage['context_window']:,} "
+            f"tokens ({pct}), remaining {usage['remaining_tokens']:,}",
+            f"- system: {usage['system_prompt_tokens']:,} tokens "
+            f"({usage['system_prompt_ratio'] * 100:.1f}%)",
+            f"- tools ({usage['tools_count']}): {usage['tools_tokens']:,} tokens "
+            f"({usage['tools_ratio'] * 100:.1f}%)",
+            f"- messages ({usage['message_count']}): {usage['messages_tokens']:,} "
+            f"tokens ({usage['messages_ratio'] * 100:.1f}%)",
+        ]
+        if usage["is_auto_compact_threshold"]:
+            lines.append("! auto-compact threshold reached (80%)")
+        if usage["is_at_blocking_limit"]:
+            lines.append("! blocking limit reached (95%)")
+        return "\n".join(lines)
 
 
 class ClearCommand(_SimpleCommand):
@@ -151,13 +172,13 @@ class McpCommand(_SimpleCommand):
     _description = "List configured MCP servers"
 
     def execute(self, args: list[str], ctx: CommandContext) -> str:
-        from pathlib import Path
-
         from nono_agent.mcp.config import load_mcp_config
+        from nono_agent.paths import project_dir
 
-        servers = load_mcp_config(Path(ctx.cwd) / ".nono" / "mcp.json")
+        mcp_path = project_dir(ctx.cwd) / "mcp.json"
+        servers = load_mcp_config(mcp_path)
         if not servers:
-            return "No MCP servers configured (.nono/mcp.json)."
+            return "No MCP servers configured (.nono-agent/mcp.json)."
         lines = [
             f"- {name}: {s.transport}" + (f" ({s.command})" if s.command else "")
             for name, s in servers.items()
@@ -213,13 +234,12 @@ class HooksCommand(_SimpleCommand):
     _description = "List user hooks"
 
     def execute(self, args: list[str], ctx: CommandContext) -> str:
-        from pathlib import Path
-
         from nono_agent.hooks import UserHooksConfig
+        from nono_agent.paths import project_dir
 
-        config = UserHooksConfig.from_file(Path(ctx.cwd) / ".nono" / "hooks.json")
+        config = UserHooksConfig.from_file(project_dir(ctx.cwd) / "hooks.json")
         if not config.hooks:
-            return "No user hooks configured (.nono/hooks.json)."
+            return "No user hooks configured (.nono-agent/hooks.json)."
         lines = [
             f"- {h.event} {h.matcher or '*'} -> {h.command}" for h in config.hooks
         ]

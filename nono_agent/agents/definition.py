@@ -10,8 +10,8 @@ from typing import Any
 class AgentDefinition:
     """子 Agent 定义 —— tools 白名单、model、system prompt。
 
-    来源：``built-in`` / ``user``（``~/.nono/agents``）/ ``project``
-    （``.nono/agents``）/ ``plugin`` / ``flag``。
+    来源：``built-in`` / ``user``（``~/.nono-agent/agents``）/ ``project``
+    （``.nono-agent/agents``）/ ``plugin`` / ``flag``。
     """
 
     name: str                       # 唯一标识

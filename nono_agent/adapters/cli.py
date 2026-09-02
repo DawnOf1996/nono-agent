@@ -32,6 +32,10 @@ from nono_agent.core.types import (
     SDKStreamEventMessage,
     SDKSystemMessage,
 )
+from nono_agent.observability.token_tracker import (
+    context_usage_color,
+    format_context_usage,
+)
 from nono_agent.tools.context import PermissionChecker
 
 logger = logging.getLogger(__name__)
@@ -99,6 +103,20 @@ def _make_cli_ask_user(console: Any) -> Any:
         return {"answers": answers}
 
     return ask_user
+
+
+def format_token_summary(usage: Any) -> str:
+    """把 Usage 渲染成一致的 token 摘要（四类 + 总计）。
+
+    与 ``/tokens`` 命令（``TokensCommand``）口径一致：完整列出 input / output /
+    cache_read / cache_creation 与总计，避免只显示三项导致数值与实际总用量对不上。
+    """
+    return (
+        f"in={usage.input_tokens} out={usage.output_tokens} "
+        f"cache_read={usage.cache_read_input_tokens} "
+        f"cache_creation={usage.cache_creation_input_tokens} "
+        f"(total {usage.total_tokens})"
+    )
 
 
 def _render_text(content: Any) -> str:
@@ -392,11 +410,7 @@ async def _consume_stream(
 
         elif isinstance(sdk_msg, SDKResultMessage):
             # Print result summary
-            tokens = sdk_msg.usage
-            token_str = (
-                f"in={tokens.input_tokens} out={tokens.output_tokens} "
-                f"cache={tokens.cache_read_input_tokens}"
-            )
+            token_str = format_token_summary(sdk_msg.usage)
             if sdk_msg.is_error:
                 console.print(
                     f"\n[red]Error: {sdk_msg.subtype}[/red]\n"
@@ -410,6 +424,12 @@ async def _consume_stream(
                     f"{sdk_msg.num_turns} turns | "
                     f"{token_str}[/dim]"
                 )
+            # 上下文用量行 —— 占比条颜色随占用率变化（<50% 绿 / <80% 黄 / ≥80% 红）
+            ctx_usage = sdk_msg.context_usage
+            ctx_line = format_context_usage(ctx_usage)
+            if ctx_line:
+                color = context_usage_color(float(ctx_usage.get("usage_ratio", 0.0)))
+                console.print(f"[{color}]{ctx_line}[/{color}]")
             return sdk_msg
 
     return None
@@ -457,6 +477,7 @@ def _render_blocks(blocks: list[dict[str, Any]]) -> str:
 
 # 环境变量名（优先级从高到低由 resolve 逻辑决定）
 ENV_MODEL = "NONO_MODEL"
+ENV_MODEL_CONTEXT = "NONO_MODEL_CONTEXT"
 ENV_ADAPTER = "NONO_ADAPTER"
 ENV_API_KEY = "NONO_API_KEY"
 ENV_BASE_URL = "NONO_BASE_URL"
@@ -567,11 +588,18 @@ def build_engine_config(
         os.environ.get(ENV_ADAPTER),
         file_provider.get("adapter"),
     )
+    # 模型上下文窗口（token 数）：env > provider 段 > 顶层（--config 文件 / config.json）
+    model_context = _coalesce(
+        os.environ.get(ENV_MODEL_CONTEXT),
+        file_provider.get("model_context"),
+        merged_cfg.get("model_context"),
+    )
 
     provider: ProviderConfig | None = None
     if adapter or api_key or base_url:
         provider = ProviderConfig(
             model_id=resolved_model,
+            model_context=model_context,  # None 时由引擎级/默认值兜底
             adapter=adapter,
             api_key=api_key or "",
             base_url=base_url,
@@ -581,6 +609,7 @@ def build_engine_config(
     return EngineConfig(
         model=resolved_model,
         cwd=resolved_cwd,
+        model_context=model_context,
         verbose=verbose,
         provider=provider,
         include_partial_messages=True,  # 启用流式事件，实现实时文本渲染

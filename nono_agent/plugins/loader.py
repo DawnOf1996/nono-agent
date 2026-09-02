@@ -1,6 +1,6 @@
 """Plugin 加载器 —— 发现路径、校验、冲突检测、失败隔离。
 
-发现路径：项目 ``.nono/plugins/*/plugin.json`` 与用户 ``~/.nono/plugins/*/plugin.json``。
+发现路径：项目 ``.nono-agent/plugins/*/plugin.json`` 与用户 ``~/.nono-agent/plugins/*/plugin.json``。
 同名插件冲突时：项目级优先于用户级；重复名报错并跳过后者。
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from nono_agent.paths import project_dir, user_home
 from nono_agent.plugins.manifest import PluginManifest, load_manifest
 
 
@@ -27,13 +28,13 @@ class FileSystemPluginLoader:
         self._user_plugins_dir = (
             Path(user_plugins_dir)
             if user_plugins_dir is not None
-            else Path.home() / ".nono" / "plugins"
+            else user_home() / "plugins"
         )
 
     def load(self, cwd: str | Path) -> list[PluginManifest]:
         dirs: list[Path] = [
             self._user_plugins_dir,
-            Path(cwd).resolve() / ".nono" / "plugins",
+            project_dir(cwd) / "plugins",
         ]
         by_name: dict[str, PluginManifest] = {}
         errors: list[str] = []

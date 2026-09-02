@@ -15,7 +15,6 @@ from nono_agent.core.types import (
 from nono_agent.pipeline.base import PipelineContext
 from nono_agent.utils.tokens import (
     estimate_message_tokens,
-    get_context_window_size,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,11 +49,8 @@ class SnipCompactStage:
         return 20
 
     def should_run(self, messages: list[Message], context: PipelineContext) -> bool:
-        # 仅在 token 超过 snip 阈值时运行
-        if not context.model_id:
-            return False
-        window = get_context_window_size(context.model_id)
-        limit = int(window * self._threshold)
+        # 仅在 token 超过 snip 阈值时运行（阈值基于配置的上下文窗口）
+        limit = int(context.context_window * self._threshold)
         return bool(context.estimated_tokens > limit)
 
     async def execute(
@@ -62,7 +58,7 @@ class SnipCompactStage:
         messages: list[Message],
         context: PipelineContext,
     ) -> tuple[list[Message], PipelineContext]:
-        window = get_context_window_size(context.model_id)
+        window = context.context_window
         target = int(window * self._threshold * 0.8)  # Shrink to 80% of threshold
 
         # Calculate per-message tokens
@@ -96,13 +92,14 @@ class SnipCompactStage:
         if drop_count > 0:
             # Insert a system message noting the snip
             snip_note = SystemMessage(
-                subtype="api_retry",
+                subtype="compact_boundary",
                 content=f"[{drop_count} earlier messages were removed to fit context window]",
             )
             remaining = [snip_note] + messages[drop_count:]
             logger.info("Snip compact: dropped %d messages, saved ~%d tokens",
                         drop_count, sum(msg_tokens[:drop_count]))
-            context.estimated_tokens = total
+            # 剩余消息 token + 系统提示词/工具的固定开销
+            context.estimated_tokens = total + context.overhead_tokens
             return remaining, context
 
         return messages, context

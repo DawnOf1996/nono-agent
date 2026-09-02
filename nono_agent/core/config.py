@@ -15,6 +15,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from nono_agent.utils.tokens import resolve_context_window
+
 
 def _gen_session_id() -> str:
     """自动生成会话 ID，用于 transcript 持久化和多会话隔离。"""
@@ -44,6 +46,9 @@ class ProviderConfig(BaseModel):
     """
 
     model_id: str                              # 模型 ID（如 "claude-sonnet-4-20250514"）
+    # 模型上下文窗口大小（token 数）。压缩管线按此值计算触发阈值；
+    # 未配置时回退 DEFAULT_CONTEXT_WINDOW（不做模型前缀猜测）。
+    model_context: int | None = None
     # API 协议: anthropic | messages_compatible | openai | responses | responses_compatible
     adapter: str | None = None
     api_key: str = ""                          # API 密钥
@@ -74,6 +79,10 @@ class EngineConfig(BaseModel):
     # 主模型和备用模型（主模型不可用时切换）
     model: str = "claude-sonnet-4-20250514"
     fallback_model: str | None = None
+
+    # 模型上下文窗口大小（token 数）—— provider.model_context 未配置时的兜底配置。
+    # 未配置任何值时回退 DEFAULT_CONTEXT_WINDOW；不再基于模型 ID 前缀匹配。
+    model_context: int | None = None
 
     # Provider 配置（可选，不填则根据 model 前缀自动路由）
     provider: ProviderConfig | None = None
@@ -139,6 +148,17 @@ class EngineConfig(BaseModel):
         if self.provider:
             return self.provider.model_id
         return self.model
+
+    @property
+    def effective_model_context(self) -> int:
+        """生效的模型上下文窗口大小（token 数）。
+
+        解析顺序：provider.model_context > model_context > DEFAULT_CONTEXT_WINDOW。
+        压缩管线的全部触发阈值均基于此值计算。
+        """
+        if self.provider and self.provider.model_context:
+            return resolve_context_window(self.provider.model_context)
+        return resolve_context_window(self.model_context)
 
 
 class RuntimeGates(BaseModel):

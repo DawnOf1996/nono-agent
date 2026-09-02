@@ -35,7 +35,7 @@ class TestAgentDefinition:
 
 class TestFileSystemAgentLoader:
     def test_load_agent(self, tmp_path):
-        agents_dir = tmp_path / ".nono" / "agents"
+        agents_dir = tmp_path / ".nono-agent" / "agents"
         agents_dir.mkdir(parents=True)
         (agents_dir / "reviewer.md").write_text(
             "---\nname: reviewer\ndescription: Review\ntools: ['read_file', 'grep']\n---\n"

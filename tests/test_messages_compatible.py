@@ -4,6 +4,7 @@ from nono_agent.core.config import ProviderConfig
 from nono_agent.core.types import (
     AssistantMessage,
     ContentBlockDeltaEvent,
+    MessageDeltaEvent,
     MessageStartEvent,
     MessageStopEvent,
 )
@@ -115,3 +116,59 @@ class TestMessagesCompatibleProvider:
     def test_count_tokens(self):
         p = _make_provider()
         assert p.count_tokens([], "", []) >= 0
+
+    def test_message_delta_fills_input_when_start_is_zero(self):
+        """MiniMax: message_start.usage.input_tokens=0，真实值在 message_delta。"""
+        p = _make_provider()
+        start = p._map_event(
+            {
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    }
+                },
+            }
+        )
+        assert isinstance(start, MessageStartEvent)
+        assert start.message["usage"]["input_tokens"] == 0
+
+        delta = p._map_event(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {
+                    "input_tokens": 1252,
+                    "output_tokens": 219,
+                    "cache_read_input_tokens": 114,
+                    "cache_creation_input_tokens": 0,
+                },
+            }
+        )
+        assert isinstance(delta, MessageDeltaEvent)
+        assert delta.usage["output_tokens"] == 219
+        assert delta.usage["input_tokens"] == 1252
+        assert delta.usage["cache_read_input_tokens"] == 114
+        assert "cache_creation_input_tokens" not in delta.usage
+
+    def test_message_delta_keeps_nonzero_start_input(self):
+        """Anthropic 风格：start 已有 input_tokens 时，不从 delta 覆盖，避免累加重复。"""
+        p = _make_provider()
+        p._map_event(
+            {
+                "type": "message_start",
+                "message": {"usage": {"input_tokens": 42, "output_tokens": 1}},
+            }
+        )
+        delta = p._map_event(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"input_tokens": 42, "output_tokens": 15},
+            }
+        )
+        assert isinstance(delta, MessageDeltaEvent)
+        assert delta.usage == {"output_tokens": 15}

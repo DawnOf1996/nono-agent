@@ -35,6 +35,40 @@ class ModelTokenUsage:
         )
 
 
+# ---------------------------------------------------------------------------
+# 上下文用量渲染辅助 —— 供 CLI TUI 与 /tokens 命令共用
+# ---------------------------------------------------------------------------
+
+
+def format_context_usage(usage: dict[str, Any] | None) -> str | None:
+    """把上下文用量分析快照渲染成单行摘要（纯文本，总量/占比 + 三分项）。
+
+    输入是 ``analyze_context_usage()`` 的返回结构；None/空返回 None。
+    """
+    if not usage:
+        return None
+    ratio = float(usage.get("usage_ratio", 0.0))
+    return (
+        f"Context: {usage.get('total_tokens', 0):,}/"
+        f"{usage.get('context_window', 0):,} tokens ({ratio * 100:.1f}%) "
+        f"system {usage.get('system_prompt_tokens', 0):,} "
+        f"({usage.get('system_prompt_ratio', 0.0) * 100:.1f}%) | "
+        f"tools {usage.get('tools_tokens', 0):,} "
+        f"({usage.get('tools_ratio', 0.0) * 100:.1f}%) | "
+        f"messages {usage.get('messages_tokens', 0):,} "
+        f"({usage.get('messages_ratio', 0.0) * 100:.1f}%)"
+    )
+
+
+def context_usage_color(ratio: float) -> str:
+    """按窗口占用率给出 rich 颜色 —— <50% 绿 / <80% 黄 / ≥80% 红。"""
+    if ratio < 0.50:
+        return "green"
+    if ratio < 0.80:
+        return "yellow"
+    return "red"
+
+
 @dataclass
 class TokenTracker:
     """跟踪整个会话的累计 Token 用量。
@@ -60,6 +94,12 @@ class TokenTracker:
 
     # 每步（每次 record_usage）的用量记录 —— 支持「下钻到 step」
     _step_usages: list[dict[str, Any]] = field(default_factory=list)
+
+    # 最近一次上下文用量分析快照（analyze_context_usage 口径，含 system/tools/messages 分项）
+    _latest_context_usage: dict[str, Any] | None = None
+
+    # 上下文用量快照历史 —— 每次 record_context_usage 追加一条，可回看占用趋势
+    _context_usage_history: list[dict[str, Any]] = field(default_factory=list)
 
     # ------------------------------------------------------------------
     # 记录方法 —— 累加每次 API 响应的用量
@@ -94,6 +134,16 @@ class TokenTracker:
         self.total_api_duration_ms += duration_ms
         if model in self._model_usage:
             self._model_usage[model].api_duration_ms += duration_ms
+
+    def record_context_usage(self, usage: dict[str, Any]) -> None:
+        """记录一次上下文用量分析快照（总量/占比 + system/tools/messages 分项）。
+
+        入参为 ``analyze_context_usage()`` 的返回结构；内部保存浅拷贝，
+        避免调用方后续修改快照影响历史记录。
+        """
+        snapshot = dict(usage)
+        self._latest_context_usage = snapshot
+        self._context_usage_history.append(snapshot)
 
     def record_tool_duration(self, duration_ms: float) -> None:
         """记录工具执行耗时。"""
@@ -154,6 +204,14 @@ class TokenTracker:
         """获取每步用量记录（下钻到 step）。"""
         return list(self._step_usages)
 
+    def get_context_usage(self) -> dict[str, Any] | None:
+        """获取最近一次上下文用量分析快照（无记录时返回 None）。"""
+        return self._latest_context_usage
+
+    def get_context_usage_history(self) -> list[dict[str, Any]]:
+        """获取上下文用量快照历史（按记录顺序）。"""
+        return list(self._context_usage_history)
+
     def reset(self) -> None:
         """重置所有跟踪数据。"""
         self.total_usage = Usage()
@@ -161,3 +219,5 @@ class TokenTracker:
         self.total_tool_duration_ms = 0.0
         self._model_usage.clear()
         self._step_usages.clear()
+        self._latest_context_usage = None
+        self._context_usage_history.clear()

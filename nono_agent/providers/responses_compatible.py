@@ -24,6 +24,7 @@ from nono_agent.core.types import (
 )
 from nono_agent.providers._responses_utils import (
     normalize_responses_input,
+    responses_usage_buckets,
     to_responses_tool,
 )
 from nono_agent.utils.tokens import estimate_messages_tokens
@@ -185,10 +186,7 @@ class ResponsesCompatibleProvider:
                         else:
                             stop_reason = "max_tokens"
                         u = response.get("usage") or {}
-                        usage = {
-                            "input_tokens": u.get("input_tokens", 0) or 0,
-                            "output_tokens": u.get("output_tokens", 0) or 0,
-                        }
+                        usage = responses_usage_buckets(u)
 
         for idx in sorted(opened):
             yield ContentBlockStopEvent(index=idx)

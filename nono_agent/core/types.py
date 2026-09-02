@@ -108,11 +108,15 @@ ContentBlock = (
 class Usage(BaseModel):
     """Token 用量计数器 —— 跟踪每次 API 调用的四类 token 消耗。
 
-    四类 token：
-    - input_tokens: 普通输入 token
+    四类 token 为**互不重叠**的四桶（全 provider 统一口径，对齐 Anthropic）：
+    - input_tokens: 未命中缓存的「新鲜」输入 token（普通输入）
     - output_tokens: 输出 token（最贵）
     - cache_read_input_tokens: 命中 prompt cache 的 token（最便宜）
     - cache_creation_input_tokens: 创建 prompt cache 的 token（略贵于普通输入）
+
+    注意：OpenAI 系（Chat Completions / Responses）原生上报的
+    ``prompt_tokens`` / ``input_tokens`` 是「含缓存的总输入」，Provider 层已换算为
+    ``input_tokens = 总输入 - cached``、``cache_read = cached``，保证四桶语义一致。
     """
 
     input_tokens: int = 0
@@ -455,6 +459,8 @@ class SDKResultMessage(BaseModel):
     session_id: str = ""               # 所属会话 ID
     usage: Usage = Field(default_factory=Usage)         # 累计 token 用量
     model_usage: dict[str, Any] = Field(default_factory=dict)  # 按模型分项的用量统计
+    # 当前上下文用量分析快照（analyze_context_usage 口径：总量/占比 + system/tools/messages 分项）
+    context_usage: dict[str, Any] | None = None
     permission_denials: list[dict[str, Any]] = Field(default_factory=list)  # 权限拒绝记录
     errors: list[str] = Field(default_factory=list)     # 错误信息列表
     structured_output: Any | None = None                # JSON Schema 结构化输出（如配置了）

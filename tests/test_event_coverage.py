@@ -272,7 +272,9 @@ class _ForceCompactStage:
         return 0
 
     def should_run(self, messages, context) -> bool:
-        return len(messages) >= 3
+        # 用户消息在管线压缩之后才追加进 store，因此第二轮管线看到的是
+        # [user, assistant]（2 条）—— 阈值按「压缩前的历史」设定。
+        return len(messages) >= 2
 
     async def execute(self, messages, context):
         from nono_agent.core.types import SystemMessage

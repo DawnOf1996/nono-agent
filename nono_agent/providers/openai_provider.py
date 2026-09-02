@@ -22,6 +22,7 @@ from nono_agent.core.types import (
 )
 from nono_agent.providers._openai_utils import (
     normalize_openai_messages,
+    openai_chat_usage_buckets,
     to_openai_tool,
 )
 from nono_agent.providers.base import FallbackTriggeredError
@@ -142,10 +143,7 @@ class OpenAIProvider:
                     if chunk.usage:
                         yield MessageDeltaEvent(
                             delta={"stop_reason": None},
-                            usage={
-                                "output_tokens": chunk.usage.completion_tokens,
-                                "input_tokens": chunk.usage.prompt_tokens,
-                            },
+                            usage=openai_chat_usage_buckets(chunk.usage),
                         )
                     continue
 

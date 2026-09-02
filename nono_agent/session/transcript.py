@@ -23,6 +23,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import aiofiles  # type: ignore[import-untyped]
 
+from nono_agent.paths import user_home
 from nono_agent.session.events import SessionEvent
 from nono_agent.session.header import (
     SessionHeader,
@@ -33,7 +34,7 @@ from nono_agent.session.header import (
 logger = logging.getLogger(__name__)
 
 # 默认会话文件存储目录
-DEFAULT_SESSION_DIR = Path.home() / ".nono-agent" / "sessions"
+DEFAULT_SESSION_DIR = user_home() / "sessions"
 
 # 会话元信息侧车文件后缀（与 <sid>.jsonl 同目录）
 HEADER_SUFFIX = ".header.json"

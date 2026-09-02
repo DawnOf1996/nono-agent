@@ -4,7 +4,7 @@
 > 对标参考：工作区 `ClaudeCode/` 源码与其 `docs/`（QueryEngine / Prompt 组装 / Subagent）。  
 > 状态约定：`未开始` / `骨架` / `可用需打磨` / `已完成`
 
-**项目定位：** 可扩展的 Agent **运行时骨架**（灵感来自 Claude Code QueryEngine）。循环主路径可跑通；生产级工具与扩展面尚未建成。  
+**项目定位：** 可扩展的 Agent **运行时骨架**（灵感来自 Claude Code QueryEngine）。循环主路径可跑通；生产级工具与扩展面（Rules/Skills/Plugins/MCP/权限/Hooks/Slash/子 Agent 等）已基本建成，剩余为打磨项与 P2 可选能力。  
 **对标策略：** 对齐 CC 的 **Agent 运行时深度**（提示词组装、权限规则、Agent 三件套、MCP/Skills 等）；**不**复刻 Ink TUI、账号体系与全部产品 slash。
 
 ---
@@ -23,7 +23,7 @@
 | OpenAI Responses Provider（原厂）                   | 可用需打磨 | 已实现流式事件映射（待真实 API 验证）                         |
 | Responses 兼容（`responses_compatible`）            | 可用需打磨 | 非原厂 Responses 协议网关（httpx SSE）                       |
 | 工具协议 / Registry / Executor                      | 可用需打磨 | 三态权限决策接入 Executor                                    |
-| 内置工具                                            | 可用需打磨 | Bash/Read/Write/Edit/Glob/Grep/AskUser 可用；缺 LSP/Web/Worktree |
+| 内置工具                                            | 可用需打磨 | Bash/Read/Write/Edit/Glob/Grep/AskUser/LSP/Web/Worktree/Task 等 22 个均已落地 |
 | AskUserQuestion 通道                              | 可用需打磨 | CLI 交互回调可用；Server 回调/SSE 待 Phase 3                |
 | LSP 工具                                          | 已完成   | 对标 CC `LSPTool`（stdio 客户端 + 定义/引用/诊断）             |
 | ToolSearch / MCP Resources+Auth                 | 可用需打磨 | ToolSearch + Resources 可用；MCP Auth 待做               |
@@ -112,7 +112,7 @@
 
 
 
-## 2. 未实现能力（能力层缺口）
+## 2. 能力清单与状态（逐项对照）
 
 
 
@@ -135,7 +135,7 @@
 
 ### 2.1 生产级内置工具（优先级：P0）
 
-当前 `tools/builtin.py` 仅为 E2E 演示。
+`tools/builtin.py` 已拆分为 `tools/builtin/` 生产级工具包（22 个内置工具），旧文件仅保留薄 re-export。
 
 
 | 工具                   | 目标能力                               | 优先级   | 状态  |
@@ -165,7 +165,7 @@
 
 | 项           | 说明                                               | 状态  |
 | ----------- | ------------------------------------------------ | --- |
-| 文件约定        | `.nono/rules/`、`AGENTS.md`、`CLAUDE.md`（兼容读）、用户全局 | 已完成 |
+| 文件约定        | `.nono-agent/rules/`、`AGENTS.md`、`CLAUDE.md`（兼容读）、用户全局 | 已完成 |
 | 发现与加载       | CWD 向上 walk、校验、缓存                                | 可用需打磨 |
 | 层级合并 / 条件启用 | 全局 < 项目 < 路径级；`globs`                            | 已完成 |
 | 注入          | 作为 Prompt Section（§2.0），非一次性拼接                   | 已完成 |
@@ -193,7 +193,7 @@
 
 | 项                     | 说明                          | 状态  |
 | --------------------- | --------------------------- | --- |
-| 配置 schema / 传输 / 生命周期 | `mcp.json`、stdio/SSE、启停健康检查 | 可用需打磨 |
+| 配置 schema / 传输 / 生命周期 | `mcp.json`（含 stdio/SSE 传输字段）；客户端现仅实现 stdio；启停健康检查 | 可用需打磨 |
 | Tool 桥接               | MCP tools → `Tool` Protocol | 已完成 |
 | **Resources**         | List/Read MCP resources     | 已完成 |
 | **Auth**              | OAuth/令牌流（对标 `McpAuthTool`） | 静态 token 起步 |
@@ -209,7 +209,7 @@
 
 | 项         | 说明                                                | 状态  |
 | --------- | ------------------------------------------------- | --- |
-| 清单 + 发现路径 | `plugin.json`；`.nono/plugins`、用户目录               | 已完成 |
+| 清单 + 发现路径 | `plugin.json`；`.nono-agent/plugins`、用户目录               | 已完成 |
 | 加载器       | 校验、启停、冲突、失败隔离                                     | 已完成 |
 | 注册对接      | Rules / Skills / Agents / MCP / 权限（Tools 经 MCP）   | 可用需打磨 |
 
@@ -249,8 +249,8 @@
 | 来源         | 用途                      | 状态  |
 | ---------- | ----------------------- | --- |
 | 默认         | 引擎内置                    | 已完成 |
-| user       | `~/.nono/settings.json` | 已完成 |
-| project    | `.nono/settings.json`   | 已完成 |
+| user       | `~/.nono-agent/settings.json` | 已完成 |
+| project    | `.nono-agent/settings.json`   | 已完成 |
 | policy     | 托管/企业下发（Server）         | 已完成 |
 | flag / env | CLI 临时覆盖，最高优先           | 已完成 |
 
@@ -259,7 +259,7 @@
 
 ### 2.7 用户态 Hooks 与 Slash 命令（优先级：P1）
 
-**Hooks：** `session_start/end`、`before/after_tool`（可否决）、`before_submit`/`on_stop`；配置 `hooks.json` 或 Plugin；执行器为命令/HTTP（沙箱 + SSRF 防护）。
+**Hooks：** `session_start/end`、`before/after_tool`（可否决）、`before_submit`/`on_stop`；配置 `hooks.json` 或 Plugin；执行器目前为命令（沙箱），HTTP 执行器（含 SSRF 防护）待做。
 
 **Slash MVP（不对齐 CC 100+ 全量）：**
 
@@ -287,7 +287,7 @@
 | **run 实例**          | 独立 Engine/Store，结果回写父会话                                         | 已完成 |
 
 
-Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.nono/agents`）/ `plugin` / `flag`。
+Definition 来源：`built-in` / `user`（`~/.nono-agent/agents`）/ `project`（`.nono-agent/agents`）/ `plugin` / `flag`。
 
 运行时：权限子集化、预算封顶、abort 联动、结果协议、串行默认、`isolation=worktree`、可选后台 + Task 输出。
 
@@ -299,7 +299,7 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 
 ### 2.9 会话事件流持久化扩展（优先级：P1）
 
-`TranscriptWriter` Protocol 已是事件溯源语义（落盘只有 `SessionEvent`）；已有 LocalFile JSONL（默认）+ SQLite `events`/`session_header` + 工厂切换 + `fork_transcript`，16 类事件全量实装，请求前一致性门禁默认 `strict`，另有读取侧脱敏与不调模型回放。规划：Postgres/MySQL、Redis、可选 S3；JSONL 可选 zstd 压缩；增量 derive；回溯面板。设计见 [Session-Observability-Design.md](./Session-Observability-Design.md)。
+`TranscriptWriter` Protocol 已是事件溯源语义（落盘只有 `SessionEvent`）；已有 LocalFile JSONL（默认）+ SQLite `events`/`session_header` + 工厂切换 + `fork_transcript`，17 类事件全量实装，请求前一致性门禁默认 `strict`，另有读取侧脱敏与不调模型回放。规划：Postgres/MySQL、Redis、可选 S3；JSONL 可选 zstd 压缩；增量 derive；回溯面板。设计见 [Session-Observability-Design.md](./Session-Observability-Design.md)。
 
 ### 2.10 Provider 协议矩阵扩展（优先级：P1）
 
@@ -331,7 +331,7 @@ Definition 来源：`built-in` / `user`（`~/.nono/agents`）/ `project`（`.non
 
 Protocol：`MemoryStore` / `CheckpointStore`。
 
-### 2.12 其它未实现 / 占位
+### 2.12 其它能力现状与待打磨
 
 
 | 项                        | 现状    | 计划                 |
@@ -361,7 +361,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 - [ ] abort：流式、工具执行、权限等待、AskUser 等待各阶段一致性（含竞态）
 - [ ] `MessageStore` compact boundary / tombstone / resume 边界用例补齐
 - [ ] Recovery 策略可观测：压缩节省 token、重试原因对 SDK 消费者透明
-- [ ] 接入 §2.0 Prompt Section 组装器，替换临时 `_build_system_prompt`
+- [x] 接入 §2.0 Prompt Section 组装器，替换临时 `_build_system_prompt`
 - [ ] 默认系统提示与工具描述质量（面向真实任务，而非演示）
 
 
@@ -371,23 +371,23 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 - [ ] Anthropic / OpenAI / Compatible 的 tool_use、thinking、usage 字段对齐
 - [ ] 错误分类统一（prompt_too_long / rate_limit / overload → RecoveryChain）
 - [ ] token 估算与真实 usage 偏差校准
-- [ ] 实现原厂 `ResponsesProvider`，并抽出可复用的 Responses 事件映射
-- [ ] 新增 `messages_compatible` / `responses_compatible` 并注册到 `ProviderRegistry`
+- [x] 实现原厂 `ResponsesProvider`，并抽出可复用的 Responses 事件映射
+- [x] 新增 `messages_compatible` / `responses_compatible` 并注册到 `ProviderRegistry`
 - [ ] adapter 命名与文档一致，避免「openai = 原厂还是兼容」歧义
-- [ ] 实现或移除已过时占位，避免“路由存在但必崩”
+- [x] 实现或移除已过时占位，避免“路由存在但必崩”
 
 
 
 ### 3.3 管线
 
 - [x] 默认是否注册 ContextCollapse 的配置项（`context_collapse_enabled` + 默认 summarizer）
-- [ ] AutoCompact 80%/95% 阈值与模型窗口表维护
+- [x] AutoCompact 80%/95% 阈值与模型窗口表维护 —— 窗口表已移除：上下文大小由模型配置 `model_context` 提供（`ProviderConfig`/`EngineConfig`），阈值常量收敛到 `utils/tokens.py`；详见 [Context-Compression-Design.md](./Context-Compression-Design.md)
 
 
 
 ### 3.4 工具与权限
 
-- [ ] 落地 `PermissionPolicy` + `PermissionRule` + denial 追踪（§2.6）
+- [x] 落地 `PermissionPolicy` + `PermissionRule` + denial 追踪（§2.6）
 - [ ] Server 默认 deny-write 与可配置策略文档化
 - [ ] 工具输入 JSON Schema 校验在 execute 前强制执行
 - [ ] 并发安全标记审计；危险工具强制串行
@@ -411,7 +411,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 - [x] 落盘只存事件：`TranscriptWriter` 改事件溯源语义，去掉全量覆写接口
 - [x] `LocalFileTranscriptWriter`：残行跳过、重启后 seq 续接、事件格式之前的 transcript 拒读、`0600` 权限
-- [x] 事件目录全量实装（16 类）：`step/*`、`assistant/chunk`、`api/retry`、`permission/denial`、`memory/*` 接入
+- [x] 事件目录全量实装（17 类）：`step/*`、`assistant/chunk`、`api/retry`、`permission/denial`、`memory/*`、`user/input` 接入
 - [x] 状态变更全事件化 + 管线深拷贝 → 请求前 `verify_reconstruction` 强门禁（`session_invariant` strict/warn/off）
 - [x] 读取侧脱敏（`redact_events`）与不调模型回放（`replay_sdk_messages`）
 - [ ] 并发多进程写同一事件流（当前只保证单进程内追加有序）
@@ -490,7 +490,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 1. [x] **子 Agent 三件套**（AgentTool + Definition + run）+ Worktree 工具
 2. [x] Server：鉴权、会话治理（TTL）、AskUser 回调/SSE（WebSocket 按需待做）
 3. [ ] Transcript 生产后端；Plugin/Slash 管理 API
-4. [x] `responses_compatible`（结构化输出闭环待做）
+4. [x] `responses_compatible`（结构化输出已可用需打磨，深度 schema 校验待做）
 5. [x] SDK 契约含 `permission_denials`
 
 **完成定义：** 可落盘 Agent 定义并可派发子任务；CLI/Server 扩展面对称。
@@ -507,8 +507,8 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 ## 5. 完整包树与职责说明
 
-> **原则：** 规划目录是「引擎内核 + 扩展面」并存，**不是**推倒重来。  
-> 现有 `core/` / `pipeline/` / `recovery/` / `hooks/` / `adapters/` / `observability/` / `utils/` **原位保留**；扩展包以新建为主；`tools/builtin.py` 拆为包，权限/prompt 从现有文件**抽出**。
+> **原则：** 目录是「引擎内核 + 扩展面」并存，**不是**推倒重来。  
+> 现有 `core/` / `pipeline/` / `recovery/` / `hooks/` / `adapters/` / `observability/` / `utils/` **原位保留**；扩展包已全部落地；`tools/builtin.py` 已拆为包，权限/prompt 已从现有文件**抽出**。
 
 状态标记：`✅` 已有主路径 · `🔧` 已有需扩展/拆分 · `📋` 规划新建 · `P2` 后期
 
@@ -530,7 +530,7 @@ nono_agent/
 │   ├── tool_result_budget.py
 │   ├── snip_compact.py
 │   ├── microcompact.py
-│   ├── context_collapse.py        # 默认未注册；需 summarizer
+│   ├── context_collapse.py        # 可配置启用（context_collapse_enabled + 默认 summarizer）
 │   └── auto_compact.py
 │
 ├── recovery/                      # ✅ 错误恢复决策
@@ -562,14 +562,14 @@ nono_agent/
 ├── providers/                     # 🔧 协议矩阵
 │   ├── base.py                    # LLMProvider · ProviderRegistry
 │   ├── anthropic_provider.py      # ✅ Messages 原厂
-│   ├── messages_compatible.py     # 📋 Messages 非原厂
+│   ├── messages_compatible.py     # ✅ Messages 非原厂
 │   ├── openai_provider.py         # ✅ Chat 原厂
 │   ├── openai_compatible.py       # ✅ Chat 兼容
-│   ├── responses_provider.py      # 📋/占位 Responses 原厂
-│   ├── responses_compatible.py    # 📋 Responses 非原厂
+│   ├── responses_provider.py      # ✅ Responses 原厂（流式事件映射，待真实 API 验证）
+│   ├── responses_compatible.py    # ✅ Responses 非原厂
 │   ├── _openai_utils.py
-│   ├── _messages_utils.py         # 📋
-│   └── _responses_utils.py        # 📋
+│   ├── _messages_utils.py         # ✅
+│   └── _responses_utils.py        # ✅
 │
 ├── session/                       # 🔧 内存消息 + 事件流持久化
 │   ├── store.py                   # MessageStore ✅
@@ -589,7 +589,7 @@ nono_agent/
 │   ├── registry.py                # ToolRegistry ✅
 │   ├── executor.py                # Streaming/Batch ✅
 │   ├── context.py                 # ToolUseContext（瘦身；权限委托 permissions）
-│   └── builtin/                   # 📋 替代 builtin.py
+│   └── builtin/                   # ✅ 生产级工具包（22 个内置工具）
 │       ├── __init__.py            # create_builtin_tools()
 │       ├── bash.py / read.py / write.py / edit.py
 │       ├── glob.py / grep.py
@@ -598,8 +598,8 @@ nono_agent/
 │       ├── web_fetch.py / …       # P1
 │       └── …                      # Todo / Plan 进出等
 │
-│ ─── 扩展面（规划新建）──────────────────────────────────────
-├── prompt/                        # 📋 Prompt Section 组装
+│ ─── 扩展面（已落地）──────────────────────────────────────
+├── prompt/                        # ✅ Prompt Section 组装
 │   ├── section.py                 # PromptSection Protocol
 │   ├── registry.py                # 有序注册 · memoize · 静/动态边界
 │   ├── assembler.py               # 优先级：override > agent > custom > default
@@ -610,64 +610,58 @@ nono_agent/
 │       ├── rules_section.py       # 消费 rules/
 │       └── memory_section.py      # 消费 memory/（P2）
 │
-├── rules/                         # 📋 常驻指令发现/合并
-│   ├── loader.py                  # RuleLoader Protocol + 文件系统实现
+├── rules/                         # ✅ 常驻指令发现/合并
 │   ├── merge.py                   # 层级与 globs
 │   └── models.py                  # Rule 清单类型
 │
-├── skills/                        # 📋 按需能力包
-│   ├── loader.py
+├── skills/                        # ✅ 按需能力包
 │   ├── models.py
 │   └── skill_tool.py              # 注册进 ToolRegistry 的 SkillTool
 │
-├── plugins/                       # 📋 扩展分发单元
-│   ├── loader.py                  # 清单校验 · 启停 · 失败隔离
-│   ├── manifest.py                # plugin.toml/json schema
+├── plugins/                       # ✅ 扩展分发单元
+│   ├── manifest.py                # plugin.json schema
 │   └── activate.py                # 向各 Registry 注册
 │
-├── commands/                      # 📋 Slash MVP（无 UI）
-│   ├── registry.py                # CommandRegistry
+├── commands/                      # ✅ Slash MVP（无 UI）
 │   ├── parser.py                  # 与自然语言分流
 │   └── builtin/                   # compact/clear/rules/mcp/…
 │
-├── settings/                      # 📋 分层配置合并
-│   ├── sources.py                 # default/user/project/policy/flag
+├── settings/                      # ✅ 分层配置合并
 │   ├── merge.py
 │   └── models.py
 │
-├── permissions/                   # 📋 从 context/adapters 抽出
+├── permissions/                   # ✅ 从 context/adapters 抽出
 │   ├── policy.py                  # PermissionPolicy · 模式
 │   ├── rules.py                   # PermissionRule 解析/匹配
 │   ├── denial.py                  # denial 追踪 → SDKResult
 │   ├── sandbox.py                 # 路径沙箱 · Ignore
 │   └── bash_classify.py           # 危险命令分类（可后置）
 │
-├── mcp/                           # 📋 MCP 客户端
+├── mcp/                           # 🔧 MCP 客户端（stdio；auth/SSE 待做）
 │   ├── config.py
-│   ├── client.py                  # 传输 · 生命周期
+│   ├── client.py                  # 传输 · 生命周期（stdio）
 │   ├── bridge.py                  # tools → Tool Protocol
-│   ├── resources.py               # List/Read resources
-│   └── auth.py                    # MCP auth 流
+│   └── (resources 桥接并入 client)
 │
-├── agents/                        # 📋 子 Agent 三件套
+├── agents/                        # ✅ 子 Agent 三件套
 │   ├── definition.py              # AgentDefinition · 多 source 加载
 │   ├── agent_tool.py              # 模型可调用入口
 │   ├── runner.py                  # 独立 Engine/Store · 结果回写
-│   └── builtin/                   # general-purpose / explore 等
+│   └── builtin.py                 # general-purpose / explore
 │
-├── memory/                        # P2 跨会话记忆
+├── memory/                        # ✅ 跨会话记忆（P2 演进中）
 │   ├── store.py                   # MemoryStore Protocol
-│   └── memdir.py                  # 目录布局 · 类型约束
+│   ├── models.py                  # MemoryRecord envelope
+│   └── manager.py                 # 准入 / 检索 / 反思 / 观察者
 │
-└── checkpoint/                    # P2 编辑回滚
-    ├── store.py                   # CheckpointStore Protocol
-    └── file_history.py            # 快照/补丁栈
+└── checkpoint/                    # ✅ 编辑回滚
+    └── store.py                   # CheckpointStore Protocol
 ```
 
 项目侧约定目录（与包分离，属用户/仓库配置）：
 
 ```
-.nono/
+.nono-agent/
 ├── settings.json
 ├── rules/
 ├── agents/                 # AgentDefinition markdown
@@ -675,8 +669,9 @@ nono_agent/
 ├── plugins/
 ├── hooks.json              # 用户态 Hooks（由 hooks 适配层加载）
 ├── mcp.json
-└── memory/
 ```
+
+用户运行时目录（同名，位于 `~/`）：`~/.nono-agent/{config.json,sessions/,memory/,settings.json,rules/,skills/,plugins/,agents/}`。
 
 ### 5.2 各包职责说明
 
@@ -696,7 +691,7 @@ nono_agent/
 
 | 包 | 职责 | 不负责 | 现状 |
 |----|------|--------|------|
-| **`providers/`** | LLMProvider Protocol、注册路由、各协议 stream/normalize；原厂与 `*_compatible` | 工具执行、会话存储 | 🔧 兼容层与 Responses 待补 |
+| **`providers/`** | LLMProvider Protocol、注册路由、各协议 stream/normalize；原厂与 `*_compatible` | 工具执行、会话存储 | ✅ 全矩阵已注册（responses 原厂待真实 API 验证） |
 | **`session/`** | 运行时 `MessageStore`；事件流 `TranscriptWriter` 多后端 + `derive_messages` 重建 | 跨会话 Memory（见 `memory/`） | 🔧 LocalFile + SQLite |
 
 #### 工具
@@ -704,23 +699,23 @@ nono_agent/
 | 包 | 职责 | 不负责 | 现状 |
 |----|------|--------|------|
 | **`tools/`**（协议层） | Tool Protocol、Registry、Executor、ToolUseContext | 权限策略实现（委托 `permissions/`） | ✅ 协议；context 待瘦身 |
-| **`tools/builtin/`** | 生产级内置工具实现（Bash/Read/Edit/…/AskUser/LSP/Worktree） | MCP 桥接工具（`mcp/`）、Skill/Agent 入口（可放本包或 skills/agents 再注册） | 📋 现为单文件演示 `builtin.py` |
+| **`tools/builtin/`** | 生产级内置工具实现（Bash/Read/Edit/…/AskUser/LSP/Worktree） | MCP 桥接工具（`mcp/`）、Skill/Agent 入口（可放本包或 skills/agents 再注册） | ✅ 22 个内置工具包（`builtin.py` 已拆） |
 
 #### 扩展面
 
 | 包 | 职责 | 不负责 | 现状 |
 |----|------|--------|------|
-| **`prompt/`** | Section Protocol、Registry、组装优先级与静/动态边界；替换 `_build_system_prompt` | 发现 Rules/Memory 文件（消费 `rules/`/`memory/` 的已合并结果） | 📋 |
-| **`rules/`** | 常驻指令发现（含 CLAUDE.md/AGENTS.md 兼容）、层级合并、条件 globs | 写入最终 prompt 字符串（交给 `prompt/` section） | 📋 |
-| **`skills/`** | Skill 包发现/加载；**SkillTool** 供模型按需激活 | Plugin 分发格式（`plugins/` 可内嵌 skills） | 📋 |
-| **`plugins/`** | 扩展包清单、启停、失败隔离；**组合**注册 Rules/Skills/Agents/Tools/Hooks/MCP/Commands | 实现具体 Tool/Agent 逻辑 | 📋 |
-| **`commands/`** | Slash 解析与执行注册表；与自然语言分流 | Rich/HTTP 渲染（`adapters/`） | 📋 |
-| **`settings/`** | default/user/project/policy/flag 合并；单一读入口 | 替代 `EngineConfig`（构造期仍用 EngineConfig；settings 可生成/覆盖其输入） | 📋 |
-| **`permissions/`** | 会话模式、PermissionRule、denial 追踪、路径沙箱、Ignore、Bash 分类 | 具体 tool.execute 业务 | 📋 现散落在 context/cli/server |
-| **`mcp/`** | MCP 配置、进程生命周期、tools/resources/auth 桥接到 ToolRegistry | 通用 Tool 协议定义 | 📋 |
-| **`agents/`** | AgentDefinition 多 source、AgentTool、runner（子 Engine） | Teams/Coordinator（P2 可选，可另模块） | 📋 |
-| **`memory/`** | 跨会话记忆存储与 memdir 约定；供 prompt section 注入 | 单次 transcript（`session/`） | P2 |
-| **`checkpoint/`** | 文件编辑快照/回滚 | Git 本身 | P2 |
+| **`prompt/`** | Section Protocol、Registry、组装优先级与静/动态边界；替换 `_build_system_prompt` | 发现 Rules/Memory 文件（消费 `rules/`/`memory/` 的已合并结果） | ✅ |
+| **`rules/`** | 常驻指令发现（含 CLAUDE.md/AGENTS.md 兼容）、层级合并、条件 globs | 写入最终 prompt 字符串（交给 `prompt/` section） | ✅ |
+| **`skills/`** | Skill 包发现/加载；**SkillTool** 供模型按需激活 | Plugin 分发格式（`plugins/` 可内嵌 skills） | ✅ |
+| **`plugins/`** | 扩展包清单、启停、失败隔离；**组合**注册 Rules/Skills/Agents/Tools/Hooks/MCP/Commands | 实现具体 Tool/Agent 逻辑 | ✅ |
+| **`commands/`** | Slash 解析与执行注册表；与自然语言分流 | Rich/HTTP 渲染（`adapters/`） | ✅ |
+| **`settings/`** | default/user/project/policy/flag 合并；单一读入口 | 替代 `EngineConfig`（构造期仍用 EngineConfig；settings 可生成/覆盖其输入） | ✅ |
+| **`permissions/`** | 会话模式、PermissionRule、denial 追踪、路径沙箱、Ignore、Bash 分类 | 具体 tool.execute 业务 | ✅ |
+| **`mcp/`** | MCP 配置、进程生命周期、tools/resources 桥接到 ToolRegistry | 通用 Tool 协议定义 | 🔧 stdio 已落地；auth/SSE 待做 |
+| **`agents/`** | AgentDefinition 多 source、AgentTool、runner（子 Engine） | Teams/Coordinator（P2 可选，可另模块） | ✅ |
+| **`memory/`** | 跨会话记忆存储与 memdir 约定；供 prompt section 注入 | 单次 transcript（`session/`） | ✅ P2 演进中 |
+| **`checkpoint/`** | 文件编辑快照/回滚 | Git 本身 | ✅ |
 
 ### 5.3 包依赖方向（禁止反向）
 
@@ -738,7 +733,9 @@ core          ↛  adapters          ✗
 prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，不执行）
 ```
 
-### 5.4 从现有代码迁移对照
+### 5.4 从现有代码迁移对照（已完成）
+
+> 下表所列迁移动作均已落地（`tools/builtin.py` 已拆为 `tools/builtin/`、`_build_system_prompt` 已抽到 `prompt/`、权限闭包已迁到 `permissions/`、扩展面各包已新建）。
 
 | 现有 | 目标动作 |
 |------|----------|
@@ -750,8 +747,6 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | `core/engine._build_system_prompt` | **抽到** `prompt/`，Engine 只调用组装器 |
 | CLI/Server 内联 permission 闭包 | **迁到** `permissions/` + adapters 注入 Policy |
 | （无） | **新建** prompt/rules/skills/plugins/commands/settings/permissions/mcp/agents/memory/checkpoint |
-
-推荐节奏：Phase 1 做 `tools/builtin/` + `permissions/` + `prompt/` + `rules/`；Phase 2 起其余新建包；避免一次性大搬家。
 
 ### 5.5 与 §1.5 分层的对应
 

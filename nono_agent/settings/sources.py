@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from nono_agent.paths import CONFIG_DIR_NAME, user_home
 from nono_agent.settings.merge import deep_merge
 from nono_agent.settings.models import Settings
 
@@ -18,8 +19,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "permissions": {"mode": "default", "rules": []},
 }
 
-_USER_SETTINGS_PATH = Path.home() / ".nono" / "settings.json"
-_PROJECT_SETTINGS_PATH = Path(".nono") / "settings.json"
+_USER_SETTINGS_PATH = user_home() / "settings.json"
+_PROJECT_SETTINGS_REL = Path(CONFIG_DIR_NAME) / "settings.json"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -34,15 +35,15 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def load_user_settings(path: Path | None = None) -> dict[str, Any]:
-    """加载用户级设置（``~/.nono/settings.json``）。"""
+    """加载用户级设置（``~/.nono-agent/settings.json``）。"""
     return _read_json(path or _USER_SETTINGS_PATH)
 
 
 def load_project_settings(cwd: str | Path) -> dict[str, Any]:
-    """加载项目级设置（``.nono/settings.json``，从 cwd 向上查找第一个）。"""
+    """加载项目级设置（``.nono-agent/settings.json``，从 cwd 向上查找第一个）。"""
     current = Path(cwd).resolve()
     while True:
-        candidate = current / _PROJECT_SETTINGS_PATH
+        candidate = current / _PROJECT_SETTINGS_REL
         if candidate.exists():
             data = _read_json(candidate)
             if data:

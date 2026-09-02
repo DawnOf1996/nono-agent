@@ -77,24 +77,12 @@ def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# 上下文窗口辅助 —— 模型上下文大小和自动压缩阈值
+# 上下文窗口辅助 —— 上下文大小配置与自动压缩阈值
 # ---------------------------------------------------------------------------
 
-# 各模型家族的上下文窗口大小（token 数）
-MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "claude-3-5-sonnet": 200_000,
-    "claude-3-5-haiku": 200_000,
-    "claude-3-opus": 200_000,
-    "claude-sonnet-4": 200_000,
-    "claude-opus-4": 200_000,
-    "gpt-4o": 128_000,
-    "gpt-4-turbo": 128_000,
-    "gpt-4": 8_192,
-    "o1": 200_000,
-    "o3": 200_000,
-}
-
-DEFAULT_CONTEXT_WINDOW = 200_000  # 默认上下文窗口大小
+# 模型上下文窗口的默认兜底值 —— 仅当配置（model_context）未提供时使用。
+# 正式配置入口：ProviderConfig.model_context / EngineConfig.model_context。
+DEFAULT_CONTEXT_WINDOW = 200_000
 
 # 自动压缩触发阈值 —— 上下文达到窗口的 80% 时触发
 AUTO_COMPACT_THRESHOLD = 0.80
@@ -102,26 +90,102 @@ AUTO_COMPACT_THRESHOLD = 0.80
 # 阻塞极限阈值 —— 上下文达到窗口的 95% 时拒绝新消息（为 /compact 预留空间）
 BLOCKING_LIMIT_THRESHOLD = 0.95
 
+# 微压缩触发阈值 —— 上下文达到窗口的 50% 时开始细粒度压缩
+MICROCOMPACT_THRESHOLD = 0.50
+
+# 压缩回落目标 —— 触发压缩后尽量把上下文降回窗口的 60%
+COMPACT_TARGET_RATIO = 0.60
+
 ESCALATED_MAX_TOKENS = 64_000  # 升级后的最大输出 token 数
 
 
-def get_context_window_size(model_id: str) -> int:
-    """根据模型 ID 获取上下文窗口大小。"""
-    for prefix, size in MODEL_CONTEXT_WINDOWS.items():
-        if model_id.startswith(prefix):
-            return size
-    return DEFAULT_CONTEXT_WINDOW
+def resolve_context_window(model_context: int | None) -> int:
+    """解析生效的上下文窗口大小 —— 显式配置优先，未配置时回退默认值。
+
+    上下文大小属于**模型配置**（``ProviderConfig.model_context`` /
+    ``EngineConfig.model_context``），由调用方解析后传入；不再基于模型 ID
+    前缀查表猜测。
+    """
+    if model_context is None or model_context <= 0:
+        return DEFAULT_CONTEXT_WINDOW
+    return int(model_context)
 
 
-def calculate_token_warning_state(
-    token_count: int,
-    model_id: str,
-) -> dict[str, bool]:
-    """计算 token 警告状态 —— 是否触发自动压缩或到达阻塞极限。"""
-    window = get_context_window_size(model_id)
+def estimate_system_prompt_tokens(system_prompt: str) -> int:
+    """估算系统提示词的 token 数。"""
+    if not system_prompt:
+        return 0
+    return count_tokens(system_prompt)
+
+
+def estimate_tools_tokens(tools: list[dict[str, Any]] | None) -> int:
+    """估算工具 API schema 的 token 数。
+
+    每个工具 = 名称 + 描述 + 参数 schema 整体 JSON 序列化后计数，
+    另加少量每次调用的固定开销。
+    """
+    if not tools:
+        return 0
+    total = 0
+    for tool in tools:
+        try:
+            total += count_tokens(json.dumps(tool, ensure_ascii=False))
+        except (TypeError, ValueError):
+            total += count_tokens(str(tool))
+        total += 8  # 单工具在请求中的固定开销（工具节标记等）
+    return total
+
+
+def estimate_request_tokens(
+    messages: list[dict[str, Any]],
+    system_prompt: str = "",
+    tools: list[dict[str, Any]] | None = None,
+) -> int:
+    """估算一次完整请求的 token 数 = 系统提示词 + 工具 schema + 对话消息。"""
+    return (
+        estimate_system_prompt_tokens(system_prompt)
+        + estimate_tools_tokens(tools)
+        + estimate_messages_tokens(messages)
+    )
+
+
+def analyze_context_usage(
+    messages: list[dict[str, Any]],
+    *,
+    system_prompt: str = "",
+    tools: list[dict[str, Any]] | None = None,
+    model_context: int | None = None,
+) -> dict[str, Any]:
+    """分析当前上下文使用情况 —— 总量、占比与分项明细。
+
+    分项包含系统提示词 / 工具 schema / 对话消息各占多少 token，
+    以及相对配置窗口（``model_context``，未配置时回退默认值）的占比与
+    自动压缩/阻塞阈值状态。
+    """
+    window = resolve_context_window(model_context)
+    system_tokens = estimate_system_prompt_tokens(system_prompt)
+    tools_tokens = estimate_tools_tokens(tools)
+    messages_tokens = estimate_messages_tokens(messages)
+    total = system_tokens + tools_tokens + messages_tokens
+
+    def _ratio(part: int) -> float:
+        return round(part / window, 4) if window > 0 else 0.0
+
     return {
-        "is_auto_compact_threshold": token_count >= int(window * AUTO_COMPACT_THRESHOLD),
-        "is_at_blocking_limit": token_count >= int(window * BLOCKING_LIMIT_THRESHOLD),
+        "context_window": window,
+        "total_tokens": total,
+        "usage_ratio": _ratio(total),
+        "remaining_tokens": max(0, window - total),
+        "system_prompt_tokens": system_tokens,
+        "system_prompt_ratio": _ratio(system_tokens),
+        "tools_tokens": tools_tokens,
+        "tools_count": len(tools) if tools else 0,
+        "tools_ratio": _ratio(tools_tokens),
+        "messages_tokens": messages_tokens,
+        "messages_ratio": _ratio(messages_tokens),
+        "message_count": len(messages),
+        "is_auto_compact_threshold": total >= int(window * AUTO_COMPACT_THRESHOLD),
+        "is_at_blocking_limit": total >= int(window * BLOCKING_LIMIT_THRESHOLD),
     }
 
 

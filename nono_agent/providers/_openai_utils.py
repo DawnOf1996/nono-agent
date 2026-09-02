@@ -17,6 +17,48 @@ from typing import Any
 from nono_agent.core.types import Message
 
 
+def usage_to_buckets(
+    total_input: int | None,
+    total_output: int | None,
+    cached_input: int | None = None,
+) -> dict[str, int]:
+    """把 OpenAI 系「含缓存的总输入」换算为本项目统一的四桶口径。
+
+    OpenAI 的 ``prompt_tokens`` / ``input_tokens`` 是**含缓存**的总输入，
+    ``cached_tokens``（``*_details.cached_tokens``）是其中的缓存命中子集；
+    本项目（对齐 Anthropic）的 ``input_tokens`` 表示**未命中缓存的新鲜输入**。
+
+    换算：
+      - input_tokens             = 总输入 - 缓存命中（≥0）
+      - cache_read_input_tokens  = 缓存命中
+      - cache_creation_input_tokens = 0（OpenAI 不单独上报缓存写入）
+      - output_tokens            = 原样透传
+    """
+    cached = max(0, int(cached_input or 0))
+    fresh = max(0, int(total_input or 0) - cached)
+    return {
+        "input_tokens": fresh,
+        "output_tokens": int(total_output or 0),
+        "cache_read_input_tokens": cached,
+        "cache_creation_input_tokens": 0,
+    }
+
+
+def openai_chat_usage_buckets(usage: Any) -> dict[str, int]:
+    """从 OpenAI Chat Completions 的 usage 对象（SDK 或兼容对象）提取四桶。
+
+    读取 ``prompt_tokens`` / ``completion_tokens`` 与
+    ``prompt_tokens_details.cached_tokens``，换算成统一口径。
+    """
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached = getattr(details, "cached_tokens", None) if details is not None else None
+    return usage_to_buckets(
+        getattr(usage, "prompt_tokens", 0),
+        getattr(usage, "completion_tokens", 0),
+        cached,
+    )
+
+
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """深度合并两个字典 —— override 中的值覆盖 base 中的同名键。
 

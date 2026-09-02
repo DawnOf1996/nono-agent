@@ -31,6 +31,6 @@ def _isolate_memory_dir(tmp_path, monkeypatch):
     不隔离的话，记忆会在真实 HOME 里跨测试累积，检索类断言随运行历史漂移。
     """
     monkeypatch.setattr(
-        memory_store_module, "DEFAULT_MEMORY_DIR", tmp_path / ".nono" / "memory"
+        memory_store_module, "DEFAULT_MEMORY_DIR", tmp_path / ".nono-agent" / "memory"
     )
     yield

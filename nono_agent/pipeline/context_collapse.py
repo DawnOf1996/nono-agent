@@ -19,7 +19,7 @@ from nono_agent.core.types import (
     UserMessage,
 )
 from nono_agent.pipeline.base import PipelineContext
-from nono_agent.utils.tokens import count_tokens, get_context_window_size
+from nono_agent.utils.tokens import count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +62,10 @@ class ContextCollapseStage:
         messages: list[Message],
         context: PipelineContext,
     ) -> bool:
-        if not context.model_id or self._summarizer is None:
+        if self._summarizer is None:
             return False
-        window = get_context_window_size(context.model_id)
-        return context.estimated_tokens > int(window * self._threshold)
+        # 阈值基于配置的上下文窗口（context.context_window）
+        return context.estimated_tokens > int(context.context_window * self._threshold)
 
     async def execute(
         self,

@@ -93,6 +93,7 @@ class TestSnipCompactStage:
         stage = SnipCompactStage()
         ctx = PipelineContext(
             model_id="claude-sonnet-4-20250514",
+            context_window=200_000,
             estimated_tokens=1000,
         )
         assert stage.should_run([], ctx) is False
@@ -101,18 +102,38 @@ class TestSnipCompactStage:
         stage = SnipCompactStage(threshold=0.1)  # Low threshold for testing
         ctx = PipelineContext(
             model_id="claude-sonnet-4-20250514",
+            context_window=200_000,
             estimated_tokens=50000,
         )
         assert stage.should_run([], ctx) is True
 
+    def test_small_configured_window_triggers_earlier(self):
+        """窗口大小来自配置（model_context），不依赖模型 ID 前缀。"""
+        stage = SnipCompactStage()  # 默认阈值 0.60
+        # 同样的 token 量：配置小窗口 → 触发；配置大窗口 → 不触发
+        small = PipelineContext(context_window=8_000, estimated_tokens=6_000)
+        large = PipelineContext(context_window=200_000, estimated_tokens=6_000)
+        assert stage.should_run([], small) is True
+        assert stage.should_run([], large) is False
+
 
 class TestMicroCompactStage:
+    def test_should_run_respects_configured_window(self):
+        stage = MicroCompactStage()
+        assert stage.should_run(
+            [], PipelineContext(context_window=10_000, estimated_tokens=6_000)
+        ) is True
+        assert stage.should_run(
+            [], PipelineContext(context_window=200_000, estimated_tokens=6_000)
+        ) is False
+
     @pytest.mark.asyncio
     async def test_strips_thinking_blocks(self):
         stage = MicroCompactStage(turn_lookback=1, max_text_tokens=1000)
         ctx = PipelineContext(
             model_id="claude-sonnet-4-20250514",
-            estimated_tokens=150000,  # >50% of 200k window
+            context_window=200_000,
+            estimated_tokens=150000,  # >50% of configured window
         )
 
         messages = [
@@ -138,7 +159,8 @@ class TestAutoCompactStage:
         stage = AutoCompactStage()
         ctx = PipelineContext(
             model_id="claude-sonnet-4-20250514",
-            estimated_tokens=170000,  # >80% of 200k
+            context_window=200_000,
+            estimated_tokens=170000,  # >80% of configured window
         )
         assert stage.should_run([], ctx) is True
 
@@ -146,6 +168,7 @@ class TestAutoCompactStage:
         stage = AutoCompactStage()
         ctx = PipelineContext(
             model_id="claude-sonnet-4-20250514",
+            context_window=200_000,
             estimated_tokens=50000,
         )
         assert stage.should_run([], ctx) is False
@@ -155,8 +178,10 @@ class TestAutoCompactStage:
         stage = AutoCompactStage()
         ctx = PipelineContext(
             model_id="claude-sonnet-4-20250514",
-            estimated_tokens=200000,  # >95% of 200k
+            context_window=200_000,
+            estimated_tokens=200000,  # >=95% of configured window
         )
+        ctx.overhead_tokens = 1_234  # 系统提示词/工具开销应保留在重估算中
 
         messages = [
             make_user_msg("msg 1"),
@@ -169,10 +194,17 @@ class TestAutoCompactStage:
             make_assistant_msg("resp 4"),
         ]
 
-        result, _ = await stage.execute(messages, ctx)
+        result, result_ctx = await stage.execute(messages, ctx)
         # Should have fewer messages + a compact boundary
         has_boundary = any(
             isinstance(m, SystemMessage) and m.subtype == "compact_boundary"
             for m in result
         )
         assert has_boundary
+        # 重估算 = 消息 token + 固定开销（system/tools）
+        from nono_agent.utils.tokens import estimate_messages_tokens
+
+        message_only = estimate_messages_tokens(
+            [m.message for m in result if hasattr(m, "message")]
+        )
+        assert result_ctx.estimated_tokens == message_only + 1_234

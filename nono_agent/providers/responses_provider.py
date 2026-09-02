@@ -22,6 +22,7 @@ from nono_agent.core.types import (
 )
 from nono_agent.providers._responses_utils import (
     normalize_responses_input,
+    responses_usage_buckets,
     to_responses_tool,
 )
 from nono_agent.utils.tokens import estimate_messages_tokens
@@ -173,10 +174,7 @@ class ResponsesProvider:
 
                 usage_obj = getattr(response, "usage", None)
                 if usage_obj is not None:
-                    usage = {
-                        "input_tokens": getattr(usage_obj, "input_tokens", 0) or 0,
-                        "output_tokens": getattr(usage_obj, "output_tokens", 0) or 0,
-                    }
+                    usage = responses_usage_buckets(usage_obj)
 
         # 关闭任何仍打开的内容块
         for idx in sorted(opened):

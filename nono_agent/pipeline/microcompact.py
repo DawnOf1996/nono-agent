@@ -12,7 +12,10 @@ import logging
 
 from nono_agent.core.types import AssistantMessage, Message, UserMessage
 from nono_agent.pipeline.base import PipelineContext
-from nono_agent.utils.tokens import count_tokens, get_context_window_size
+from nono_agent.utils.tokens import (
+    MICROCOMPACT_THRESHOLD,
+    count_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +53,8 @@ class MicroCompactStage:
         messages: list[Message],
         context: PipelineContext,
     ) -> bool:
-        if not context.model_id:
-            return False
-        window = get_context_window_size(context.model_id)
-        # Only run when we're using more than 50% of context
-        # 仅在上下文使用率超过 50% 时触发
-        return context.estimated_tokens > int(window * 0.50)
+        # 仅在上下文使用率超过阈值时触发（阈值基于配置的上下文窗口）
+        return context.estimated_tokens > int(context.context_window * MICROCOMPACT_THRESHOLD)
 
     async def execute(
         self,

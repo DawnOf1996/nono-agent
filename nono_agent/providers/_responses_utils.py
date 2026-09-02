@@ -10,6 +10,26 @@ import json
 from typing import Any
 
 from nono_agent.core.types import Message
+from nono_agent.providers._openai_utils import usage_to_buckets
+
+
+def responses_usage_buckets(usage: Any) -> dict[str, int]:
+    """从 Responses API 的 usage（SDK 对象或兼容 dict）提取统一四桶。
+
+    读取 ``input_tokens`` / ``output_tokens`` 与
+    ``input_tokens_details.cached_tokens``，换算成统一口径（input=未缓存）。
+    """
+    if isinstance(usage, dict):
+        total_input = usage.get("input_tokens", 0) or 0
+        total_output = usage.get("output_tokens", 0) or 0
+        details = usage.get("input_tokens_details") or {}
+        cached = details.get("cached_tokens", 0) or 0
+    else:
+        total_input = getattr(usage, "input_tokens", 0) or 0
+        total_output = getattr(usage, "output_tokens", 0) or 0
+        details = getattr(usage, "input_tokens_details", None)
+        cached = getattr(details, "cached_tokens", 0) if details is not None else 0
+    return usage_to_buckets(total_input, total_output, cached)
 
 
 def normalize_responses_input(messages: list[Message]) -> list[dict[str, Any]]:
