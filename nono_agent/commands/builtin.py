@@ -40,12 +40,30 @@ class HelpCommand(_SimpleCommand):
 
 class ModelCommand(_SimpleCommand):
     _name = "model"
-    _description = "Show the current model"
+    _description = "Show the current model and catalog (no runtime switch)"
 
     def execute(self, args: list[str], ctx: CommandContext) -> str:
         if ctx.engine is None:
             return "Model: (no engine attached)"
-        return f"Model: {ctx.engine._config.effective_model}"
+        current = ctx.engine._config.effective_model
+        lines: list[str] = []
+        if args:
+            lines.append(
+                "Switching models at runtime is not supported; "
+                "restart with --provider / --model."
+            )
+        try:
+            from nono_agent.providers.catalog import load_catalog
+
+            catalog = load_catalog(ctx.cwd or ctx.engine._config.cwd)
+            listing = catalog.format_listing(current)
+            if listing and listing != "Catalog: (empty)":
+                lines.append(listing)
+            else:
+                lines.append(f"Current: {current}")
+        except Exception:
+            lines.append(f"Current: {current}")
+        return "\n".join(lines)
 
 
 class TokensCommand(_SimpleCommand):

@@ -26,10 +26,19 @@ uv sync --extra dev     # 安装运行时依赖 + pytest/ruff/mypy
 
 ```python
 import asyncio
-from nono_agent import QueryEngine, EngineConfig
+from nono_agent import QueryEngine, EngineConfig, ProviderConfig
 
 async def main():
-    config = EngineConfig(model="claude-sonnet-4-20250514", cwd=".")
+    config = EngineConfig(
+        model="MiniMax-M3",
+        cwd=".",
+        provider=ProviderConfig(
+            model_id="MiniMax-M3",
+            adapter="openai_responses",  # openai_chat_completions | anthropic_messages
+            api_key="...",  # 建议从环境变量读取
+            base_url="https://api.minimax.cn/v1",
+        ),
+    )
     async with QueryEngine(config) as engine:
         async for msg in engine.submit_message("你好"):
             if msg.type == "assistant":
@@ -50,7 +59,7 @@ config = EngineConfig(
     model="MiniMax-M3",
     provider=ProviderConfig(
         model_id="MiniMax-M3",
-        adapter="openai",          # anthropic | messages_compatible | openai | responses | responses_compatible
+        adapter="openai_chat_completions",          # openai_responses | anthropic_messages
         api_key="...",             # 建议从环境变量读取
         base_url="https://api.minimaxi.com/v1",
     ),
@@ -75,7 +84,7 @@ uv run python -m nono_agent.adapters.cli chat --resume <session_id>
 uv run python -m nono_agent.adapters.cli sessions
 ```
 
-CLI 参数：`--model` / `--cwd` / `--resume` / `--message|-m` / `--config|-c` / `--verbose|-v`。
+CLI 参数：`--model` / `--provider` / `--cwd` / `--resume` / `--message|-m` / `--config|-c` / `--verbose|-v`。
 
 ### 2.3 Server（HTTP + SSE）
 
@@ -114,47 +123,74 @@ curl -N http://localhost:8000/session/<session_id>/events
 
 ## 3. 配置（外部化，禁止硬编码密钥）
 
-### 3.1 环境变量
+CLI 的 LLM 配置是**命名供应商目录**，不是扁平的单模型 JSON。YAML 里只写 `api_key_env` 指针，真实密钥保存在用户级 `~/.nono-agent/credentials`（权限 0600）。查找顺序：**进程环境变量 > credentials 文件**。不读取、不迁移旧的 `config.json`。
+
+库用法不变：直接构造 `EngineConfig(provider=ProviderConfig(...))` 不必读 YAML。
+
+### 3.1 分层 YAML
+
+- 用户级：`~/.nono-agent/config.yaml`
+- 项目级：`.nono-agent/config.yaml`（从 cwd 向上查找）
+- Overlay：CLI `--config` 指向的一层 YAML（测试 / 一次性覆盖）
+
+优先级：**CLI `--provider` / `--model` > `--config` overlay > 项目 YAML > 用户 YAML**。
+
+合并规则：`agent_default_model` 整段覆盖；`llm_provider.providers` 按 provider id 深合并；`models` 按 model id 合并。
+
+```yaml
+agent_default_model:
+  provider: a
+  model: MiniMax-M3
+
+llm_provider:
+  providers:
+    a:
+      display_name: My-Provider
+      api_key_env: NONO_A_API_KEY
+      api: openai_responses          # openai_chat_completions | anthropic_messages
+      base_url: https://api.minimax.cn/v1
+      models:
+        - id: MiniMax-M3            # 发给 API 的 model
+          name: MiniMax-M31         # 仅展示
+          context_window: 1000000
+          max_tokens: 128000
+```
+
+可选字段（同级、按需）：`extra_headers` / `extra_body` / `timeout`。`id` → `ProviderConfig.model_id`（`name` 不进 API）；`context_window` → `model_context`。
+
+只给 `--model MiniMax-M3` 时：先在默认 provider 里找；全局唯一则可用；多个 provider 都有同 id 则必须同时指定 `--provider`。
+
+### 3.2 密钥与环境变量
+
+引导时输入的 API Key 写入 `~/.nono-agent/credentials`：
+
+```
+# nono-agent credentials — do not commit
+NONO_A_API_KEY=sk-...
+```
+
+YAML 中的 `api_key_env` 由供应商 id 稳定生成（`a` → `NONO_A_API_KEY`），不要改成随机名，否则旧凭据会对不上。进程环境变量若已设置则优先于该文件（便于 CI 覆盖）。
 
 | 变量 | 用途 |
 |------|------|
-| `NONO_MODEL` / `NONO_ADAPTER` / `NONO_API_KEY` / `NONO_BASE_URL` / `NONO_CWD` | Provider 与模型路由 |
+| `NONO_A_API_KEY` 等（YAML 里的 `api_key_env`） | 对应供应商的 API Key（也可改写 credentials） |
+| `NONO_MODEL` / `NONO_CWD` | 覆盖默认模型 id / 工作目录 |
 | `NONO_SEARCH_URL` / `NONO_SEARCH_API_KEY` | `web_search` 工具端点 |
 | `NONO_LSP_COMMAND` / `NONO_LSP_ARGS`（逗号分隔） | `lsp` 工具的语言服务器 |
 | `NONO_PERMISSION_MODE` | 权限模式 flag 覆盖（`default/accept_edits/plan/bypass`） |
 
-### 3.2 配置文件（`--config` / 项目目录）
-
-```json
-{
-  "model": "MiniMax-M3",
-  "cwd": ".",
-  "provider": {
-    "adapter": "openai",
-    "api_key": "sk-...",
-    "base_url": "https://api.minimaxi.com/v1",
-    "extra_body": {"reasoning_split": true}
-  }
-}
-```
-
-优先级：**命令行参数 > 环境变量 > `--config` 文件 > 用户基础配置 > 默认值**。
-
 ### 3.3 首次运行引导页
 
-交互式运行 `chat`（不带 `-m`）时，若检测不到「必备配置」（协议 `adapter` + 密钥 `api_key`，来自环境变量 / `--config` / 用户基础配置），会进入**交互式引导**，按提示依次输入：① 协议、② 模型、③ API Key、④ Base URL（可选），完成后保存到用户基础配置：
+交互式运行 `chat`（不带 `-m`）且目录为空时，进入引导：供应商 id、显示名、协议 `api`、Base URL、**真实 API Key**、模型 id/展示名/`context_window`/`max_tokens`。目录保存到 `~/.nono-agent/config.yaml`（只含自动生成的 `api_key_env`），密钥保存到 `~/.nono-agent/credentials`。当前进程会立刻注入该环境变量，无需重启。
 
-```
-~/.nono-agent/config.json
-```
-
-该文件格式与 `--config` 一致（`model` + `provider{adapter, api_key, base_url}`），之后每次启动自动读取，无需重复输入。
+YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key 并写入 credentials。
 
 用户运行时数据都在 `~/.nono-agent/`：
 
 ```
 ~/.nono-agent/
-├── config.json        # 用户基础配置（模型 / 协议 / 密钥）
+├── config.yaml        # LLM 供应商目录（不含密钥）
+├── credentials        # API Key（0600，勿提交）
 ├── settings.json      # 用户级分层设置
 ├── sessions/          # 会话事件流
 ├── memory/            # 跨会话记忆（每条一个 JSON）
@@ -168,6 +204,7 @@ curl -N http://localhost:8000/session/<session_id>/events
 
 ```
 .nono-agent/
+├── config.yaml        # 项目级 LLM 目录（与用户级合并）
 ├── settings.json      # 分层设置（default < user < project < policy < flag）
 ├── rules/*.md         # 常驻指令（也可用 AGENTS.md / CLAUDE.md）
 ├── skills/<name>/SKILL.md
@@ -194,6 +231,8 @@ curl -N http://localhost:8000/session/<session_id>/events
 ## 5. Slash 命令（REPL 内以 `/` 开头）
 
 `/help` `/model` `/tokens` `/context` `/clear` `/compact` `/rules` `/skills` `/permission` `/mcp` `/plugins` `/memory` `/hooks`。
+
+`/model` 打印当前 `provider / display_name + model id (name)` 以及目录列表；本轮不支持热切换，换模型请重启并加 `--provider` / `--model`。
 
 示例：`/permission plan`（进入计划模式）、`/skills disable <name>`、`/compact`（手动压缩上下文）。
 
@@ -399,7 +438,7 @@ nono_agent/
 ├── core/          引擎内核（QueryEngine/loop/config/state/types）
 ├── pipeline/      预处理压缩管线（含 ContextCollapse）
 ├── recovery/      错误恢复决策链
-├── providers/     协议矩阵（anthropic/openai/…/messages_compatible/responses(+compatible)）
+├── providers/     协议矩阵（openai_chat_completions / openai_responses / anthropic_messages）
 ├── session/       MessageStore + 事件流 Transcript（JSONL/SQLite + derive + fork）
 ├── tools/         工具协议/注册表/执行器 + builtin/（22 个生产工具）
 ├── prompt/        Prompt Section 组装（静态/动态边界 + 优先级合并）

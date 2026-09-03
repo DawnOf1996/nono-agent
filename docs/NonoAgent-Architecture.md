@@ -17,7 +17,7 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 |------|------|------|
 | 核心引擎（`QueryEngine` / `agentic_loop` / 状态机 / 恢复链） | 可用需打磨 | 主路径可跑通；边界/预算/取消等加固见 Roadmap §3 |
 | 预处理管线 | 可用需打磨 | 默认 4 级；`ContextCollapse` 可配置启用（`context_collapse_enabled` + 默认 summarizer） |
-| LLM Provider | 可用需打磨 | 全矩阵已落地：`anthropic` / `messages_compatible` / `openai` / `responses` / `responses_compatible` |
+| LLM Provider | 可用需打磨 | 三类协议：`openai_chat_completions` / `openai_responses` / `anthropic_messages` |
 | 工具协议与执行器 | 可用需打磨 | 协议/注册表/执行器 + 22 个生产级内置工具（`tools/builtin/`） |
 | Skills | 可用需打磨 | 含 SkillTool；见 Roadmap §2.3 |
 | Rules / Plugins / Settings | 可用需打磨 | 常驻指令、扩展包、分层配置均已落地；见 Roadmap §2.2 / §2.5 / §2.6.1 |
@@ -404,26 +404,24 @@ graph LR
 
 ### 4.5 Provider 路由机制
 
-适配器按 **协议 × 原厂/兼容** 选择（兼容层用于非原厂网关，详见 [ROADMAP.md §2.10](./ROADMAP.md)）：
+适配器按 **API 协议** 选择（三类，一律走对应 SDK；供应商由 `api_key` + `base_url` 决定）：
 
 ```mermaid
 graph TB
     Request["resolve(model_id, config)"] --> Check{config.adapter 已指定?}
 
     Check -->|Yes| AdapterMap[适配器映射]
-    AdapterMap -->|anthropic| AP[AnthropicProvider 原厂 Messages]
-    AdapterMap -->|messages_compatible| MC[MessagesCompatibleProvider Messages 兼容]
-    AdapterMap -->|openai| OCP[OpenAICompatibleProvider Chat 兼容]
-    AdapterMap -->|responses| RP[ResponsesProvider Responses 原厂]
-    AdapterMap -->|responses_compatible| RC[ResponsesCompatibleProvider Responses 兼容]
+    AdapterMap -->|openai_chat_completions| OCP[OpenAIChatCompletionsProvider AsyncOpenAI]
+    AdapterMap -->|openai_responses| RP[OpenAIResponsesProvider AsyncOpenAI]
+    AdapterMap -->|anthropic_messages| AP[AnthropicMessagesProvider AsyncAnthropic]
 
     Check -->|No| PrefixMatch{model_id 前缀匹配}
-    PrefixMatch -->|claude-*| AP2[AnthropicProvider]
-    PrefixMatch -->|gpt-* / o1 / o3 / o4| OP[OpenAIProvider]
+    PrefixMatch -->|claude-*| AP2[AnthropicMessagesProvider]
+    PrefixMatch -->|gpt-* / o1 / o3 / o4| OP[OpenAIChatCompletionsProvider]
     PrefixMatch -->|No match| Error[ValueError: 提示可用适配器]
 ```
 
-> 当前已注册并可用：`anthropic` / `messages_compatible` / `openai` / `responses` / `responses_compatible` 五个适配器；前缀回退保留 `claude-*` → Anthropic、`gpt-*`/`o1`/`o3`/`o4` → OpenAI。
+> 协议：`openai_chat_completions` / `openai_responses` / `anthropic_messages`。未指定 adapter 时前缀回退：`claude-*` → Anthropic、`gpt-*`/`o1`/`o3`/`o4` → OpenAI Chat Completions。
 ---
 
 ## 5. 关键设计决策

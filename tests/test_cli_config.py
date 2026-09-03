@@ -1,169 +1,150 @@
-"""Tests for CLI config externalization (env vars / config file)."""
+"""Tests for CLI config via YAML catalog."""
 
-import json
+from __future__ import annotations
+
 from typing import Any
 
 import pytest
 
 from nono_agent.adapters.cli import build_engine_config, format_token_summary
 from nono_agent.core.types import Usage
+from nono_agent.providers.catalog import dump_yaml
+
+
+def _user_yaml(**overrides: Any) -> str:
+    data: dict[str, Any] = {
+        "agent_default_model": {"provider": "a", "model": "MiniMax-M3"},
+        "llm_provider": {
+            "providers": {
+                "a": {
+                    "display_name": "My-Provider",
+                    "api_key_env": "A_API_KEY",
+                    "api": "openai_responses",
+                    "base_url": "https://api.minimax.cn/v1",
+                    "models": [
+                        {
+                            "id": "MiniMax-M3",
+                            "name": "MiniMax-M31",
+                            "context_window": 1_000_000,
+                            "max_tokens": 128_000,
+                        },
+                        {"id": "other", "name": "Other", "context_window": 32_000},
+                    ],
+                }
+            }
+        },
+    }
+    data.update(overrides)
+    return dump_yaml(data)
+
+
+def _write_user_yaml(text: str) -> None:
+    from nono_agent.providers import catalog as catalog_mod
+
+    path = catalog_mod.USER_CONFIG_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 class TestBuildEngineConfig:
-    def test_defaults(self):
-        config = build_engine_config()
-        assert config.model == "claude-sonnet-4-20250514"
-        assert config.provider is None
+    def test_missing_env_raises(self, tmp_path, monkeypatch):
+        _write_user_yaml(_user_yaml())
+        monkeypatch.delenv("A_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="No API key"):
+            build_engine_config(cwd=str(tmp_path))
 
-    def test_env_vars(self, monkeypatch):
-        monkeypatch.setenv("NONO_MODEL", "my-model")
-        monkeypatch.setenv("NONO_API_KEY", "sk-test")
-        monkeypatch.setenv("NONO_BASE_URL", "https://api.example.com/v1")
-        monkeypatch.setenv("NONO_ADAPTER", "openai")
+    def test_from_credentials_file(self, tmp_path, monkeypatch):
+        from nono_agent.providers.catalog import save_credential
 
-        config = build_engine_config()
-        assert config.model == "my-model"
+        _write_user_yaml(_user_yaml())
+        save_credential("A_API_KEY", "sk-file")
+        monkeypatch.delenv("A_API_KEY", raising=False)
+        config = build_engine_config(cwd=str(tmp_path))
         assert config.provider is not None
-        assert config.provider.adapter == "openai"
-        assert config.provider.api_key == "sk-test"
-        assert config.provider.base_url == "https://api.example.com/v1"
-
-    def test_config_file(self, tmp_path):
-        cfg = tmp_path / "config.json"
-        cfg.write_text(
-            json.dumps(
-                {
-                    "model": "file-model",
-                    "cwd": "/tmp",
-                    "provider": {
-                        "adapter": "anthropic",
-                        "api_key": "sk-file",
-                        "base_url": "https://gw.example.com",
-                    },
-                }
-            )
-        )
-
-        config = build_engine_config(config_file=str(cfg))
-        assert config.model == "file-model"
-        assert config.provider is not None
-        assert config.provider.adapter == "anthropic"
         assert config.provider.api_key == "sk-file"
 
-    # ------------------------------------------------------------------
-    # model_context（模型上下文窗口）配置链路
-    # ------------------------------------------------------------------
-
-    def test_env_model_context(self, monkeypatch):
-        monkeypatch.setenv("NONO_MODEL", "my-model")
-        monkeypatch.setenv("NONO_API_KEY", "sk-test")
-        monkeypatch.setenv("NONO_ADAPTER", "openai")
-        monkeypatch.setenv("NONO_MODEL_CONTEXT", "128000")
-
-        config = build_engine_config()
+    def test_from_yaml(self, tmp_path, monkeypatch):
+        _write_user_yaml(_user_yaml())
+        monkeypatch.setenv("A_API_KEY", "sk-test")
+        config = build_engine_config(cwd=str(tmp_path))
+        assert config.model == "MiniMax-M3"
         assert config.provider is not None
-        assert config.provider.model_context == 128_000
-        assert config.effective_model_context == 128_000
+        assert config.provider.adapter == "openai_responses"
+        assert config.provider.api_key == "sk-test"
+        assert config.provider.base_url == "https://api.minimax.cn/v1"
+        assert config.provider.model_context == 1_000_000
+        assert config.provider.max_tokens == 128_000
+        assert config.effective_model_context == 1_000_000
 
-    def test_config_file_provider_model_context(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "nono_agent.adapters.cli.load_user_config", lambda: {}
-        )  # 隔离真实 ~/.nono-agent/config.json
-        cfg = tmp_path / "config.json"
-        cfg.write_text(
-            json.dumps(
-                {
-                    "model": "file-model",
-                    "provider": {
-                        "adapter": "openai",
-                        "api_key": "sk-file",
-                        "model_context": 196_608,
-                    },
-                }
-            )
+    def test_overlay_yaml(self, tmp_path, monkeypatch):
+        _write_user_yaml(_user_yaml())
+        monkeypatch.setenv("A_API_KEY", "sk-test")
+        overlay = tmp_path / "overlay.yaml"
+        overlay.write_text(
+            dump_yaml({"agent_default_model": {"provider": "a", "model": "other"}}),
+            encoding="utf-8",
         )
-
-        config = build_engine_config(config_file=str(cfg))
-        assert config.provider is not None
-        assert config.provider.model_context == 196_608
-        assert config.effective_model_context == 196_608
-
-    def test_config_file_top_level_model_context(self, tmp_path, monkeypatch):
-        """顶层 model_context：同时落到 provider 段与引擎级字段（值一致）。"""
-        monkeypatch.setattr("nono_agent.adapters.cli.load_user_config", lambda: {})
-        cfg = tmp_path / "config.json"
-        cfg.write_text(
-            json.dumps(
-                {
-                    "model": "file-model",
-                    "model_context": 32_000,
-                    "provider": {"adapter": "openai", "api_key": "sk-file"},
-                }
-            )
-        )
-
-        config = build_engine_config(config_file=str(cfg))
+        config = build_engine_config(cwd=str(tmp_path), config_file=str(overlay))
+        assert config.model == "other"
         assert config.provider is not None
         assert config.provider.model_context == 32_000
-        assert config.model_context == 32_000
-        assert config.effective_model_context == 32_000
 
-    def test_env_model_context_overrides_file(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("NONO_MODEL_CONTEXT", "128000")
-        cfg = tmp_path / "config.json"
-        cfg.write_text(
-            json.dumps(
-                {
-                    "provider": {
-                        "adapter": "openai",
-                        "api_key": "sk-file",
-                        "model_context": 4_096,
+    def test_cli_model_and_provider(self, tmp_path, monkeypatch):
+        _write_user_yaml(_user_yaml())
+        monkeypatch.setenv("A_API_KEY", "sk-test")
+        config = build_engine_config(
+            cwd=str(tmp_path), provider="a", model="other"
+        )
+        assert config.model == "other"
+        assert config.provider is not None
+        assert config.provider.model_id == "other"
+
+    def test_nono_model_env(self, tmp_path, monkeypatch):
+        _write_user_yaml(_user_yaml())
+        monkeypatch.setenv("A_API_KEY", "sk-test")
+        monkeypatch.setenv("NONO_MODEL", "other")
+        config = build_engine_config(cwd=str(tmp_path))
+        assert config.model == "other"
+
+    def test_cli_model_overrides_env(self, tmp_path, monkeypatch):
+        _write_user_yaml(_user_yaml())
+        monkeypatch.setenv("A_API_KEY", "sk-test")
+        monkeypatch.setenv("NONO_MODEL", "other")
+        config = build_engine_config(cwd=str(tmp_path), model="MiniMax-M3")
+        assert config.model == "MiniMax-M3"
+
+    def test_unconfigured_context_falls_back(self, tmp_path, monkeypatch):
+        data = {
+            "agent_default_model": {"provider": "a", "model": "m"},
+            "llm_provider": {
+                "providers": {
+                    "a": {
+                        "display_name": "A",
+                        "api_key_env": "A_API_KEY",
+                        "api": "openai_chat_completions",
+                        "models": [{"id": "m"}],
                     }
                 }
-            )
-        )
-
-        config = build_engine_config(config_file=str(cfg))
-        assert config.provider.model_context == 128_000
-        assert config.effective_model_context == 128_000
-
-    def test_user_config_model_context_without_provider(self, monkeypatch):
-        """provider 未配置（无 adapter/api_key）时，顶层 model_context 落到引擎级。"""
-        monkeypatch.setattr(
-            "nono_agent.adapters.cli.load_user_config",
-            lambda: {"model": "u", "model_context": 8_192},
-        )
-
-        config = build_engine_config()
-        assert config.provider is None
-        assert config.model_context == 8_192
-        assert config.effective_model_context == 8_192
-
-    def test_model_context_unconfigured_falls_back_to_default(self, monkeypatch):
-        """未配置任何 model_context 时回退 DEFAULT_CONTEXT_WINDOW（无前缀猜测）。"""
-        monkeypatch.setattr("nono_agent.adapters.cli.load_user_config", lambda: {})
-        monkeypatch.delenv("NONO_MODEL_CONTEXT", raising=False)
-
+            },
+        }
+        _write_user_yaml(dump_yaml(data))
+        monkeypatch.setenv("A_API_KEY", "sk")
         from nono_agent.utils.tokens import DEFAULT_CONTEXT_WINDOW
 
-        config = build_engine_config()
-        assert config.model_context is None
+        config = build_engine_config(cwd=str(tmp_path))
+        assert config.provider is not None
+        assert config.provider.model_context is None
         assert config.effective_model_context == DEFAULT_CONTEXT_WINDOW
 
-    def test_cli_overrides_env(self, monkeypatch):
-        monkeypatch.setenv("NONO_MODEL", "env-model")
-        config = build_engine_config(model="cli-model")
-        assert config.model == "cli-model"
-
     def test_no_hardcoded_secret(self):
-        """Ensure the CLI path never carries a hardcoded key."""
         import inspect
 
-        from nono_agent import adapters  # noqa: F401
         from nono_agent.adapters import cli as cli_module
 
         source = inspect.getsource(cli_module)
         assert "sk-cp-" not in source
+        assert "NONO_API_KEY" not in source
+        assert "NONO_ADAPTER" not in source
 
 
 class TestContextUsageTui:

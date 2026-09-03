@@ -296,7 +296,14 @@ async def agentic_loop(
                 thinking_config=config.thinking_config,
                 model=current_model,
                 fallback_model=config.fallback_model,
-                max_tokens=state.max_output_tokens_override,
+                max_tokens=(
+                    state.max_output_tokens_override
+                    or (
+                        config.provider.max_tokens
+                        if config.provider is not None
+                        else None
+                    )
+                ),
                 signal=signal,
                 json_schema=config.json_schema,
             ):

@@ -2,12 +2,12 @@
 
 from nono_agent.core.config import ProviderConfig
 from nono_agent.core.types import AssistantMessage, UserMessage
-from nono_agent.providers._responses_utils import (
+from nono_agent.providers._openai_responses_utils import (
     normalize_responses_input,
     to_responses_tool,
 )
 from nono_agent.providers.base import create_default_registry
-from nono_agent.providers.responses_provider import ResponsesProvider
+from nono_agent.providers.openai_responses import OpenAIResponsesProvider
 
 
 class TestNormalizeResponsesInput:
@@ -63,14 +63,16 @@ class TestResponsesTool:
         }
 
 
-class TestResponsesProvider:
+class TestOpenAIResponsesProvider:
     def test_registered(self):
         registry = create_default_registry()
-        assert "responses" in registry._adapter_map
+        assert "openai_responses" in registry._adapter_map
+        assert "responses" not in registry._adapter_map
+        assert "responses_compatible" not in registry._adapter_map
 
     def test_normalize_and_count(self):
-        p = ResponsesProvider(
-            ProviderConfig(model_id="gpt-4o", adapter="responses", api_key="sk")
+        p = OpenAIResponsesProvider(
+            ProviderConfig(model_id="gpt-4o", adapter="openai_responses", api_key="sk")
         )
         msgs = [UserMessage(message={"role": "user", "content": [{"type": "text", "text": "hi"}]})]
         items = p.normalize_messages(msgs)

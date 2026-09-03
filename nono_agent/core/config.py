@@ -26,30 +26,28 @@ def _gen_session_id() -> str:
 class ProviderConfig(BaseModel):
     """LLM Provider 初始化配置 —— 用于创建 Provider 实例。
 
-    配置驱动适配器选择（原厂 vs 兼容，见 docs/ROADMAP.md §2.6）：
-    - adapter: anthropic | messages_compatible | openai | responses | responses_compatible
+    配置驱动适配器选择（按 API 协议，不区分原厂 / 其他供应商）：
+    - adapter: openai_chat_completions | openai_responses | anthropic_messages
     - extra_body: 每次请求时深度合并到请求体中的额外参数
+    - 供应商由 api_key + base_url 决定；三类协议一律走对应 SDK client
 
     用法示例::
 
-        # MiniMax 通过 OpenAI Chat Completions 兼容 API
+        # MiniMax 通过 OpenAI Chat Completions 协议
         ProviderConfig(
             model_id="MiniMax-M3",
-            adapter="openai",
+            adapter="openai_chat_completions",
             api_key="your-key",
             base_url="https://api.minimax.chat/v1",
             extra_body={"reasoning_split": True},
         )
-
-        # 非原厂 Anthropic Messages 兼容网关（规划：adapter="messages_compatible"）
-        # ProviderConfig(model_id="...", adapter="messages_compatible", base_url="...")
     """
 
     model_id: str                              # 模型 ID（如 "claude-sonnet-4-20250514"）
     # 模型上下文窗口大小（token 数）。压缩管线按此值计算触发阈值；
     # 未配置时回退 DEFAULT_CONTEXT_WINDOW（不做模型前缀猜测）。
     model_context: int | None = None
-    # API 协议: anthropic | messages_compatible | openai | responses | responses_compatible
+    # API 协议: openai_chat_completions | openai_responses | anthropic_messages
     adapter: str | None = None
     api_key: str = ""                          # API 密钥
     base_url: str | None = None                # 自定义 API 端点（代理/厂商地址）
@@ -57,6 +55,8 @@ class ProviderConfig(BaseModel):
     extra_body: dict[str, Any] = Field(default_factory=dict)     # 额外请求体参数（深度合并）
     timeout: float = 600.0                     # 请求超时时间（秒）
     max_retries: int = 3                       # 最大重试次数
+    # 单次补全 max tokens；未配置时由各协议实现自己的默认值
+    max_tokens: int | None = None
 
 
 class ThinkingConfig(BaseModel):
@@ -84,7 +84,7 @@ class EngineConfig(BaseModel):
     # 未配置任何值时回退 DEFAULT_CONTEXT_WINDOW；不再基于模型 ID 前缀匹配。
     model_context: int | None = None
 
-    # Provider 配置（可选，不填则根据 model 前缀自动路由）
+    # Provider 配置（库用法直接构造；CLI 从 YAML 目录 resolve）
     provider: ProviderConfig | None = None
 
     # 运行限制

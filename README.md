@@ -9,7 +9,7 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 | 已有 | 尚未建成 |
 |------|----------|
 | `QueryEngine.submit_message()` 流式 API | WebSocket |
-| Provider 全矩阵（anthropic / openai / compatible / messages_compatible / responses / responses_compatible） | MCP OAuth 全量 / SSE transport |
+| Provider 三类协议（openai_chat_completions / openai_responses / anthropic_messages） | MCP OAuth 全量 / SSE transport |
 | 22 个内置工具（Bash/Read/Write/Edit/Glob/Grep/LS/LSP/WebFetch/WebSearch/ToolSearch/AskUser/TodoWrite/Plan/Worktree/Task） | Transcript Postgres/Redis |
 | 默认 4 级上下文压缩管线 + 可配置 ContextCollapse summarizer | 多模态附件产品化（P2） |
 | Prompt Section 组装（静态/动态边界 + 优先级合并）+ 结构化输出闭环 | Agent Teams（P2 可选） |
@@ -73,7 +73,7 @@ config = EngineConfig(
     model="my-model",
     provider=ProviderConfig(
         model_id="my-model",
-        adapter="openai",  # 或 "anthropic"
+        adapter="openai_chat_completions",  # 或 "openai_responses" / "anthropic_messages"
         api_key="...",     # 建议从环境变量读取
         base_url="https://api.example.com/v1",
     ),
@@ -83,12 +83,12 @@ config = EngineConfig(
 ### CLI
 
 ```bash
-python -m nono_agent.adapters.cli chat --model claude-sonnet-4-20250514
-python -m nono_agent.adapters.cli chat -m "你好" --model claude-sonnet-4-20250514
+python -m nono_agent.adapters.cli chat
+python -m nono_agent.adapters.cli chat -m "你好" --model MiniMax-M3 --provider a
 python -m nono_agent.adapters.cli sessions   # 列出历史会话
 ```
 
-首次交互式运行会检测用户基础配置（模型/协议/密钥），缺失时进入引导并保存到 `~/.nono-agent/config.json`；密钥也可经 `NONO_*` 环境变量提供。详见 [docs/USAGE.md](docs/USAGE.md)。
+首次交互式运行会引导写入 `~/.nono-agent/config.yaml`（供应商 / 协议 / 模型目录）；API Key 保存在 `~/.nono-agent/credentials`，YAML 只保留自动生成的 `api_key_env` 指针。详见 [docs/USAGE.md](docs/USAGE.md)。
 
 ### Server（SSE）
 

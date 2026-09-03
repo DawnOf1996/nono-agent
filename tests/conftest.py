@@ -2,16 +2,18 @@
 
 import pytest
 
-from nono_agent.adapters import onboarding as ob
 from nono_agent.core import engine as engine_module
 from nono_agent.memory import store as memory_store_module
+from nono_agent.providers import catalog as catalog_module
 from nono_agent.session import transcript as transcript_module
 
 
 @pytest.fixture(autouse=True)
 def _isolate_user_config(tmp_path, monkeypatch):
-    """把用户基础配置路径指向临时目录，避免测试读到 ~/.nono-agent/config.json。"""
-    monkeypatch.setattr(ob, "USER_CONFIG_PATH", tmp_path / ".nono-agent" / "config.json")
+    """把用户 LLM 目录与凭据路径指向临时目录，避免读到真实 ~/.nono-agent。"""
+    root = tmp_path / ".nono-agent"
+    monkeypatch.setattr(catalog_module, "USER_CONFIG_PATH", root / "config.yaml")
+    monkeypatch.setattr(catalog_module, "USER_CREDENTIALS_PATH", root / "credentials")
     yield
 
 

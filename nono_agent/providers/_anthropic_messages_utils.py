@@ -1,7 +1,6 @@
-"""Anthropic Messages 协议公共工具 —— 原厂与兼容网关共享。
+"""Anthropic Messages 协议公共工具。
 
-供 ``AnthropicProvider``（原厂）与 ``MessagesCompatibleProvider``（非原厂）
-复用消息格式转换与流事件映射。
+供 ``AnthropicMessagesProvider`` 复用消息格式转换与 usage 归一。
 """
 
 from __future__ import annotations
@@ -116,3 +115,41 @@ def anthropic_delta_to_dict(delta: Any) -> dict[str, Any]:
     if hasattr(delta, "signature"):
         result["signature"] = delta.signature
     return result
+
+
+_START_FILLABLE_USAGE_KEYS = (
+    "input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+
+def _usage_int(raw: Any, key: str) -> int:
+    if raw is None:
+        return 0
+    if isinstance(raw, dict):
+        return int(raw.get(key, 0) or 0)
+    return int(getattr(raw, key, 0) or 0)
+
+
+def normalize_usage(raw: Any) -> dict[str, int]:
+    """把 usage 对象收成四类 token 计数；缺省或 None 视为 0。"""
+    return {
+        "input_tokens": _usage_int(raw, "input_tokens"),
+        "output_tokens": _usage_int(raw, "output_tokens"),
+        "cache_read_input_tokens": _usage_int(raw, "cache_read_input_tokens"),
+        "cache_creation_input_tokens": _usage_int(raw, "cache_creation_input_tokens"),
+    }
+
+
+def message_delta_usage(start_usage: dict[str, int], delta_raw: Any) -> dict[str, int]:
+    """message_delta 的 usage：始终带 output；start 为 0 时回填 input/cache。
+
+    MiniMax 等网关在 message_start 里把 input/cache 填 0，真实值放在 message_delta。
+    """
+    delta_usage = normalize_usage(delta_raw)
+    mapped: dict[str, int] = {"output_tokens": delta_usage["output_tokens"]}
+    for key in _START_FILLABLE_USAGE_KEYS:
+        if start_usage.get(key, 0) == 0 and delta_usage[key]:
+            mapped[key] = delta_usage[key]
+    return mapped

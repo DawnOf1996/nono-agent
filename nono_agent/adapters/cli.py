@@ -9,20 +9,17 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import signal
 import sys
-from pathlib import Path
 from typing import Any
 
 from nono_agent.adapters.onboarding import (
-    ADAPTER_CHOICES,
-    USER_CONFIG_PATH,
+    catalog_present,
     is_base_configured,
-    load_user_config,
-    save_user_config,
+    prompt_api_key,
+    run_onboarding,
 )
 from nono_agent.core.config import EngineConfig, ProviderConfig
 from nono_agent.core.engine import QueryEngine
@@ -36,6 +33,7 @@ from nono_agent.observability.token_tracker import (
     context_usage_color,
     format_context_usage,
 )
+from nono_agent.providers.catalog import load_catalog, save_credential, save_user_catalog
 from nono_agent.tools.context import PermissionChecker
 
 logger = logging.getLogger(__name__)
@@ -472,29 +470,11 @@ def _render_blocks(blocks: list[dict[str, Any]]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# CLI 配置外部化 —— 从环境变量 / 配置文件读取，禁止硬编码密钥
+# CLI 配置 —— YAML 目录 + credentials（密钥不进 YAML）
 # ---------------------------------------------------------------------------
 
-# 环境变量名（优先级从高到低由 resolve 逻辑决定）
 ENV_MODEL = "NONO_MODEL"
-ENV_MODEL_CONTEXT = "NONO_MODEL_CONTEXT"
-ENV_ADAPTER = "NONO_ADAPTER"
-ENV_API_KEY = "NONO_API_KEY"
-ENV_BASE_URL = "NONO_BASE_URL"
 ENV_CWD = "NONO_CWD"
-
-
-def _read_config_file(path: str) -> dict[str, Any]:
-    """读取 JSON 配置文件 —— 文件不存在或损坏时返回空字典。"""
-    config_path = Path(path)
-    if not config_path.exists():
-        return {}
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError):
-        return {}
 
 
 def _coalesce(*values: Any) -> Any:
@@ -505,115 +485,93 @@ def _coalesce(*values: Any) -> Any:
     return None
 
 
-def run_onboarding(console: Any) -> dict[str, Any]:
-    """交互式引导 —— 收集协议 / 模型 / 密钥 / 端点，返回基础配置字典。"""
-    from rich.panel import Panel
-
-    console.print(Panel.fit(
-        "[bold green]欢迎使用 Nono Agent[/bold green]\n"
-        "首次运行需要配置模型与 API 凭据，配置将保存到 "
-        f"[cyan]{USER_CONFIG_PATH}[/cyan]。",
-        border_style="blue",
-    ))
-
-    # 1. 协议（adapter）
-    console.print("\n[bold]① 选择协议 (adapter)：[/bold]")
-    for i, choice in enumerate(ADAPTER_CHOICES, start=1):
-        console.print(f"  {i}. {choice}")
-    raw = console.input("[yellow]请输入序号（默认 1 = openai）：[/yellow] ").strip()
-    adapter = (
-        ADAPTER_CHOICES[int(raw) - 1]
-        if raw.isdigit() and 1 <= int(raw) <= len(ADAPTER_CHOICES)
-        else "openai"
-    )
-
-    # 2. 模型
-    model = (
-        console.input("[yellow]② 模型 (默认 MiniMax-M3)：[/yellow] ").strip()
-        or "MiniMax-M3"
-    )
-
-    # 3. 密钥（必填）
-    api_key = console.input("[yellow]③ API Key（必填）：[/yellow] ").strip()
-    while not api_key:
-        api_key = console.input("[yellow]API Key 不能为空，请重新输入：[/yellow] ").strip()
-
-    # 4. 端点（可选）
-    base_url = console.input("[yellow]④ Base URL（可留空）：[/yellow] ").strip()
-
-    provider: dict[str, Any] = {"adapter": adapter, "api_key": api_key}
-    if base_url:
-        provider["base_url"] = base_url
-    return {"model": model, "provider": provider}
-
-
 def build_engine_config(
     *,
     model: str | None = None,
+    provider: str | None = None,
     cwd: str | None = None,
     verbose: bool = False,
     config_file: str | None = None,
 ) -> EngineConfig:
-    """从 CLI 参数 + 环境变量 + 配置文件 + 用户基础配置构建 EngineConfig。
+    """从 YAML 目录解析 EngineConfig。
 
-    优先级：命令行参数 > 环境变量 > --config 文件 > 用户基础配置 > 默认值。
-    密钥只允许来自环境变量或配置文件，绝不硬编码。
+    优先级：CLI ``--provider`` / ``--model`` > ``NONO_MODEL`` > ``--config`` overlay >
+    项目 ``.nono-agent/config.yaml`` > 用户 ``~/.nono-agent/config.yaml``。
+    密钥按 ``api_key_env`` 从进程环境或 ``~/.nono-agent/credentials`` 读取。
     """
-    file_cfg: dict[str, Any] = _read_config_file(config_file) if config_file else {}
-    # 合并用户级基础配置（~/.nono-agent/config.json），--config 优先
-    merged_cfg: dict[str, Any] = {**load_user_config(), **file_cfg}
-
-    # 模型：CLI > env > 配置文件 > 默认
-    resolved_model = _coalesce(model, os.environ.get(ENV_MODEL), merged_cfg.get("model"))
-    resolved_model = resolved_model or "claude-sonnet-4-20250514"
-
-    # cwd：CLI > env > 配置文件 > 默认
-    resolved_cwd = _coalesce(cwd, os.environ.get(ENV_CWD), merged_cfg.get("cwd"))
-    resolved_cwd = resolved_cwd or "."
-
-    # Provider 配置：配置文件 provider 段 + 环境变量覆盖
-    file_provider = merged_cfg.get("provider") or {}
-    if not isinstance(file_provider, dict):
-        file_provider = {}
-
-    api_key = _coalesce(
-        os.environ.get(ENV_API_KEY),
-        file_provider.get("api_key"),
+    resolved_cwd = _coalesce(cwd, os.environ.get(ENV_CWD)) or "."
+    catalog = load_catalog(resolved_cwd, overlay_path=config_file)
+    resolved_model = _coalesce(model, os.environ.get(ENV_MODEL))
+    pc: ProviderConfig = catalog.resolve(
+        provider_id=provider,
+        model_id=resolved_model,
     )
-    base_url = _coalesce(
-        os.environ.get(ENV_BASE_URL),
-        file_provider.get("base_url"),
-    )
-    adapter = _coalesce(
-        os.environ.get(ENV_ADAPTER),
-        file_provider.get("adapter"),
-    )
-    # 模型上下文窗口（token 数）：env > provider 段 > 顶层（--config 文件 / config.json）
-    model_context = _coalesce(
-        os.environ.get(ENV_MODEL_CONTEXT),
-        file_provider.get("model_context"),
-        merged_cfg.get("model_context"),
-    )
-
-    provider: ProviderConfig | None = None
-    if adapter or api_key or base_url:
-        provider = ProviderConfig(
-            model_id=resolved_model,
-            model_context=model_context,  # None 时由引擎级/默认值兜底
-            adapter=adapter,
-            api_key=api_key or "",
-            base_url=base_url,
-            extra_body=file_provider.get("extra_body") or {},
-        )
-
     return EngineConfig(
-        model=resolved_model,
+        model=pc.model_id,
         cwd=resolved_cwd,
-        model_context=model_context,
+        model_context=pc.model_context,
         verbose=verbose,
-        provider=provider,
+        provider=pc,
         include_partial_messages=True,  # 启用流式事件，实现实时文本渲染
     )
+
+
+def _ensure_catalog_ready(
+    console: Any,
+    *,
+    cwd: str | None,
+    config_file: str | None,
+    interactive: bool,
+) -> None:
+    """空目录则引导；已有 YAML 但缺密钥时只补 credentials，不覆盖目录。"""
+    from nono_agent.providers import catalog as catalog_mod
+
+    resolved_cwd = _coalesce(cwd, os.environ.get(ENV_CWD)) or "."
+    if is_base_configured(resolved_cwd, overlay_path=config_file):
+        return
+
+    if catalog_present(resolved_cwd, overlay_path=config_file):
+        catalog = load_catalog(resolved_cwd, overlay_path=config_file)
+        try:
+            catalog.resolve()
+            return
+        except ValueError as exc:
+            if not interactive:
+                console.print(f"[red]{exc}[/red]")
+                sys.exit(1)
+            default = catalog.agent_default_model
+            named = (
+                catalog.providers.get(default.provider)
+                if default is not None
+                else None
+            )
+            if named is None:
+                console.print(f"[red]{exc}[/red]")
+                sys.exit(1)
+            console.print(
+                f"[yellow]目录已存在，但缺少密钥 {named.api_key_env}。[/yellow]"
+            )
+            key = prompt_api_key(console, env_name=named.api_key_env)
+            save_credential(named.api_key_env, key)
+            creds = catalog_mod.USER_CREDENTIALS_PATH
+            console.print(f"[green]✓ 密钥已保存到 {creds}[/green]")
+            return
+
+    if not interactive:
+        console.print(
+            "[red]No LLM catalog configured. "
+            "Run interactive `chat` to create ~/.nono-agent/config.yaml.[/red]"
+        )
+        sys.exit(1)
+
+    catalog, api_key = run_onboarding(console)
+    save_user_catalog(catalog)
+    env_name = next(iter(catalog.providers.values())).api_key_env
+    save_credential(env_name, api_key)
+    dest = catalog_mod.USER_CONFIG_PATH
+    creds = catalog_mod.USER_CREDENTIALS_PATH
+    console.print(f"[green]✓ 目录已保存到 {dest}[/green]")
+    console.print(f"[green]✓ 密钥已保存到 {creds}（YAML 中仅保留 {env_name}）[/green]")
 
 
 def create_cli_app() -> Any:
@@ -632,22 +590,26 @@ def create_cli_app() -> Any:
 
     @app.command()
     def chat(
-        model: str = typer.Option(None, help="Model to use (default from env/config)"),
+        model: str = typer.Option(None, help="Model id (default from catalog / NONO_MODEL)"),
+        provider: str = typer.Option(None, help="Provider id from the YAML catalog"),
         cwd: str = typer.Option(None, help="Working directory (default: env/config or '.')"),
         resume: str = typer.Option(None, help="Session ID to resume"),
         message: str = typer.Option(
             None, "--message", "-m", help="Single message (non-interactive)"
         ),
-        config_file: str = typer.Option(None, "--config", "-c", help="JSON config file path"),
+        config_file: str = typer.Option(
+            None, "--config", "-c", help="YAML catalog overlay path"
+        ),
         verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging"),
     ) -> None:
         """Start an interactive chat session with the agent.
 
-        Provider credentials are read from environment variables (NONO_API_KEY,
-        NONO_BASE_URL, NONO_ADAPTER, NONO_MODEL, NONO_CWD) or a --config JSON file.
-        No API keys are hardcoded.
+        LLM endpoints come from ~/.nono-agent/config.yaml (and project overlay).
+        API keys are stored in ~/.nono-agent/credentials and referenced by api_key_env.
         """
         import logging
+
+        from rich.console import Console
 
         # 日志配置: 默认 WARNING 级别，--verbose 时开启 DEBUG
         logging.basicConfig(
@@ -659,19 +621,17 @@ def create_cli_app() -> Any:
         logging.getLogger("httpcore").setLevel(logging.WARNING)
         logging.getLogger("openai").setLevel(logging.WARNING)
 
-        # 引导页：交互模式且缺少必备配置（协议 + 密钥）时执行引导
-        if message is None and not is_base_configured(config_file):
-            from rich.console import Console
-
-            console = Console()
-            base_cfg = run_onboarding(console)
-            save_user_config(base_cfg)
-            console.print(
-                f"[green]✓ 配置已保存到 {USER_CONFIG_PATH}[/green]"
-            )
+        console = Console()
+        _ensure_catalog_ready(
+            console,
+            cwd=cwd,
+            config_file=config_file,
+            interactive=message is None,
+        )
 
         config = build_engine_config(
             model=model,
+            provider=provider,
             cwd=cwd,
             verbose=verbose,
             config_file=config_file,

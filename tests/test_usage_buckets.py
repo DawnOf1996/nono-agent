@@ -2,11 +2,11 @@
 
 from types import SimpleNamespace
 
-from nono_agent.providers._openai_utils import (
+from nono_agent.providers._openai_chat_completions_utils import (
     openai_chat_usage_buckets,
     usage_to_buckets,
 )
-from nono_agent.providers._responses_utils import responses_usage_buckets
+from nono_agent.providers._openai_responses_utils import responses_usage_buckets
 
 
 class TestUsageToBuckets:

@@ -101,7 +101,7 @@ SessionEvent {
 ```
 header = {
   config: {
-    provider,        # 模型提供商信息（解析出的 Provider 协议标识，如 anthropic / openai_compatible）
+    provider,        # 模型提供商信息（解析出的 Provider 协议标识，如 anthropic_messages / openai_chat_completions）
     protocol,        # 模型协议（显式 adapter 优先，否则回退到 provider 标识）
     model,           # 模型 ID
     context_size,    # 模型上下文窗口大小（token 数）

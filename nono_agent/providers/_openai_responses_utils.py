@@ -1,7 +1,6 @@
-"""OpenAI Responses 协议公共工具 —— 原厂与兼容网关共享。
+"""OpenAI Responses 协议公共工具。
 
-供 ``ResponsesProvider``（原厂）与 ``ResponsesCompatibleProvider``（非原厂）
-复用消息格式转换（内部 Message → Responses ``input`` items）与工具转换。
+供 ``OpenAIResponsesProvider`` 复用消息格式与工具转换。
 """
 
 from __future__ import annotations
@@ -10,7 +9,7 @@ import json
 from typing import Any
 
 from nono_agent.core.types import Message
-from nono_agent.providers._openai_utils import usage_to_buckets
+from nono_agent.providers._openai_chat_completions_utils import usage_to_buckets
 
 
 def responses_usage_buckets(usage: Any) -> dict[str, int]:

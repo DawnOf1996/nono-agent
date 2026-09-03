@@ -352,9 +352,9 @@ class QueryEngine:
                 uuid=user_msg.uuid,
             )
 
-        # 解析 Provider: 根据 model ID 前缀路由到对应的 LLM 实现
+        # 解析 Provider：必须有显式 adapter（来自 YAML 目录的 api）
         provider = self._provider_registry.resolve(
-            self._config.model, self._config.provider
+            self._config.effective_model, self._config.provider
         )
         logger.debug("Provider resolved: %s", type(provider).__name__)
 

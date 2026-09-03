@@ -1,7 +1,7 @@
-"""OpenAI Chat Completions API Provider 实现。
+"""OpenAI Chat Completions API Provider。
 
-封装 openai SDK 的 AsyncOpenAI 客户端，
-在内部 Message/StreamEvent 类型与 OpenAI Chat Completions 格式之间进行转换。
+封装 openai SDK 的 AsyncOpenAI 客户端（``chat.completions``），
+通过 api_key + base_url 接入原厂或兼容端点。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from nono_agent.core.types import (
     MessageStartEvent,
     MessageStopEvent,
 )
-from nono_agent.providers._openai_utils import (
+from nono_agent.providers._openai_chat_completions_utils import (
     normalize_openai_messages,
     openai_chat_usage_buckets,
     to_openai_tool,
@@ -31,7 +31,7 @@ from nono_agent.utils.tokens import estimate_messages_tokens
 logger = logging.getLogger(__name__)
 
 
-class OpenAIProvider:
+class OpenAIChatCompletionsProvider:
     """OpenAI Chat Completions API 的 LLM Provider。
 
     处理：
@@ -41,9 +41,9 @@ class OpenAIProvider:
     - 推理 token（o1/o3 系列模型）
     """
 
-    name = "openai"                         # Provider 名称标识
-    supports_thinking = False               # OpenAI 无 Anthropic 风格的思考模式
-    supports_tool_choice = True             # 支持工具选择
+    name = "openai_chat_completions"
+    supports_thinking = False
+    supports_tool_choice = True
 
     def __init__(self, config: ProviderConfig | None = None) -> None:
         self._config = config
@@ -61,6 +61,8 @@ class OpenAIProvider:
                     kwargs["api_key"] = self._config.api_key
                 if self._config.base_url:
                     kwargs["base_url"] = self._config.base_url
+                if self._config.extra_headers:
+                    kwargs["default_headers"] = self._config.extra_headers
                 kwargs["timeout"] = self._config.timeout
                 kwargs["max_retries"] = self._config.max_retries
             self._client = openai.AsyncOpenAI(**kwargs)
@@ -242,7 +244,7 @@ class OpenAIProvider:
     def normalize_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """将内部消息转换为 OpenAI Chat Completions 格式。
 
-        委托给 _openai_utils.normalize_openai_messages 公共实现。
+        委托给 _openai_chat_completions_utils.normalize_openai_messages 公共实现。
         """
         return normalize_openai_messages(messages)
 

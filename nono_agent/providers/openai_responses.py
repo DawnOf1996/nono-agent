@@ -1,8 +1,8 @@
-"""OpenAI Responses API Provider（原厂）。
+"""OpenAI Responses API Provider。
 
 用 OpenAI SDK 的 ``client.responses.create(stream=True)`` 实现，
-把 Responses 流式事件映射为内部 StreamEvent 协议。
-消息格式转换见 `_responses_utils`（供原厂与兼容层复用）。
+通过 api_key + base_url 接入原厂或兼容端点。
+消息格式转换见 `_openai_responses_utils`。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from nono_agent.core.types import (
     MessageStartEvent,
     MessageStopEvent,
 )
-from nono_agent.providers._responses_utils import (
+from nono_agent.providers._openai_responses_utils import (
     normalize_responses_input,
     responses_usage_buckets,
     to_responses_tool,
@@ -28,15 +28,16 @@ from nono_agent.providers._responses_utils import (
 from nono_agent.utils.tokens import estimate_messages_tokens
 
 
-class ResponsesProvider:
-    """OpenAI Responses API 的 LLM Provider（原厂）。"""
+class OpenAIResponsesProvider:
+    """OpenAI Responses API 的 LLM Provider（OpenAI SDK）。"""
 
-    name = "responses"
+    name = "openai_responses"
     supports_thinking = False
     supports_tool_choice = True
 
     def __init__(self, config: ProviderConfig | None = None) -> None:
         self._config = config
+        self._extra_body: dict[str, Any] = config.extra_body if config else {}
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -49,6 +50,8 @@ class ResponsesProvider:
                     kwargs["api_key"] = self._config.api_key
                 if self._config.base_url:
                     kwargs["base_url"] = self._config.base_url
+                if self._config.extra_headers:
+                    kwargs["default_headers"] = self._config.extra_headers
                 kwargs["timeout"] = self._config.timeout
                 kwargs["max_retries"] = self._config.max_retries
             self._client = openai.AsyncOpenAI(**kwargs)
@@ -83,6 +86,8 @@ class ResponsesProvider:
             params["tools"] = [to_responses_tool(t) for t in tools]
         if max_tokens:
             params["max_output_tokens"] = max_tokens
+        if self._extra_body:
+            params["extra_body"] = self._extra_body
 
         yield MessageStartEvent(message={"usage": {}})
 

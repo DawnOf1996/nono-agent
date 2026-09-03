@@ -18,10 +18,7 @@
 | Prompt Section 组装管线                             | 可用需打磨 | `prompt/` 有序 section + 静态/动态边界 + 优先级合并              |
 | 状态机 / RecoveryChain                             | 可用需打磨 | 原因枚举齐全；策略与可观测性可加强                                 |
 | 默认预处理管线（4 级）                                    | 可用需打磨 | ContextCollapse 可配置启用（默认 summarizer）               |
-| Anthropic / OpenAI / OpenAI-Compatible Provider | 可用需打磨 | 原厂 + Chat Completions 兼容可用                        |
-| Anthropic Messages 兼容（`messages_compatible`）    | 可用需打磨 | 非原厂 Messages 协议网关（httpx SSE）                         |
-| OpenAI Responses Provider（原厂）                   | 可用需打磨 | 已实现流式事件映射（待真实 API 验证）                         |
-| Responses 兼容（`responses_compatible`）            | 可用需打磨 | 非原厂 Responses 协议网关（httpx SSE）                       |
+| Anthropic / OpenAI Provider（三类协议）              | 可用需打磨 | 一律走 SDK：`openai_chat_completions`（AsyncOpenAI Chat Completions）/ `openai_responses`（AsyncOpenAI Responses）/ `anthropic_messages`（AsyncAnthropic）；供应商由 `base_url` 决定 |
 | 工具协议 / Registry / Executor                      | 可用需打磨 | 三态权限决策接入 Executor                                    |
 | 内置工具                                            | 可用需打磨 | Bash/Read/Write/Edit/Glob/Grep/AskUser/LSP/Web/Worktree/Task 等 22 个均已落地 |
 | AskUserQuestion 通道                              | 可用需打磨 | CLI 交互回调可用；Server 回调/SSE 待 Phase 3                |
@@ -304,17 +301,17 @@ Definition 来源：`built-in` / `user`（`~/.nono-agent/agents`）/ `project`�
 ### 2.10 Provider 协议矩阵扩展（优先级：P1）
 
 
-| `adapter`              | 协议               | 面向        | 现状  |
-| ---------------------- | ---------------- | --------- | --- |
-| `anthropic`            | Messages         | 原厂        | ✅   |
-| `messages_compatible`  | Messages         | 非原厂       | ✅   |
-| `openai`               | Chat Completions | 兼容        | ✅   |
-| （前缀 gpt-/o*）           | Chat Completions | 原厂 OpenAI | ✅   |
-| `responses`            | Responses        | 原厂        | ✅   |
-| `responses_compatible` | Responses        | 非原厂       | ✅   |
+| `adapter`                   | 协议               | SDK                                      | 现状  |
+| --------------------------- | ---------------- | ---------------------------------------- | --- |
+| `openai_chat_completions`   | Chat Completions | `openai.AsyncOpenAI.chat.completions`    | ✅   |
+| `openai_responses`          | Responses        | `openai.AsyncOpenAI.responses`           | ✅   |
+| `anthropic_messages`        | Messages         | `anthropic.AsyncAnthropic.messages`      | ✅   |
 
 
-配套：`_messages_utils` / `_responses_utils`；`extra_body`；与 §2.0 静态段协同 prompt cache。
+供应商由 `api_key` + `base_url` 决定，不再单独实现兼容层。
+
+
+配套：`_openai_chat_completions_utils` / `_openai_responses_utils` / `_anthropic_messages_utils`；`extra_body`；与 §2.0 静态段协同 prompt cache。
 
 ### 2.11 Plan / Memory / Checkpoint / Task（优先级：P1–P2）
 
@@ -336,7 +333,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 | 项                        | 现状    | 计划                 |
 | ------------------------ | ----- | ------------------ |
-| Responses 原厂 Provider    | 已实现   | 待真实 API 验证后供兼容层复用    |
+| Responses Provider             | 已实现   | 待真实 API 验证 |
 | Server WebSocket         | 仅 SSE | 按需                 |
 | Metrics                  | 可用需打磨 | 内存 counter/histogram/gauge + 标签约定 + 事件流投影；无持久化后端 |
 | ContextCollapse 默认启用     | 可配置   | `context_collapse_enabled` 开关 |
@@ -373,7 +370,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 - [ ] token 估算与真实 usage 偏差校准
 - [x] 实现原厂 `ResponsesProvider`，并抽出可复用的 Responses 事件映射
 - [x] 新增 `messages_compatible` / `responses_compatible` 并注册到 `ProviderRegistry`
-- [ ] adapter 命名与文档一致，避免「openai = 原厂还是兼容」歧义
+- [x] adapter 命名与实现一致：三类协议一律走对应 SDK（`openai_chat_completions` / `openai_responses` / `anthropic_messages`），已移除 httpx 兼容层
 - [x] 实现或移除已过时占位，避免“路由存在但必崩”
 
 
@@ -559,17 +556,14 @@ nono_agent/
 │   └── tokens.py                  # 可增 path/ignore 辅助，或放到 permissions
 │
 │ ─── LLM 与会话（保留 + 扩展）────────────────────────────────
-├── providers/                     # 🔧 协议矩阵
+├── providers/                     # 🔧 三类协议，一律 SDK
 │   ├── base.py                    # LLMProvider · ProviderRegistry
-│   ├── anthropic_provider.py      # ✅ Messages 原厂
-│   ├── messages_compatible.py     # ✅ Messages 非原厂
-│   ├── openai_provider.py         # ✅ Chat 原厂
-│   ├── openai_compatible.py       # ✅ Chat 兼容
-│   ├── responses_provider.py      # ✅ Responses 原厂（流式事件映射，待真实 API 验证）
-│   ├── responses_compatible.py    # ✅ Responses 非原厂
-│   ├── _openai_utils.py
-│   ├── _messages_utils.py         # ✅
-│   └── _responses_utils.py        # ✅
+│   ├── openai_chat_completions.py # ✅ Chat Completions（AsyncOpenAI）
+│   ├── openai_responses.py        # ✅ Responses（AsyncOpenAI）
+│   ├── anthropic_messages.py      # ✅ Messages（AsyncAnthropic）
+│   ├── _openai_chat_completions_utils.py
+│   ├── _openai_responses_utils.py
+│   └── _anthropic_messages_utils.py
 │
 ├── session/                       # 🔧 内存消息 + 事件流持久化
 │   ├── store.py                   # MessageStore ✅
@@ -808,6 +802,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | fix：messages_compatible 补 `stream=true`（否则非流式响应被 SSE 解析跳过导致空输出）；端点自动补 `/v1/messages` |
 | 2026-08-27 | session：会话日志改事件溯源 —— 落盘只有 `SessionEvent`（LocalFile JSONL 默认 / SQLite `events`+`session_header`），`derive_messages()` 重建消息，`resume`/`fork` 走事件流；移除消息副本落盘与全量覆写接口 |
 | 2026-08-27 | session：事件目录全量实装（16 类）+ 请求前一致性门禁 —— 循环经 `SessionEventSink` 上报 `step/*`/`api/retry`/`store.replace()`，`snapshot_for_request()` 改深拷贝，`session_invariant` 默认 `strict`；新增读取侧脱敏、不调模型回放、Metrics 事件投影、`GET /session/{id}/events` SSE 通道、会话文件 `0600` 权限 |
+| 2026-09-02 | Provider 协议瘦身为三类，一律走对应 SDK：`openai_chat_completions` / `openai_responses` / `anthropic_messages`；移除 httpx 兼容层与旧 adapter 别名 |
 
 
 ## 附录
@@ -816,7 +811,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 model MiniMax-M3
 base_url https://api.minimaxi.com 或 https://api.minimaxi.com/anthropic(messages协议)
 # 通过环境变量提供密钥（CLI 或配置文件的读取约定见 adapters/cli.py）
-# export NONO_API_KEY=... NONO_BASE_URL=https://api.minimaxi.com/v1 NONO_ADAPTER=openai NONO_MODEL=MiniMax-M3
+# export NONO_API_KEY=... NONO_BASE_URL=https://api.minimaxi.com/v1 NONO_ADAPTER=openai_chat_completions NONO_MODEL=MiniMax-M3
 ```
 
 测试配置示例：
@@ -825,7 +820,7 @@ base_url https://api.minimaxi.com 或 https://api.minimaxi.com/anthropic(message
 import os
 provider_config = ProviderConfig(
         model_id="MiniMax-M3",
-        adapter="openai",
+        adapter="openai_chat_completions",
         api_key=os.environ["NONO_API_KEY"],
         base_url="https://api.minimaxi.com/v1",
         extra_body={

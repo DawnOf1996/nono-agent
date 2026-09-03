@@ -19,13 +19,17 @@ from nono_agent.core.types import (
     MessageStartEvent,
     MessageStopEvent,
 )
-from nono_agent.providers._messages_utils import normalize_anthropic_messages
-from nono_agent.providers._openai_utils import deep_merge
+from nono_agent.providers._anthropic_messages_utils import (
+    message_delta_usage,
+    normalize_anthropic_messages,
+    normalize_usage,
+)
+from nono_agent.providers._openai_chat_completions_utils import deep_merge
 from nono_agent.providers.base import FallbackTriggeredError
 from nono_agent.utils.tokens import estimate_messages_tokens
 
 
-class AnthropicProvider:
+class AnthropicMessagesProvider:
     """Anthropic Messages API 的 LLM Provider。
 
     处理：
@@ -36,14 +40,15 @@ class AnthropicProvider:
     - 过载时的回退模型切换
     """
 
-    name = "anthropic"               # Provider 名称标识
-    supports_thinking = True          # 支持扩展思考模式
-    supports_tool_choice = True       # 支持工具选择
+    name = "anthropic_messages"
+    supports_thinking = True
+    supports_tool_choice = True
 
     def __init__(self, config: ProviderConfig | None = None) -> None:
         self._config = config
         self._extra_body: dict[str, Any] = config.extra_body if config else {}
         self._client: Any = None  # 懒初始化的 AsyncAnthropic 客户端
+        self._start_usage: dict[str, int] = normalize_usage({})
 
     def _get_client(self) -> Any:
         """懒初始化 Anthropic 客户端 —— 首次调用时创建。"""
@@ -56,6 +61,8 @@ class AnthropicProvider:
                     kwargs["api_key"] = self._config.api_key
                 if self._config.base_url:
                     kwargs["base_url"] = self._config.base_url
+                if self._config.extra_headers:
+                    kwargs["default_headers"] = self._config.extra_headers
                 kwargs["timeout"] = self._config.timeout
                 kwargs["max_retries"] = self._config.max_retries
             self._client = anthropic.AsyncAnthropic(**kwargs)
@@ -107,6 +114,7 @@ class AnthropicProvider:
             params = deep_merge(params, self._extra_body)
 
         try:
+            self._start_usage = normalize_usage({})
             async with client.messages.stream(**params) as stream:
                 async for event in stream:
                     mapped = self._map_stream_event(event)
@@ -140,21 +148,9 @@ class AnthropicProvider:
             return None
 
         if event_type == "message_start":
-            return MessageStartEvent(
-                message={
-                    "usage": {
-                        "input_tokens": event.message.usage.input_tokens,
-                        "output_tokens": event.message.usage.output_tokens,
-                        # 兼容第三方 API: 字段可能为 None 而非缺失
-                        "cache_read_input_tokens": getattr(
-                            event.message.usage, "cache_read_input_tokens", None
-                        ) or 0,
-                        "cache_creation_input_tokens": getattr(
-                            event.message.usage, "cache_creation_input_tokens", None
-                        ) or 0,
-                    }
-                }
-            )
+            usage = normalize_usage(getattr(event.message, "usage", None))
+            self._start_usage = usage
+            return MessageStartEvent(message={"usage": usage})
 
         elif event_type == "content_block_start":
             return ContentBlockStartEvent(
@@ -174,9 +170,9 @@ class AnthropicProvider:
         elif event_type == "message_delta":
             return MessageDeltaEvent(
                 delta={"stop_reason": getattr(event.delta, "stop_reason", None)},
-                usage={
-                    "output_tokens": getattr(event.usage, "output_tokens", 0),
-                },
+                usage=message_delta_usage(
+                    self._start_usage, getattr(event, "usage", None)
+                ),
             )
 
         elif event_type == "message_stop":

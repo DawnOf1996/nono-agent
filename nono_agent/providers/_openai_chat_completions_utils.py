@@ -1,7 +1,6 @@
 """OpenAI 消息格式转换公共工具函数。
 
-OpenAIProvider 和 OpenAICompatibleProvider 共享的消息格式转换逻辑，
-提取为公共函数避免代码重复。
+供 Chat Completions Provider 复用消息格式转换逻辑。
 
 包含：
 - normalize_openai_messages: 内部消息 → OpenAI Chat Completions 格式

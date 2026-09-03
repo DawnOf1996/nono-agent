@@ -45,8 +45,114 @@ class TestProviderRegistry:
 
     def test_create_default_registry(self):
         registry = create_default_registry()
-        # Should have default prefixes registered
-        assert "claude-" in registry._providers or "claude-" in registry._instances
+        assert set(registry._adapter_map) == {
+            "openai_chat_completions",
+            "openai_responses",
+            "anthropic_messages",
+        }
+        assert "claude-" not in registry._providers
+        assert "gpt-" not in registry._providers
+
+    def test_no_prefix_fallback(self):
+        registry = create_default_registry()
+        with pytest.raises(ValueError, match="No provider registered"):
+            registry.resolve("claude-sonnet-4-20250514")
+
+
+class TestCanonicalAdapters:
+    def test_three_protocols_registered(self):
+        registry = create_default_registry()
+        assert set(registry._adapter_map) == {
+            "openai_chat_completions",
+            "openai_responses",
+            "anthropic_messages",
+        }
+
+    def test_chat_completions_uses_openai_sdk(self):
+        from nono_agent.core.config import ProviderConfig
+        from nono_agent.providers.openai_chat_completions import OpenAIChatCompletionsProvider
+
+        registry = create_default_registry()
+        provider = registry.resolve(
+            "MiniMax-M3",
+            ProviderConfig(
+                model_id="MiniMax-M3",
+                adapter="openai_chat_completions",
+                base_url="https://api.minimaxi.com/v1",
+            ),
+        )
+        assert isinstance(provider, OpenAIChatCompletionsProvider)
+        assert provider.name == "openai_chat_completions"
+
+    def test_anthropic_messages_uses_anthropic_sdk(self):
+        from nono_agent.core.config import ProviderConfig
+        from nono_agent.providers.anthropic_messages import AnthropicMessagesProvider
+
+        registry = create_default_registry()
+        official = registry.resolve(
+            "claude-sonnet-4-20250514",
+            ProviderConfig(
+                model_id="claude-sonnet-4-20250514",
+                adapter="anthropic_messages",
+                api_key="sk",
+            ),
+        )
+        gateway = registry.resolve(
+            "my-model",
+            ProviderConfig(
+                model_id="my-model",
+                adapter="anthropic_messages",
+                base_url="https://api.minimaxi.com/anthropic",
+            ),
+        )
+        assert isinstance(official, AnthropicMessagesProvider)
+        assert isinstance(gateway, AnthropicMessagesProvider)
+        assert official.name == "anthropic_messages"
+
+    def test_openai_responses_uses_openai_sdk(self):
+        from nono_agent.core.config import ProviderConfig
+        from nono_agent.providers.openai_responses import OpenAIResponsesProvider
+
+        registry = create_default_registry()
+        official = registry.resolve(
+            "gpt-4o",
+            ProviderConfig(model_id="gpt-4o", adapter="openai_responses", api_key="sk"),
+        )
+        gateway = registry.resolve(
+            "m",
+            ProviderConfig(
+                model_id="m",
+                adapter="openai_responses",
+                base_url="https://gw.example.com/v1",
+            ),
+        )
+        assert isinstance(official, OpenAIResponsesProvider)
+        assert isinstance(gateway, OpenAIResponsesProvider)
+        assert official.name == "openai_responses"
+
+    def test_unknown_adapter_lists_canonical_names(self):
+        from nono_agent.core.config import ProviderConfig
+
+        registry = create_default_registry()
+        with pytest.raises(ValueError, match="openai_chat_completions"):
+            registry.resolve(
+                "m",
+                ProviderConfig(model_id="m", adapter="not_a_protocol"),
+            )
+
+    def test_old_adapter_names_are_rejected(self):
+        from nono_agent.core.config import ProviderConfig
+
+        registry = create_default_registry()
+        for name in (
+            "openai",
+            "anthropic",
+            "messages_compatible",
+            "responses",
+            "responses_compatible",
+        ):
+            with pytest.raises(ValueError, match="Unknown adapter"):
+                registry.resolve("m", ProviderConfig(model_id="m", adapter=name))
 
 
 class TestMockProvider:

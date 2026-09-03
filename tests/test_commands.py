@@ -63,6 +63,9 @@ class TestCommandsWithEngine:
         assert "claude-test" in registry.execute("model", [], ctx)
         assert "Tokens:" in registry.execute("tokens", [], ctx)
         assert "Context:" in registry.execute("context", [], ctx)
+        switched = registry.execute("model", ["other"], ctx)
+        assert "not supported" in switched
+        assert "claude-test" in switched
 
     def test_clear(self):
         engine = self._engine()
