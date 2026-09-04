@@ -37,9 +37,22 @@ CREATE TABLE IF NOT EXISTS session_header (
     created_at REAL,
     cwd TEXT,
     parent_session TEXT,
-    agent_preset_id TEXT
+    agent_preset_id TEXT,
+    summary TEXT,
+    permission_mode TEXT
 )
 """
+
+_HEADER_COLUMN_TYPES: dict[str, str] = {
+    "session_id": "TEXT PRIMARY KEY",
+    "format_version": "INTEGER NOT NULL",
+    "created_at": "REAL",
+    "cwd": "TEXT",
+    "parent_session": "TEXT",
+    "agent_preset_id": "TEXT",
+    "summary": "TEXT",
+    "permission_mode": "TEXT",
+}
 
 _SELECT_COLUMNS = "seq, type, data, timestamp, ignorable"
 
@@ -67,6 +80,7 @@ class SQLiteTranscriptWriter:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(str(self._db_path))
             self._conn.executescript(_SCHEMA)
+            self._migrate_header_columns(self._conn)
             self._conn.commit()
             restrict_permissions(self._db_path)
         return self._conn
@@ -172,6 +186,20 @@ class SQLiteTranscriptWriter:
     # ------------------------------------------------------------------
     # 内部辅助
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _migrate_header_columns(conn: sqlite3.Connection) -> None:
+        """为既有库补上新增的 session_header 列（如 summary）。"""
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(session_header)").fetchall()
+        }
+        for name in HEADER_FIELDS:
+            if name in existing:
+                continue
+            coltype = _HEADER_COLUMN_TYPES.get(name, "TEXT")
+            # ALTER TABLE 不能带 PRIMARY KEY；只给后加列用简单类型
+            simple = coltype.split()[0]
+            conn.execute(f"ALTER TABLE session_header ADD COLUMN {name} {simple}")
 
     @staticmethod
     def _reject_legacy(conn: sqlite3.Connection) -> None:

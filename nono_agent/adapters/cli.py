@@ -13,6 +13,7 @@ import logging
 import os
 import signal
 import sys
+from pathlib import Path
 from typing import Any
 
 from nono_agent.adapters.onboarding import (
@@ -33,7 +34,9 @@ from nono_agent.observability.token_tracker import (
     context_usage_color,
     format_context_usage,
 )
+from nono_agent.paths import resolve_session_cwd
 from nono_agent.providers.catalog import load_catalog, save_credential, save_user_catalog
+from nono_agent.session.transcript import peek_session_header
 from nono_agent.tools.context import PermissionChecker
 
 logger = logging.getLogger(__name__)
@@ -477,6 +480,25 @@ ENV_MODEL = "NONO_MODEL"
 ENV_CWD = "NONO_CWD"
 
 
+def resolve_resume_bindings(
+    resume: str | None,
+    cwd: str | None,
+    *,
+    session_dir: str | None = None,
+) -> tuple[str | None, str | None]:
+    """``--resume`` 时以 ``.header.json`` 为约束：header.cwd 覆盖 CLI ``--cwd``。
+
+    Returns:
+        ``(cwd, session_id)``。未 resume 时 session_id 为 None。
+    """
+    if not resume:
+        return cwd, None
+    header = peek_session_header(resume, Path(session_dir) if session_dir else None)
+    if header is not None and header.cwd:
+        return resolve_session_cwd(header.cwd), resume
+    return cwd, resume
+
+
 def _coalesce(*values: Any) -> Any:
     """返回第一个非 None / 非空字符串的值。"""
     for v in values:
@@ -499,7 +521,7 @@ def build_engine_config(
     项目 ``.nono-agent/config.yaml`` > 用户 ``~/.nono-agent/config.yaml``。
     密钥按 ``api_key_env`` 从进程环境或 ``~/.nono-agent/credentials`` 读取。
     """
-    resolved_cwd = _coalesce(cwd, os.environ.get(ENV_CWD)) or "."
+    resolved_cwd = resolve_session_cwd(_coalesce(cwd, os.environ.get(ENV_CWD)) or ".")
     catalog = load_catalog(resolved_cwd, overlay_path=config_file)
     resolved_model = _coalesce(model, os.environ.get(ENV_MODEL))
     pc: ProviderConfig = catalog.resolve(
@@ -593,7 +615,10 @@ def create_cli_app() -> Any:
         model: str = typer.Option(None, help="Model id (default from catalog / NONO_MODEL)"),
         provider: str = typer.Option(None, help="Provider id from the YAML catalog"),
         cwd: str = typer.Option(None, help="Working directory (default: env/config or '.')"),
-        resume: str = typer.Option(None, help="Session ID to resume"),
+        resume: str = typer.Option(
+            None,
+            help="Session ID to resume (cwd/summary come from that session's .header.json)",
+        ),
         message: str = typer.Option(
             None, "--message", "-m", help="Single message (non-interactive)"
         ),
@@ -622,9 +647,10 @@ def create_cli_app() -> Any:
         logging.getLogger("openai").setLevel(logging.WARNING)
 
         console = Console()
+        resolved_cwd, session_id = resolve_resume_bindings(resume, cwd)
         _ensure_catalog_ready(
             console,
-            cwd=cwd,
+            cwd=resolved_cwd,
             config_file=config_file,
             interactive=message is None,
         )
@@ -632,10 +658,12 @@ def create_cli_app() -> Any:
         config = build_engine_config(
             model=model,
             provider=provider,
-            cwd=cwd,
+            cwd=resolved_cwd,
             verbose=verbose,
             config_file=config_file,
         )
+        if session_id:
+            config = config.model_copy(update={"session_id": session_id})
 
         asyncio.run(
             run_cli(
@@ -656,7 +684,11 @@ def create_cli_app() -> Any:
             print("No sessions found.")
             return
         for s in sessions:
-            print(f"{s['session_id']}  ({s['event_count']} events)")
+            summary = s.get("summary") or ""
+            cwd_label = s.get("cwd") or ""
+            extras = "  ".join(part for part in (summary, cwd_label) if part)
+            suffix = f"  {extras}" if extras else ""
+            print(f"{s['session_id']}  ({s['event_count']} events){suffix}")
 
     return app
 

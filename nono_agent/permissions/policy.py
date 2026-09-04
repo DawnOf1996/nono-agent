@@ -13,6 +13,7 @@ PermissionPolicy 组合「模式 + 可落盘规则」，产出三态决策：
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
 
@@ -49,7 +50,12 @@ class PermissionPolicy:
         rules: list[PermissionRule] | None = None,
     ) -> None:
         self.mode = mode
+        self._pending_mode: PermissionMode | None = None
         self._rules: list[PermissionRule] = list(rules) if rules else []
+        self._on_mode_change: Callable[[PermissionMode], None] | None = None
+        self._on_mode_request: Callable[[PermissionMode, PermissionMode], None] | None = (
+            None
+        )
 
     # ------------------------------------------------------------------
     # 规则管理
@@ -67,9 +73,53 @@ class PermissionPolicy:
     def rules(self) -> list[PermissionRule]:
         return list(self._rules)
 
+    @property
+    def pending_mode(self) -> PermissionMode | None:
+        """已请求、尚未在下一 turn/step 生效的模式。"""
+        return self._pending_mode
+
     def set_mode(self, mode: PermissionMode) -> None:
-        """切换会话模式。"""
+        """立刻切换会话模式（恢复 header、测试、以及 ``commit_pending``）。"""
+        self._pending_mode = None
         self.mode = mode
+        if self._on_mode_change is not None:
+            self._on_mode_change(mode)
+
+    def request_mode(self, mode: PermissionMode) -> bool:
+        """请求切换模式：立刻记 onchange，运行时仍用当前模式，直到 ``commit_pending``。
+
+        Returns:
+            是否产生了一次新的切换请求（同值重复请求返回 False）。
+        """
+        previous = self._pending_mode if self._pending_mode is not None else self.mode
+        if mode is previous:
+            return False
+        self._pending_mode = None if mode is self.mode else mode
+        if self._on_mode_request is not None:
+            self._on_mode_request(previous, mode)
+        return True
+
+    def commit_pending(self) -> tuple[PermissionMode, PermissionMode] | None:
+        """把挂起的模式应用到运行时。返回 ``(from, to)``；没有挂起则 ``None``。"""
+        if self._pending_mode is None:
+            return None
+        from_mode = self.mode
+        to_mode = self._pending_mode
+        self._pending_mode = None
+        if to_mode is from_mode:
+            return None
+        self.set_mode(to_mode)
+        return (from_mode, to_mode)
+
+    def on_mode_change(self, callback: Callable[[PermissionMode], None] | None) -> None:
+        """注册模式真正生效时的回调（引擎用来把值写进 SessionHeader）。"""
+        self._on_mode_change = callback
+
+    def on_mode_request(
+        self, callback: Callable[[PermissionMode, PermissionMode], None] | None
+    ) -> None:
+        """注册模式被请求时的回调（``from`` → ``to``，引擎用来写 ``permission/onchange``）。"""
+        self._on_mode_request = callback
 
     # ------------------------------------------------------------------
     # 决策

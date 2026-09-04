@@ -6,6 +6,7 @@ from typing import Any
 
 from nono_agent.agents.definition import AgentDefinition
 from nono_agent.agents.runner import AgentRunner
+from nono_agent.core.config import EngineConfig
 from nono_agent.core.types import ToolResult
 from nono_agent.tools.protocol import ToolBase
 
@@ -53,6 +54,15 @@ class AgentTool(ToolBase):
         for d in definitions or []:
             self._definitions[d.name] = d
         self._runner = runner
+
+    def update_definitions(self, definitions: list[AgentDefinition]) -> None:
+        """更新子 Agent 定义集合（cwd 随 SessionHeader 重绑时重载）。"""
+        self._definitions = {d.name: d for d in definitions}
+
+    def bind_base_config(self, config: EngineConfig) -> None:
+        """把父引擎当前配置同步给 runner（header 约束 cwd 之后）。"""
+        if self._runner is not None:
+            self._runner._base_config = config
 
     def available_names(self) -> list[str]:
         return sorted(self._definitions.keys())

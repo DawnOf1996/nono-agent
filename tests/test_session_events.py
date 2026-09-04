@@ -24,6 +24,7 @@ from nono_agent.session.events import (
     EVENT_TURN_END,
     EVENT_TURN_START,
     EVENT_USER_MESSAGE,
+    last_turn_number,
 )
 
 
@@ -41,6 +42,15 @@ class TestSessionEvent:
         assert dumped["seq"] == 3
         assert dumped["data"]["content"][0]["text"] == "hi"
         assert "timestamp" in dumped
+
+    def test_last_turn_number_from_start_and_end(self):
+        events = [
+            _ev(1, EVENT_TURN_START, turn=1),
+            _ev(2, EVENT_TURN_END, turn=1),
+            _ev(3, EVENT_TURN_START, turn=2),
+        ]
+        assert last_turn_number(events) == 2
+        assert last_turn_number([]) == 0
 
     def test_ignorable_flag(self):
         ev = _ev(1, "future/type", ignorable=True)

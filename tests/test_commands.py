@@ -84,7 +84,9 @@ class TestCommandsWithEngine:
 
         assert "default" in registry.execute("permission", [], ctx)
         assert "plan" in registry.execute("permission", ["plan"], ctx)
-        assert engine.permission_policy.mode.value == "plan"
+        assert engine.permission_policy.mode.value == "default"
+        assert engine.permission_policy.pending_mode.value == "plan"
+        assert "Pending: plan" in registry.execute("permission", [], ctx)
 
     def test_permission_invalid(self):
         engine = self._engine()

@@ -48,6 +48,34 @@ class TestPermissionMode:
             is PermissionDecision.ALLOW
         )
 
+    def test_request_mode_defers_until_commit(self):
+        policy = PermissionPolicy(mode=PermissionMode.DEFAULT)
+        seen: list[tuple[PermissionMode, PermissionMode]] = []
+        policy.on_mode_request(lambda f, t: seen.append((f, t)))
+
+        assert policy.request_mode(PermissionMode.PLAN) is True
+        assert policy.mode is PermissionMode.DEFAULT
+        assert policy.pending_mode is PermissionMode.PLAN
+        assert seen == [(PermissionMode.DEFAULT, PermissionMode.PLAN)]
+
+        assert policy.request_mode(PermissionMode.PLAN) is False
+        assert policy.request_mode(PermissionMode.BYPASS) is True
+        assert policy.pending_mode is PermissionMode.BYPASS
+        assert seen[-1] == (PermissionMode.PLAN, PermissionMode.BYPASS)
+
+        applied = policy.commit_pending()
+        assert applied == (PermissionMode.DEFAULT, PermissionMode.BYPASS)
+        assert policy.mode is PermissionMode.BYPASS
+        assert policy.pending_mode is None
+        assert policy.commit_pending() is None
+
+    def test_request_mode_cancel_clears_pending(self):
+        policy = PermissionPolicy(mode=PermissionMode.DEFAULT)
+        policy.request_mode(PermissionMode.PLAN)
+        assert policy.request_mode(PermissionMode.DEFAULT) is True
+        assert policy.pending_mode is None
+        assert policy.commit_pending() is None
+
     def test_deny_rule_wins_even_in_bypass(self):
         policy = PermissionPolicy(
             mode=PermissionMode.BYPASS,

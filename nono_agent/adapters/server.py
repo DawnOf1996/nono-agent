@@ -28,6 +28,7 @@ from nono_agent.session.redact import redact_events
 from nono_agent.session.transcript import (
     DEFAULT_SESSION_DIR,
     LocalFileTranscriptWriter,
+    peek_session_header,
 )
 from nono_agent.tools.context import PermissionChecker
 
@@ -140,9 +141,10 @@ def create_server_app(
                 _touch(session_id)
                 return sessions[session_id]
 
+            header = peek_session_header(session_id)
             engine_config = EngineConfig(
                 model=model or default_config.model,
-                cwd=default_config.cwd,
+                cwd=(header.cwd if header and header.cwd else default_config.cwd),
                 session_id=session_id,
                 include_partial_messages=True,
             )
@@ -398,9 +400,10 @@ def create_server_app(
         if old_engine:
             await old_engine.close()
 
+        header = peek_session_header(session_id)
         engine_config = EngineConfig(
             model=req.model or default_config.model,
-            cwd=default_config.cwd,
+            cwd=(header.cwd if header and header.cwd else default_config.cwd),
             session_id=session_id,
             include_partial_messages=True,
         )

@@ -27,7 +27,9 @@ from nono_agent.session.events import (
     EVENT_COMPACT_BOUNDARY,
     EVENT_MEMORY_RETRIEVE,
     EVENT_MEMORY_WRITE,
+    EVENT_PERMISSION_CHANGED,
     EVENT_PERMISSION_DENIAL,
+    EVENT_PERMISSION_ONCHANGE,
     EVENT_REQUEST_HEADER,
     EVENT_STEP_END,
     EVENT_STEP_START,
@@ -170,6 +172,78 @@ async def test_permission_denial_event_from_tracker(tmp_path):
     assert len(denials) == 1
     assert denials[0].data["tool"] == "denied_tool"
     assert denials[0].data["path"] == "/etc/passwd"
+
+
+@pytest.mark.asyncio
+async def test_permission_onchange_then_changed_at_next_turn(tmp_path):
+    """回合之间切权限：立刻 onchange，下一次 turn/start 之前 changed。"""
+    from nono_agent.permissions import PermissionMode
+
+    writer = _writer(tmp_path)
+    engine = create_test_engine(
+        responses=[
+            {"text": "first", "tool_calls": []},
+            {"text": "second", "tool_calls": []},
+        ],
+        transcript_writer=writer,
+    )
+    async with engine:
+        await _collect(engine, "round one")
+        engine.permission_policy.request_mode(PermissionMode.PLAN)
+        assert engine.permission_policy.mode is PermissionMode.DEFAULT
+        await _collect(engine, "round two")
+        assert engine.permission_policy.mode is PermissionMode.PLAN
+
+    events = await writer.read_events()
+    onchange = [e for e in events if e.type == EVENT_PERMISSION_ONCHANGE]
+    changed = [e for e in events if e.type == EVENT_PERMISSION_CHANGED]
+    assert len(onchange) == 1
+    assert onchange[0].ignorable is True
+    assert onchange[0].data == {"from": "default", "to": "plan"}
+    assert len(changed) == 1
+    assert changed[0].ignorable is True
+    assert changed[0].data == {"from": "default", "to": "plan", "at": "turn"}
+
+    types = [e.type for e in events]
+    onchange_i = types.index(EVENT_PERMISSION_ONCHANGE)
+    changed_i = types.index(EVENT_PERMISSION_CHANGED)
+    turn_starts = [i for i, t in enumerate(types) if t == EVENT_TURN_START]
+    assert onchange_i < changed_i
+    assert changed_i == turn_starts[1] - 1
+
+
+@pytest.mark.asyncio
+async def test_permission_changed_at_next_step_after_plan_tool(tmp_path):
+    """回合内 plan 工具：onchange 夹在工具执行中，下一 step 生效。"""
+    from nono_agent.tools.builtin import EnterPlanModeTool
+
+    writer = _writer(tmp_path)
+    engine = create_test_engine(
+        responses=[
+            {
+                "text": "",
+                "tool_calls": [{"name": "enter_plan_mode", "id": "t1", "input": {}}],
+            },
+            {"text": "ok", "tool_calls": []},
+        ],
+        tools=[EnterPlanModeTool()],
+        transcript_writer=writer,
+    )
+    async with engine:
+        await _collect(engine)
+
+    events = await writer.read_events()
+    types = [e.type for e in events]
+    assert EVENT_PERMISSION_ONCHANGE in types
+    assert EVENT_PERMISSION_CHANGED in types
+    onchange_i = types.index(EVENT_PERMISSION_ONCHANGE)
+    changed_i = types.index(EVENT_PERMISSION_CHANGED)
+    step_starts = [i for i, t in enumerate(types) if t == EVENT_STEP_START]
+    assert onchange_i > step_starts[0]
+    assert changed_i == step_starts[1] - 1
+    changed = next(e for e in events if e.type == EVENT_PERMISSION_CHANGED)
+    assert changed.data["at"] == "step"
+    assert changed.data["to"] == "plan"
 
 
 @pytest.mark.asyncio

@@ -73,14 +73,42 @@ def list_session_files(session_dir: Path | None = None) -> list[dict[str, Any]]:
             line_count = sum(1 for line in file.open(encoding="utf-8") if line.strip())
         except OSError:
             line_count = 0
+        header = peek_session_header(file.stem, directory)
         sessions.append(
             {
                 "session_id": file.stem,
                 "event_count": line_count,
                 "last_modified": file.stat().st_mtime,
+                "cwd": header.cwd if header else "",
+                "summary": header.summary if header else "",
             }
         )
     return sessions
+
+
+def peek_session_header(
+    session_id: str, session_dir: Path | None = None
+) -> SessionHeader | None:
+    """同步读取 ``<sid>.header.json``，供 CLI ``--resume`` 在启动引擎前绑定约束。
+
+    Args:
+        session_id: 会话 ID。
+        session_dir: 会话目录；None 时用 ``DEFAULT_SESSION_DIR``。
+
+    Returns:
+        解析出的 SessionHeader；文件不存在或不是对象时为 None。
+    """
+    directory = Path(session_dir) if session_dir is not None else DEFAULT_SESSION_DIR
+    path = directory / f"{session_id}{HEADER_SUFFIX}"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return SessionHeader.from_dict(data)
 
 
 def parse_event_line(line: str) -> SessionEvent | None:
@@ -325,5 +353,6 @@ __all__ = [
     "TranscriptWriter",
     "list_session_files",
     "parse_event_line",
+    "peek_session_header",
     "restrict_permissions",
 ]

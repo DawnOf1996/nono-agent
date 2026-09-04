@@ -24,6 +24,8 @@ const EVENT_META = {
   "compact/boundary": { label: "compact/boundary", cls: "header", icon: "⤓" },
   "api/retry":        { label: "api/retry",    cls: "usage",  icon: "⟳" },
   "permission/denial":{ label: "permission/denial", cls: "tool", icon: "⛔" },
+  "permission/onchange":{ label: "permission/onchange", cls: "tool", icon: "⟳" },
+  "permission/changed":{ label: "permission/changed", cls: "tool", icon: "✓" },
 };
 
 function meta(type) {
@@ -194,6 +196,10 @@ function previewFor(ev) {
       return "reason=" + (d.reason || "?");
     case "permission/denial":
       return "denied " + (d.tool || "");
+    case "permission/onchange":
+      return (d.from || "?") + " → " + (d.to || "?");
+    case "permission/changed":
+      return (d.from || "?") + " → " + (d.to || "?") + (d.at ? " @" + d.at : "");
     case "compact/boundary":
       return (d.metadata && d.metadata.strategy) || "";
     default:
@@ -243,7 +249,10 @@ function renderSummary(model) {
 
   let title = model.sessionId || "(offline file)";
   if (model.header && model.header.cwd) title += "  ·  cwd=" + model.header.cwd;
-  box.appendChild(kv(title, s.turns + " 轮 / " + s.steps + " 步", ""));
+  const headline = (model.header && model.header.summary)
+    ? model.header.summary
+    : (s.turns + " 轮 / " + s.steps + " 步");
+  box.appendChild(kv(title, headline, s.turns + " 轮 / " + s.steps + " 步"));
   box.appendChild(kv("工具调用", s.toolCalls + " / " + s.toolResults, ""));
   box.appendChild(kv("累计 token", s.usage.total_tokens, "in=" + s.usage.input_tokens + " out=" + s.usage.output_tokens + " cache_r=" + s.usage.cache_read_input_tokens + " cache_c=" + s.usage.cache_creation_input_tokens));
   if (s.wallMs != null) box.appendChild(kv("会话时长", fmtMs(s.wallMs), ""));

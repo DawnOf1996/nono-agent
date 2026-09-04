@@ -296,7 +296,7 @@ Definition 来源：`built-in` / `user`（`~/.nono-agent/agents`）/ `project`�
 
 ### 2.9 会话事件流持久化扩展（优先级：P1）
 
-`TranscriptWriter` Protocol 已是事件溯源语义（落盘只有 `SessionEvent`）；已有 LocalFile JSONL（默认）+ SQLite `events`/`session_header` + 工厂切换 + `fork_transcript`，17 类事件全量实装，请求前一致性门禁默认 `strict`，另有读取侧脱敏与不调模型回放。规划：Postgres/MySQL、Redis、可选 S3；JSONL 可选 zstd 压缩；增量 derive；回溯面板。设计见 [Session-Observability-Design.md](./Session-Observability-Design.md)。
+`TranscriptWriter` Protocol 已是事件溯源语义（落盘只有 `SessionEvent`）；已有 LocalFile JSONL（默认）+ SQLite `events`/`session_header` + 工厂切换 + `fork_transcript`，19 类事件全量实装，请求前一致性门禁默认 `strict`，另有读取侧脱敏与不调模型回放。规划：Postgres/MySQL、Redis、可选 S3；JSONL 可选 zstd 压缩；增量 derive；回溯面板。设计见 [Session-Observability-Design.md](./Session-Observability-Design.md)。
 
 ### 2.10 Provider 协议矩阵扩展（优先级：P1）
 
@@ -408,7 +408,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 
 - [x] 落盘只存事件：`TranscriptWriter` 改事件溯源语义，去掉全量覆写接口
 - [x] `LocalFileTranscriptWriter`：残行跳过、重启后 seq 续接、事件格式之前的 transcript 拒读、`0600` 权限
-- [x] 事件目录全量实装（17 类）：`step/*`、`assistant/chunk`、`api/retry`、`permission/denial`、`memory/*`、`user/input` 接入
+- [x] 事件目录全量实装（19 类）：`step/*`、`assistant/chunk`、`api/retry`、`permission/denial`、`permission/onchange`、`permission/changed`、`memory/*`、`user/input` 接入
 - [x] 状态变更全事件化 + 管线深拷贝 → 请求前 `verify_reconstruction` 强门禁（`session_invariant` strict/warn/off）
 - [x] 读取侧脱敏（`redact_events`）与不调模型回放（`replay_sdk_messages`）
 - [ ] 并发多进程写同一事件流（当前只保证单进程内追加有序）

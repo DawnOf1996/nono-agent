@@ -37,6 +37,10 @@ async def fork_transcript(
             cwd=source_header.cwd if source_header else "",
             parent_session=source_header.session_id if source_header else None,
             agent_preset_id=source_header.agent_preset_id if source_header else None,
+            summary=source_header.summary if source_header else "",
+            permission_mode=(
+                source_header.permission_mode if source_header else "default"
+            ),
         )
     )
 

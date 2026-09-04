@@ -11,7 +11,23 @@ import time
 from dataclasses import asdict, dataclass, fields
 from typing import Any
 
-from nono_agent.session.events import SESSION_FORMAT_VERSION
+from nono_agent.paths import resolve_session_cwd
+from nono_agent.session.events import (
+    EVENT_USER_INPUT,
+    EVENT_USER_MESSAGE,
+    SESSION_FORMAT_VERSION,
+)
+
+# 会话列表用的短摘要：用户第一句话的前 N 个字符
+SESSION_SUMMARY_MAX_CHARS = 20
+
+_PERMISSION_MODES = frozenset({"default", "accept_edits", "plan", "bypass"})
+
+
+def normalize_permission_mode(value: str | None) -> str:
+    """把权限模式收成合法取值；未知/空则 ``default``。"""
+    raw = (value or "").strip()
+    return raw if raw in _PERMISSION_MODES else "default"
 
 
 class VersionMismatchError(Exception):
@@ -32,6 +48,8 @@ class SessionHeader:
     cwd: str = ""
     parent_session: str | None = None
     agent_preset_id: str | None = None
+    summary: str = ""  # 用户第一句话的前 SESSION_SUMMARY_MAX_CHARS 字
+    permission_mode: str = "default"  # 最后一次 /permission（default/accept_edits/plan/bypass）
 
     def to_dict(self) -> dict[str, Any]:
         """序列化为 JSON 兼容字典。
@@ -52,7 +70,15 @@ class SessionHeader:
             构造好的 SessionHeader。
         """
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        payload = {k: v for k, v in data.items() if k in known}
+        if payload.get("summary") is None:
+            payload["summary"] = ""
+        if payload.get("cwd") is None:
+            payload["cwd"] = ""
+        payload["permission_mode"] = normalize_permission_mode(
+            payload.get("permission_mode")
+        )
+        return cls(**payload)
 
 
 # 持久化后端共用的列顺序（SQLite 建表 / 读行对齐）
@@ -65,14 +91,18 @@ def make_header(
     cwd: str = "",
     parent_session: str | None = None,
     agent_preset_id: str | None = None,
+    summary: str = "",
+    permission_mode: str = "default",
 ) -> SessionHeader:
     """构造带创建时间与当前格式版本的 SessionHeader。
 
     Args:
         session_id: 会话 ID。
-        cwd: 会话工作目录。
+        cwd: 会话工作目录（非空时收成绝对路径，禁止写入 ``.``）。
         parent_session: fork 来源会话 ID。
         agent_preset_id: Agent 预设标识。
+        summary: 用户第一句话的短摘要（可空，首轮再写）。
+        permission_mode: 会话权限模式（``/permission``）。
 
     Returns:
         新的 SessionHeader（``created_at`` 为毫秒时间戳）。
@@ -81,10 +111,43 @@ def make_header(
         session_id=session_id,
         format_version=SESSION_FORMAT_VERSION,
         created_at=time.time() * 1000,
-        cwd=cwd,
+        cwd=resolve_session_cwd(cwd) if str(cwd).strip() else "",
         parent_session=parent_session,
         agent_preset_id=agent_preset_id,
+        summary=summary,
+        permission_mode=normalize_permission_mode(permission_mode),
     )
+
+
+def summarize_user_prompt(
+    text: str, *, max_chars: int = SESSION_SUMMARY_MAX_CHARS
+) -> str:
+    """取用户输入的前 ``max_chars`` 个字符作为会话摘要。"""
+    return text.strip()[:max_chars]
+
+
+def first_user_prompt(events: list[Any]) -> str:
+    """从事件流取出用户第一句话（优先 ``user/input``，其次 ``user/message``）。"""
+    for ev in events:
+        if getattr(ev, "type", None) != EVENT_USER_INPUT:
+            continue
+        content = ev.data.get("content") if isinstance(ev.data, dict) else None
+        if isinstance(content, str) and content.strip():
+            return content
+    for ev in events:
+        if getattr(ev, "type", None) != EVENT_USER_MESSAGE:
+            continue
+        content = ev.data.get("content") if isinstance(ev.data, dict) else None
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "text":
+                    continue
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text
+    return ""
 
 
 def check_format_version(header: SessionHeader | None) -> None:
@@ -109,8 +172,12 @@ def check_format_version(header: SessionHeader | None) -> None:
 
 __all__ = [
     "HEADER_FIELDS",
+    "SESSION_SUMMARY_MAX_CHARS",
     "SessionHeader",
     "VersionMismatchError",
     "check_format_version",
+    "first_user_prompt",
     "make_header",
+    "normalize_permission_mode",
+    "summarize_user_prompt",
 ]

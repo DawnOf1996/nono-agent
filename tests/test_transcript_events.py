@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from nono_agent.paths import resolve_session_cwd
 from nono_agent.session import (
     SESSION_FORMAT_VERSION,
     LocalFileTranscriptWriter,
@@ -72,7 +73,7 @@ class TestEventStream:
         got = await writer.read_header()
         assert got is not None
         assert got.session_id == "sid-1"
-        assert got.cwd == "/tmp"
+        assert got.cwd == resolve_session_cwd("/tmp")
         assert got.format_version == SESSION_FORMAT_VERSION
 
     @pytest.mark.asyncio
@@ -177,7 +178,14 @@ class TestForkTranscript:
     async def test_fork_preserves_prefix_and_lineage(self, tmp_path):
         src = SQLiteTranscriptWriter(tmp_path / "src.db")
         dst = SQLiteTranscriptWriter(tmp_path / "dst.db")
-        await src.write_header(make_header("src-session", cwd="/work"))
+        await src.write_header(
+            make_header(
+                "src-session",
+                cwd="/work",
+                summary="hello from parentxx",
+                permission_mode="plan",
+            )
+        )
 
         for ev in [
             *_events(),
@@ -196,7 +204,9 @@ class TestForkTranscript:
         assert header is not None
         assert header.session_id == "child"
         assert header.parent_session == "src-session"
-        assert header.cwd == "/work"
+        assert header.cwd == resolve_session_cwd("/work")
+        assert header.summary == "hello from parentxx"
+        assert header.permission_mode == "plan"
         src.close()
         dst.close()
 
@@ -238,6 +248,8 @@ class TestListSessionFiles:
         sessions = list_session_files(tmp_path)
         assert {s["session_id"] for s in sessions} == {"a", "b"}
         assert next(s for s in sessions if s["session_id"] == "a")["event_count"] == 2
+        assert "summary" in next(s for s in sessions if s["session_id"] == "a")
+        assert "cwd" in next(s for s in sessions if s["session_id"] == "a")
 
     def test_empty(self, tmp_path):
         assert list_session_files(tmp_path / "nonexistent") == []

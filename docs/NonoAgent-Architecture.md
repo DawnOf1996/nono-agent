@@ -472,7 +472,7 @@ resume / fork / invariant：read_events() → derive_messages()
 
 | 发射者 | 机制 | 负责的事件 |
 |--------|------|-----------|
-| `QueryEngine` | `_stage_event()`（唯一落盘入口，同时投影为指标） | `turn/*`、`request/header`、`user/message`、`assistant/*`、`tool/*`、`usage`、手动 `compact`/`clear` 的 `compact/boundary` |
+| `QueryEngine` | `_stage_event()`（唯一落盘入口，同时投影为指标） | `turn/*`、`request/header`、`user/message`、`assistant/*`、`tool/*`、`usage`、手动 `compact`/`clear` 的 `compact/boundary`、`permission/onchange`、`permission/changed` |
 | `agentic_loop` | `SessionEventSink` 协议注入 | `step/*`、`api/retry`、循环内每次 `store.replace()` 的 `compact/boundary` |
 | 工具 / 记忆 | `DenialTracker.add_observer()`、`MemoryManager.add_*_observer()` | `permission/denial`、`memory/write`、`memory/retrieve` |
 

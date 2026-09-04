@@ -27,6 +27,8 @@ EVENT_TOOL_RESULT = "tool/result"
 EVENT_COMPACT_BOUNDARY = "compact/boundary"
 EVENT_API_RETRY = "api/retry"
 EVENT_PERMISSION_DENIAL = "permission/denial"
+EVENT_PERMISSION_ONCHANGE = "permission/onchange"
+EVENT_PERMISSION_CHANGED = "permission/changed"
 EVENT_MEMORY_WRITE = "memory/write"
 EVENT_MEMORY_RETRIEVE = "memory/retrieve"
 EVENT_USAGE = "usage"
@@ -49,6 +51,8 @@ KNOWN_EVENT_TYPES: frozenset[str] = frozenset(
         EVENT_COMPACT_BOUNDARY,
         EVENT_API_RETRY,
         EVENT_PERMISSION_DENIAL,
+        EVENT_PERMISSION_ONCHANGE,
+        EVENT_PERMISSION_CHANGED,
         EVENT_MEMORY_WRITE,
         EVENT_MEMORY_RETRIEVE,
         EVENT_USAGE,
@@ -107,6 +111,25 @@ class SessionEvent(BaseModel):
         return cls(seq=seq, type=type, data=data, ignorable=ignorable)
 
 
+def last_turn_number(events: list[SessionEvent]) -> int:
+    """从事件流取出已出现过的最大 ``turn``（``turn/start`` / ``turn/end``）。
+
+    resume 后续聊应从该值继续累加，而不是从 1 重计。
+    """
+    last = 0
+    for ev in events:
+        if ev.type not in (EVENT_TURN_START, EVENT_TURN_END):
+            continue
+        turn = ev.data.get("turn") if isinstance(ev.data, dict) else None
+        if isinstance(turn, bool):
+            continue
+        if isinstance(turn, int) and turn > last:
+            last = turn
+        elif isinstance(turn, float) and turn == int(turn) and int(turn) > last:
+            last = int(turn)
+    return last
+
+
 __all__ = [
     "EVENT_API_RETRY",
     "EVENT_ASSISTANT_CHUNK",
@@ -114,7 +137,9 @@ __all__ = [
     "EVENT_COMPACT_BOUNDARY",
     "EVENT_MEMORY_RETRIEVE",
     "EVENT_MEMORY_WRITE",
+    "EVENT_PERMISSION_CHANGED",
     "EVENT_PERMISSION_DENIAL",
+    "EVENT_PERMISSION_ONCHANGE",
     "EVENT_REQUEST_HEADER",
     "EVENT_STEP_END",
     "EVENT_STEP_START",
@@ -132,4 +157,5 @@ __all__ = [
     "SESSION_FORMAT_VERSION",
     "SessionEvent",
     "SessionEventSink",
+    "last_turn_number",
 ]

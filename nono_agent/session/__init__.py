@@ -29,7 +29,9 @@ from nono_agent.session.header import (
     SessionHeader,
     VersionMismatchError,
     check_format_version,
+    first_user_prompt,
     make_header,
+    summarize_user_prompt,
 )
 from nono_agent.session.redact import (
     redact_event,
@@ -50,6 +52,7 @@ from nono_agent.session.transcript import (
     LocalFileTranscriptWriter,
     TranscriptWriter,
     list_session_files,
+    peek_session_header,
 )
 
 __all__ = [
@@ -72,6 +75,7 @@ __all__ = [
     "create_transcript_writer",
     "derive_messages",
     "derived_to_messages",
+    "first_user_prompt",
     "fold_request_header",
     "fork_transcript",
     "header_equals",
@@ -80,11 +84,13 @@ __all__ = [
     "message_to_derived",
     "messages_to_derived",
     "next_reason",
+    "peek_session_header",
     "redact_event",
     "redact_events",
     "redact_text",
     "redact_value",
     "replay_sdk_messages",
     "replay_transcript_text",
+    "summarize_user_prompt",
     "verify_reconstruction",
 ]

@@ -13,8 +13,9 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from nono_agent.paths import resolve_session_cwd
 from nono_agent.utils.tokens import resolve_context_window
 
 
@@ -73,8 +74,13 @@ class EngineConfig(BaseModel):
     每次 submit_message() 会基于此创建 QueryConfig 快照。
     """
 
-    # 工具执行的工作目录
+    # 工具执行的工作目录（构造时收成绝对路径，禁止 ``.`` 进入会话 header）
     cwd: str = "."
+
+    @field_validator("cwd")
+    @classmethod
+    def _absolute_cwd(cls, value: str) -> str:
+        return resolve_session_cwd(value or ".")
 
     # 主模型和备用模型（主模型不可用时切换）
     model: str = "claude-sonnet-4-20250514"

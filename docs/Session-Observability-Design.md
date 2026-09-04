@@ -36,7 +36,7 @@
 | `MetricsRecorder` | `observability/metrics.py` | counter/histogram/gauge + 标签约定 + `record_event_metric` 事件投影 | 内存实现无持久化（可换 OTel/Prometheus） |
 | `structlog` | `observability/logging.py` | 结构化日志、JSON/彩色输出 | 与事件流**无关联**，无法从日志反查会话 |
 
-**结论：** 落盘内容只有事件；§4.1 的 17 个事件类型全部有真实发射路径；「可证明一致」的强门禁已成立 —— 每次 LLM 请求前校验事件流能重建出运行时状态，任何绕过事件流的状态变更都会被拦下（见 §6）。剩余缺口是存储效率（zstd）、多进程并发写、structlog 与事件流的关联键。
+**结论：** 落盘内容只有事件；§4.1 的 19 个事件类型全部有真实发射路径；「可证明一致」的强门禁已成立 —— 每次 LLM 请求前校验事件流能重建出运行时状态，任何绕过事件流的状态变更都会被拦下（见 §6）。剩余缺口是存储效率（zstd）、多进程并发写、structlog 与事件流的关联键。
 
 ---
 
@@ -69,7 +69,7 @@ SessionEvent {
 
 ### 4.1 事件类型目录（对齐 dsh，映射到 nono-agent Message 类型）
 
-全部 17 个类型都已实装（`KNOWN_EVENT_TYPES` 是权威清单，`tests/test_event_coverage.py` 逐类型断言）。写出时机、顺序与载荷示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。「发射者」一栏说明谁有资格写这条事件 —— 引擎能从循环产出的消息流观察到的由引擎写，循环内部才知道的（step 边界、`store.replace()`、重试次数）由循环通过 `SessionEventSink` 上报，工具/记忆内部发生的由各自的观察者回调上报。
+全部 19 个类型都已实装（`KNOWN_EVENT_TYPES` 是权威清单，`tests/test_event_coverage.py` 逐类型断言）。写出时机、顺序与载荷示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。「发射者」一栏说明谁有资格写这条事件 —— 引擎能从循环产出的消息流观察到的由引擎写，循环内部才知道的（step 边界、`store.replace()`、重试次数）由循环通过 `SessionEventSink` 上报，工具/记忆内部发生的由各自的观察者回调上报。
 
 | 事件类型 | 载荷 | 发射者 | 来源（nono-agent 现有概念） |
 |---------|------|--------|---------------------------|
@@ -85,6 +85,8 @@ SessionEvent {
 | `compact/boundary` | `{content, metadata: {strategy, ...}, kept}` | 引擎 + 循环 | 任何 `store.replace()`：手动 `/compact`、`/clear`、管线自动压缩、`prompt_too_long` 恢复 |
 | `api/retry` | `{attempt, max_retries, delay, reason, ...}` | 循环 | fallback 切换与 `RecoveryChain` 重试 |
 | `permission/denial` | `{tool, rule, mode, path}` | `DenialTracker` 观察者 | `DenialTracker` → `SDKResult.permission_denials` |
+| `permission/onchange` | `{from, to}` | 引擎（策略请求回调） | `/permission`、`enter_plan_mode` / `exit_plan_mode`；立刻记录，运行时仍用旧模式 |
+| `permission/changed` | `{from, to, at: turn\|step}` | 引擎（turn/step 边界 commit） | 下一次 `turn/start` 或 `step/start` 之前生效 |
 | `memory/write` / `memory/retrieve` | `{memory_id, kind, adopted, importance}` / `{query, memory_ids, kinds, adopted}` | `MemoryManager` 观察者 | 记忆系统（见《记忆系统设计》§5/§12.5） |
 | `usage` | `{usage, model}` | 引擎 | 每步 `TokenTracker.record_usage`（见 §7） |
 
@@ -219,7 +221,7 @@ header = {
 |------|------|------|
 | `LocalFileTranscriptWriter`（默认） | `$SESSIONS/<sid>.jsonl`，每行一个 `SessionEvent` | append-only；每次追加开闭文件，进程被杀不丢已写事件；重启后从既有最大 `seq` 续接 |
 | `SQLiteTranscriptWriter` | `events(seq, type, data, timestamp, ignorable)` + `type` 索引 + `session_header` | 结构化列可索引查询，支撑回溯面板 |
-| `SessionHeader` | LocalFile 存 `<sid>.header.json`；SQLite 存 `session_header` 表 | `{session_id, format_version, created_at, cwd, parent_session, agent_preset_id}` |
+| `SessionHeader` | LocalFile 存 `<sid>.header.json`；SQLite 存 `session_header` 表 | `{session_id, format_version, created_at, cwd, parent_session, agent_preset_id, summary, permission_mode}` |
 
 - **协议没有全量覆写接口**：覆写会与追加交错并破坏事件流，「修正」用新事件表达（`compact/boundary`、tombstone）。
 - **版本门**：`SESSION_FORMAT_VERSION` 写入 SessionHeader；版本不符**直接拒读**。事件格式之前的消息副本 transcript（JSONL 行缺事件信封字段 / SQLite 存在 `messages` 表）同样拒读，不静默当作空会话。
@@ -260,7 +262,7 @@ header = {
 |------|------|------|
 | **P0** | 事件信封 + `SessionEvent` 类型目录 + `turn/request-header/user/assistant/tool/usage` 事件；`derive_messages()`；两个后端都改事件流（落盘只有事件，默认 LocalFile）；`resume` 走事件流 | ✅ 已落地 |
 | **P1** | `request/header` 的 initial/resume/change + `header_equals`；`SessionHeader` + 版本门 + 旧格式拒读；每步 `usage` 事件；`fork_session` | ✅ 已落地 |
-| **P2** | 状态变更全事件化（管线压缩 / 恢复 / `/clear`）+ 管线深拷贝 → 请求前 invariant 强门禁；`step/*`、`assistant/chunk`、`api/retry`、`permission/denial`、`memory/*` 事件；redact 层 + 会话文件权限；Metrics 标签约定 + 事件投影；Server `session/event` SSE 通道；replay | ✅ 已落地 |
+| **P2** | 状态变更全事件化（管线压缩 / 恢复 / `/clear`）+ 管线深拷贝 → 请求前 invariant 强门禁；`step/*`、`assistant/chunk`、`api/retry`、`permission/denial`、`permission/onchange`、`permission/changed`、`memory/*` 事件；redact 层 + 会话文件权限；Metrics 标签约定 + 事件投影；Server `session/event` SSE 通道；replay | ✅ 已落地 |
 | **P3** | zstd 压缩 + write-behind 批量；增量 derive（缓存上次结果，只折叠新事件）；structlog 绑定 `session_id/step/seq`；SQLite 按步骤/工具的聚合查询；回溯面板 UI；replay CLI 子命令；多进程并发写语义；跨版本迁移器 | 待做 |
 
 ---
@@ -336,6 +338,7 @@ header = {
 | `nono_agent/core/engine.py` | 只 append 事件；`turn/start` → `user/input` →（`memory/retrieve`）→ `step/start` → `user/message` → `request/header` 的顺序写入；请求前跑门禁；观察者接线；空 store 时从事件流重建；`fork_session` | ✅ |
 | `nono_agent/core/loop.py` | 通过 `SessionEventSink` 上报 `step/*`、`api/retry`、`store.replace()`；合成消息全部 yield；管线压缩后、中间件前追加本轮用户消息 | ✅ |
 | `nono_agent/permissions/denial.py` | `DenialTracker.add_observer()` → `permission/denial` | ✅ |
+| `nono_agent/permissions/policy.py` | `request_mode` / `commit_pending` → `permission/onchange`、`permission/changed` | ✅ |
 | `nono_agent/memory/manager.py` | 写入/检索观察者 → `memory/write`、`memory/retrieve` | ✅ |
 | `nono_agent/observability/metrics.py` | 标签常量 + `record_event_metric()` 事件投影 | ✅ |
 | `nono_agent/adapters/server.py` | `GET /session/{id}/events` SSE 通道（脱敏 + `after_seq` + `follow`） | ✅ |

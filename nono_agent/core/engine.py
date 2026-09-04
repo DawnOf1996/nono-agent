@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -68,8 +69,9 @@ from nono_agent.observability.metrics import (
 )
 from nono_agent.observability.token_tracker import TokenTracker
 from nono_agent.permissions.denial import Denial, DenialTracker
-from nono_agent.permissions.policy import PermissionPolicy
+from nono_agent.permissions.policy import PermissionMode, PermissionPolicy
 from nono_agent.permissions.sandbox import IgnoreMatcher, PathSandbox
+from nono_agent.paths import resolve_session_cwd
 from nono_agent.pipeline.auto_compact import AutoCompactStage
 from nono_agent.pipeline.base import PreprocessPipeline
 from nono_agent.pipeline.microcompact import MicroCompactStage
@@ -97,7 +99,9 @@ from nono_agent.session.events import (
     EVENT_COMPACT_BOUNDARY,
     EVENT_MEMORY_RETRIEVE,
     EVENT_MEMORY_WRITE,
+    EVENT_PERMISSION_CHANGED,
     EVENT_PERMISSION_DENIAL,
+    EVENT_PERMISSION_ONCHANGE,
     EVENT_REQUEST_HEADER,
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
@@ -107,9 +111,16 @@ from nono_agent.session.events import (
     EVENT_USER_INPUT,
     EVENT_USER_MESSAGE,
     SessionEvent,
+    last_turn_number,
 )
 from nono_agent.session.fork import fork_transcript
-from nono_agent.session.header import make_header
+from nono_agent.session.header import (
+    SessionHeader,
+    first_user_prompt,
+    make_header,
+    normalize_permission_mode,
+    summarize_user_prompt,
+)
 from nono_agent.session.request_header import canonical_header, next_reason
 from nono_agent.session.store import MessageStore
 from nono_agent.session.transcript import (
@@ -183,6 +194,11 @@ class QueryEngine:
 
         # 权限体系（Phase 1）：策略 + 拒绝追踪 + 路径沙箱 + Ignore
         self._permission_policy = permission_policy or PermissionPolicy()
+        self._applying_header = False
+        self._session_header: SessionHeader | None = None
+        self._header_persist_tasks: set[asyncio.Task[None]] = set()
+        self._permission_policy.on_mode_change(self._on_permission_mode_change)
+        self._permission_policy.on_mode_request(self._on_permission_mode_request)
         self._denial_tracker = denial_tracker or DenialTracker()
         self._sandbox = PathSandbox(config.cwd)
         self._ignore = IgnoreMatcher.from_workspace(config.cwd)
@@ -230,41 +246,36 @@ class QueryEngine:
         self._transcript_writer = writer
 
         # 新会话首次初始化写入 SessionHeader（承载格式版本门）
-        if await writer.read_header() is None:
-            await writer.write_header(
-                make_header(self._session_id, cwd=self._config.cwd)
+        existing = await writer.read_header()
+        if existing is None:
+            header = make_header(
+                self._session_id,
+                cwd=self._config.cwd,
+                agent_preset_id=self._config.agent_id,
+                permission_mode=self._permission_policy.mode.value,
             )
+            await writer.write_header(header)
+            self._session_header = header
+        else:
+            # 接续已有会话：以 header 约束为准（cwd / agent / permission），再加载工作区扩展
+            await self._bind_existing_header(writer)
 
         # 事件流就是会话本身：指向一条已有事件流意味着接着这条对话往下走。
         # 不重建就会一边追加事件、一边用空上下文请求模型，日志与状态从第一轮起就分叉。
         if not self._store.all_messages():
             await self._hydrate_from_log(writer)
 
-        # 加载 Skills 并注册 SkillTool（Phase 2）
-        self._skills = self._skill_loader.load(self._config.cwd)
-        if self._skills and not self._tool_registry.has("skill"):
-            self._tool_registry.register(SkillTool(self._skills))
-
-        # 加载子 Agent 定义并注册 AgentTool（Phase 3）
-        if self._register_agent_tool and self._agent_loader is not None:
-            from nono_agent.agents import (
-                AgentRunner,
-                AgentTool,
-                create_builtin_agents,
-            )
-
-            definitions = create_builtin_agents() + self._agent_loader.load(self._config.cwd)
-            if definitions and not self._tool_registry.has("agent"):
-                runner = AgentRunner(
-                    self._provider_registry, self._tool_registry, self._config
-                )
-                self._tool_registry.register(AgentTool(definitions, runner))
+        # 加载 Skills / 子 Agent（必须在 header 绑定 cwd 之后）
+        self._load_workspace_extensions()
 
         self._initialized = True
         logger.info("QueryEngine initialized (session=%s)", self._session_id)
 
     async def close(self) -> None:
         """清理资源 —— 排空待写事件、flush 事件流并注销事件观察者。"""
+        await self._persist_permission_mode()
+        if self._header_persist_tasks:
+            await asyncio.gather(*self._header_persist_tasks, return_exceptions=True)
         if self._transcript_writer is not None:
             await self._flush_events()
             await self._transcript_writer.flush()
@@ -310,6 +321,8 @@ class QueryEngine:
 
         start_time = time.monotonic()  # 记录开始时间（用于统计耗时）
         self._turn_count += 1
+        # 回合之间请求的权限模式在本 turn 生效
+        self._commit_pending_permission("turn")
         self._stage_event(EVENT_TURN_START, turn=self._turn_count)
 
         # user/input —— 用户这一句的「原始输入」，紧跟在 turn/start 之后、step/start 之前。
@@ -323,6 +336,10 @@ class QueryEngine:
             "submit_message: session=%s, turn=%d, input_len=%d",
             self._session_id, self._turn_count, len(user_input),
         )
+
+        # await 落盘 turn/start + user/input —— 确保 --resume 能看到本轮已开始
+        await self._flush_events()
+        await self._ensure_session_summary(user_input)
 
         # Phase 1: 快照配置 —— 冻结当前环境变量和门控状态
         query_config = QueryConfig(
@@ -340,9 +357,6 @@ class QueryEngine:
                     [{"type": "text", "text": user_input}] + attachments,
             }
         )
-
-        # await 落盘 turn/start + user/input —— 确保 --resume 能看到本轮已开始
-        await self._flush_events()
 
         # 可选回放用户消息给消费者（Server 场景需要）
         if self._config.replay_user_messages:
@@ -433,6 +447,7 @@ class QueryEngine:
                 signal=self._abort_controller.signal,
                 token_tracker=self._token_tracker,
                 event_sink=self._stage_event,
+                commit_permission=self._commit_pending_permission,
                 turn_user_message=user_msg,
             ):
                 # 请求前一致性门禁 —— 此刻 loop 已把本 step 的状态事件全部上报。
@@ -814,7 +829,7 @@ class QueryEngine:
             )
         )
 
-    def _stage_event(self, type_: str, /, **data: Any) -> None:
+    def _stage_event(self, type_: str, /, *, ignorable: bool = False, **data: Any) -> None:
         """把一条事件放入待写队列。
 
         同步入队让 ``compact()`` 这类同步 API 也能记事件；队列保证追加顺序
@@ -822,9 +837,12 @@ class QueryEngine:
 
         Args:
             type_: 事件类型（见 session.events 常量）。
+            ignorable: 新事件类型标 True，旧版本读日志时允许跳过。
             data: 事件载荷。
         """
-        self._pending_events.append(SessionEvent.make(0, type_, **data))
+        self._pending_events.append(
+            SessionEvent.make(0, type_, ignorable=ignorable, **data)
+        )
         record_event_metric(type_, data, session_id=self._session_id)
 
     async def _flush_events(self) -> None:
@@ -873,6 +891,7 @@ class QueryEngine:
         if not events:
             return
         self._store.replace(derived_to_messages(derive_messages(events)))
+        self._restore_turn_count(events)
         # 接续已有事件流：下次请求写 reason=resume 的 header
         self._header_logged = False
         self._last_header = None
@@ -970,9 +989,15 @@ class QueryEngine:
             ]
 
         self._store.replace(messages)
+        self._restore_turn_count(events)
         # 换实例接续同一条事件流：下次请求写 reason=resume 的 header
         self._header_logged = False
         self._last_header = None
+        if writer is not None:
+            existing = await writer.read_header()
+            if existing is not None:
+                await self._bind_existing_header(writer)
+            self._load_workspace_extensions()
         logger.info("Resumed session %s with %d messages", session_id, len(messages))
         return messages
 
@@ -1025,6 +1050,204 @@ class QueryEngine:
     def _create_writer_for(session_id: str) -> LocalFileTranscriptWriter:
         """为指定 session_id 创建默认本地事件流写入器（JSONL 每行一个事件）。"""
         return LocalFileTranscriptWriter(DEFAULT_SESSION_DIR / f"{session_id}.jsonl")
+
+    def _restore_turn_count(self, events: list[SessionEvent]) -> None:
+        """从事件流恢复 ``_turn_count``，使 resume 后 ``turn/start`` 接着编号。"""
+        self._turn_count = last_turn_number(events)
+
+    def _apply_session_header(self, header: SessionHeader) -> bool:
+        """用已有 SessionHeader 约束引擎运行时（cwd / agent），覆盖构造时的 CLI 默认值。
+
+        相对路径（如 ``.``）会收成绝对路径。返回是否改写了 header.cwd（调用方应回写磁盘）。
+        """
+        rewritten = False
+        updates: dict[str, Any] = {}
+        if header.cwd:
+            absolute = resolve_session_cwd(header.cwd)
+            if absolute != header.cwd:
+                header.cwd = absolute
+                rewritten = True
+            updates["cwd"] = absolute
+        if header.agent_preset_id:
+            updates["agent_id"] = header.agent_preset_id
+        self._restore_permission_mode(header.permission_mode)
+        if not updates:
+            return rewritten
+        cwd_changed = "cwd" in updates and updates["cwd"] != self._config.cwd
+        self._config = self._config.model_copy(update=updates)
+        if cwd_changed:
+            self._sandbox = PathSandbox(self._config.cwd)
+            self._ignore = IgnoreMatcher.from_workspace(self._config.cwd)
+        return rewritten
+
+    async def _bind_existing_header(self, writer: TranscriptWriter) -> None:
+        """读取 header、绑定约束；相对 cwd 升级为绝对路径后写回。"""
+        existing = await writer.read_header()
+        if existing is None:
+            return
+        rewritten = self._apply_session_header(existing)
+        self._session_header = existing
+        if rewritten:
+            await writer.write_header(existing)
+        await self._backfill_session_summary()
+
+    def _restore_permission_mode(self, raw: str) -> None:
+        """从 SessionHeader 恢复权限模式，不回写磁盘。"""
+        try:
+            mode = PermissionMode(normalize_permission_mode(raw))
+        except ValueError:
+            mode = PermissionMode.DEFAULT
+        self._applying_header = True
+        try:
+            self._permission_policy.set_mode(mode)
+        finally:
+            self._applying_header = False
+
+    def _on_permission_mode_request(
+        self, from_mode: PermissionMode, to_mode: PermissionMode
+    ) -> None:
+        """用户请求切换权限：立刻写 ``permission/onchange`` 并把目标模式写入 header。
+
+        运行时 ``policy.mode`` 仍保持旧值，直到下一次 turn/step 的 ``commit_pending``。
+        Header 先写成目标值，这样中途退出再 resume 也不会丢切换。
+        """
+        self._stage_event(
+            EVENT_PERMISSION_ONCHANGE,
+            ignorable=True,
+            **{"from": from_mode.value, "to": to_mode.value},
+        )
+        if self._applying_header:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._flush_permission_onchange(to_mode.value))
+        self._header_persist_tasks.add(task)
+        task.add_done_callback(self._header_persist_tasks.discard)
+
+    def _commit_pending_permission(self, at: str) -> None:
+        """在下一次 turn 或 step 边界应用挂起的权限模式，并写 ``permission/changed``。"""
+        result = self._permission_policy.commit_pending()
+        if result is None:
+            return
+        from_mode, to_mode = result
+        self._stage_event(
+            EVENT_PERMISSION_CHANGED,
+            ignorable=True,
+            at=at,
+            **{"from": from_mode.value, "to": to_mode.value},
+        )
+
+    def _on_permission_mode_change(self, mode: PermissionMode) -> None:
+        """模式真正生效时把值写进 header（restore / commit / 直接 ``set_mode``）。"""
+        if self._applying_header:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._persist_permission_mode(mode.value))
+        self._header_persist_tasks.add(task)
+        task.add_done_callback(self._header_persist_tasks.discard)
+
+    async def _flush_permission_onchange(self, mode: str) -> None:
+        """把 ``permission/onchange`` 落盘，并先把目标模式写入 header。"""
+        await self._flush_events()
+        await self._persist_permission_mode(mode)
+
+    async def _persist_permission_mode(self, mode: str | None = None) -> None:
+        """把当前（或挂起、或指定）权限模式写入 SessionHeader。
+
+        未指定 ``mode`` 时优先写 ``pending_mode``，避免 ``/permission`` 后直接
+        退出、尚未跑下一 turn 时把 header 写回旧的运行时模式。
+        """
+        writer = self._transcript_writer
+        if writer is None:
+            return
+        header = self._session_header or await writer.read_header()
+        if header is None:
+            return
+        if mode is not None:
+            next_mode = normalize_permission_mode(mode)
+        elif self._permission_policy.pending_mode is not None:
+            next_mode = normalize_permission_mode(
+                self._permission_policy.pending_mode.value
+            )
+        else:
+            next_mode = normalize_permission_mode(self._permission_policy.mode.value)
+        if header.permission_mode == next_mode:
+            self._session_header = header
+            return
+        header.permission_mode = next_mode
+        self._session_header = header
+        await writer.write_header(header)
+
+    def _load_workspace_extensions(self) -> None:
+        """按当前 cwd 加载 Skills / 子 Agent（header 绑定之后、以及 resume 换会话时）。"""
+        self._skills = self._skill_loader.load(self._config.cwd)
+        if self._skills:
+            if self._tool_registry.has("skill"):
+                tool = self._tool_registry.find("skill")
+                if isinstance(tool, SkillTool):
+                    tool.update_skills(self._skills)
+            else:
+                self._tool_registry.register(SkillTool(self._skills))
+
+        if not (self._register_agent_tool and self._agent_loader is not None):
+            return
+        from nono_agent.agents import (
+            AgentRunner,
+            AgentTool,
+            create_builtin_agents,
+        )
+
+        definitions = create_builtin_agents() + self._agent_loader.load(self._config.cwd)
+        if not definitions:
+            return
+        if self._tool_registry.has("agent"):
+            tool = self._tool_registry.find("agent")
+            if isinstance(tool, AgentTool):
+                tool.update_definitions(definitions)
+                tool.bind_base_config(self._config)
+            return
+        runner = AgentRunner(
+            self._provider_registry, self._tool_registry, self._config
+        )
+        self._tool_registry.register(AgentTool(definitions, runner))
+
+    async def _ensure_session_summary(self, user_input: str) -> None:
+        """若 header 尚无摘要，写入用户第一句话的前 20 字（只写一次）。"""
+        writer = self._transcript_writer
+        if writer is None:
+            return
+        header = self._session_header or await writer.read_header()
+        if header is None:
+            return
+        self._session_header = header
+        if header.summary:
+            return
+        summary = summarize_user_prompt(user_input)
+        if not summary:
+            return
+        header.summary = summary
+        await writer.write_header(header)
+
+    async def _backfill_session_summary(self) -> None:
+        """接续旧会话时，若 header 没有摘要则从事件流第一句用户输入补写。"""
+        writer = self._transcript_writer
+        if writer is None:
+            return
+        header = self._session_header or await writer.read_header()
+        if header is None or header.summary:
+            self._session_header = header
+            return
+        prompt = first_user_prompt(await writer.read_events())
+        if not prompt:
+            return
+        header.summary = summarize_user_prompt(prompt)
+        self._session_header = header
+        await writer.write_header(header)
 
     def _create_default_assembler(self) -> PromptAssembler:
         """创建默认 PromptAssembler（注册内置 section）。"""

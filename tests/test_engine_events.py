@@ -255,3 +255,34 @@ async def test_events_survive_process_restart(tmp_path):
     ]
     assert "first" in texts
     assert "second" in texts
+
+
+@pytest.mark.asyncio
+async def test_resume_continues_turn_number(tmp_path):
+    """接续已有事件流时 turn/start 应从上次最大 turn 继续，而不是从 1 重计。"""
+    writer = LocalFileTranscriptWriter(tmp_path / "sid.jsonl")
+    engine1 = create_test_engine(
+        responses=[
+            {"text": "t1", "tool_calls": []},
+            {"text": "t2", "tool_calls": []},
+        ],
+        transcript_writer=writer,
+        config_overrides={"session_id": "sid"},
+    )
+    async with engine1:
+        await _collect(engine1)
+        await _collect(engine1)
+
+    engine2 = create_test_engine(
+        responses=[{"text": "t3", "tool_calls": []}],
+        transcript_writer=writer,
+        config_overrides={"session_id": "sid"},
+    )
+    async with engine2:
+        await _collect(engine2)
+
+    events = await writer.read_events()
+    turns = [e.data["turn"] for e in events if e.type == EVENT_TURN_START]
+    assert turns == [1, 2, 3]
+    ends = [e.data["turn"] for e in events if e.type == EVENT_TURN_END]
+    assert ends == [1, 2, 3]

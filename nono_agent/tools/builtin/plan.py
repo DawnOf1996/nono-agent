@@ -17,7 +17,7 @@ class EnterPlanModeTool(ToolBase):
 
     _name = "enter_plan_mode"
     _description = (
-        "Enter plan mode: subsequent write operations are denied until "
+        "Enter plan mode: from the next step, write operations are denied until "
         "'exit_plan_mode' is called. Use this to explore and propose a plan "
         "without modifying anything."
     )
@@ -34,10 +34,13 @@ class EnterPlanModeTool(ToolBase):
                 is_error=True,
                 tool_name=self._name,
             )
-        policy.set_mode(PermissionMode.PLAN)
+        policy.request_mode(PermissionMode.PLAN)
         return ToolResult(
             tool_use_id="",
-            content="Entered plan mode. Write operations are now denied.",
+            content=(
+                "Entered plan mode. Write operations will be denied "
+                "from the next step."
+            ),
             tool_name=self._name,
         )
 
@@ -46,7 +49,9 @@ class ExitPlanModeTool(ToolBase):
     """退出计划模式，恢复 default 权限。"""
 
     _name = "exit_plan_mode"
-    _description = "Exit plan mode and restore the default permission mode."
+    _description = (
+        "Exit plan mode. Default permissions are restored from the next step."
+    )
     _input_schema = {"type": "object", "properties": {}}
     _is_concurrent_safe = False
     _has_write_side_effects = False
@@ -60,9 +65,12 @@ class ExitPlanModeTool(ToolBase):
                 is_error=True,
                 tool_name=self._name,
             )
-        policy.set_mode(PermissionMode.DEFAULT)
+        policy.request_mode(PermissionMode.DEFAULT)
         return ToolResult(
             tool_use_id="",
-            content="Exited plan mode. Default permissions restored.",
+            content=(
+                "Exited plan mode. Default permissions will be restored "
+                "from the next step."
+            ),
             tool_name=self._name,
         )

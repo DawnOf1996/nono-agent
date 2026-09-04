@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -102,6 +102,7 @@ async def agentic_loop(
     signal: AbortSignal,
     token_tracker: TokenTracker | None = None,
     event_sink: SessionEventSink | None = None,
+    commit_permission: Callable[[str], None] | None = None,
     turn_user_message: UserMessage | None = None,
 ) -> AsyncGenerator[InternalMessage, None]:
     """主 Agentic 循环 —— while(True) 驱动的代理核心。
@@ -125,6 +126,7 @@ async def agentic_loop(
     - signal: 取消信号（asyncio.Event 封装）
     - event_sink: 会话事件汇；循环用它上报引擎观察不到的状态变更
       （step 边界、``store.replace`` 造成的 compact 边界、API 重试）
+    - commit_permission: 每个 ``step/start`` 之前应用挂起的权限模式
     - turn_user_message: 本轮的用户消息（引擎在 loop 之前组装好，但不在 loop 前入库）。
       循环在首个 step 的预处理管线之后、中间件之前把它追加进 store 与请求消息，
       保证它不落入管线压缩边界（``compact/boundary`` 的 ``kept`` 不含本句），
@@ -272,6 +274,9 @@ async def agentic_loop(
         # step 边界先入事件流，再 yield RequestStartEvent —— 引擎在处理
         # RequestStartEvent 时执行请求前一致性门禁，此刻状态事件必须已经齐全
         step += 1
+        # 本 step 内（或上一 step 末）请求的权限在此生效
+        if commit_permission is not None:
+            commit_permission("step")
         emit(EVENT_STEP_START, turn=state.turn_count, step=step, model=current_model)
 
         yield RequestStartEvent()  # 通知消费者 API 请求开始

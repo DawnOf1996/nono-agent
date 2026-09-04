@@ -1,6 +1,6 @@
 # 会话事件目录 —— 时机、顺序与载荷
 
-> **文档角色：** 对照 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`，说明 17 类事件**何时写出、彼此顺序、**`data` **长什么样**。读 jsonl / SSE / 回放时查本文。
+> **文档角色：** 对照 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`，说明 19 类事件**何时写出、彼此顺序、**`data` **长什么样**。读 jsonl / SSE / 回放时查本文。
 > **配套文档：** 设计动机与门禁见 [Session-Observability-Design.md](./Session-Observability-Design.md)；怎么打开日志见 [USAGE.md §7](./USAGE.md)。
 > **权威清单：** 类型常量以源码为准；本文示例来自当前发射点（`core/engine.py`、`core/loop.py`、观察者）。
 
@@ -88,12 +88,14 @@ tool/call × M                         ← 紧跟这条 assistant，每个 tool_
 usage
   │
   ├─ permission/denial                ← 工具执行中被拒才有
+  ├─ permission/onchange              ← /permission 或 plan 工具随时可写（本 step 内不立刻改运行时）
   ├─ memory/write                     ← 工具/记忆系统写入才有
   │
 tool/result × M                       ← 并行工具是连续多条
 step/end                              ← reason=next_turn
   │
   └─ user/message                     ← 少见：stop-hook 校验失败、截断恢复提示
+permission/changed                    ← 若本 step 内切换了权限，在下一 step 生效（at=step）
 step/start                            ← 第二步：把工具结果送回模型
 …
 step/end                              ← reason=completed
@@ -121,6 +123,18 @@ step/start                            ← 重试
 
 `/compact`、`/clear` 在回合之间写 `compact/boundary`，不包在 `turn/*` 里。`memory/write` 只要 `admit()` 成功就会写，不必发生在某一 turn 内。
 
+`/permission` 与 `enter_plan_mode` / `exit_plan_mode` **立刻**写 `permission/onchange`（可插在事件流任意位置），运行时仍用旧模式。新模式在**下一次** `turn/start` 或 `step/start` **之前**生效，并写 `permission/changed`（`at` 为 `turn` 或 `step`）。回合之间切换时顺序是：
+
+```
+… turn/end
+permission/onchange                   ← 用户 /permission plan（from/to）
+permission/changed                    ← 下一次 submit_message，at=turn
+turn/start
+…
+```
+
+resume 时 header 里已是目标模式，新进程没有进行中的 step，直接生效，不再补写 `permission/changed`。
+
 ```mermaid
 sequenceDiagram
     participant U as 用户
@@ -145,8 +159,10 @@ sequenceDiagram
     L->>E: assistant/message + tool/call + usage
     opt 调工具
         O-->>E: permission/denial / memory/write
+        Note over E: permission/onchange 可出现在任意位置
         L->>E: tool/result
         L->>L: step/end next_turn
+        E->>E: permission/changed（若本 step 切换了权限）
         L->>L: step/start（下一步）
     end
     L->>L: step/end completed
@@ -194,7 +210,7 @@ sequenceDiagram
 
 ### 2.1 `turn/start` / `turn/end`
 
-一次 `submit_message` 的外壳。`turn` 从 1 起，在引擎实例内累加。
+一次 `submit_message` 的外壳。`turn` 从 1 起，在同一条事件流内累加；`--resume` / 接续已有会话时从日志里已有的最大 `turn` 继续，不会从 1 重计。
 
 ```json
 { "turn": 1 }
@@ -512,7 +528,50 @@ sequenceDiagram
 
 
 
-### 2.11 `tool/result`
+### 2.11 `permission/onchange`
+
+用户请求切换权限模式时立刻写入，**可出现在事件流任意位置**（回合之间的 `/permission`、某 step 工具执行中的 `enter_plan_mode` / `exit_plan_mode`）。`ignorable=true`。
+
+这一刻**不改变**运行时 `PermissionPolicy.mode`；只把目标模式写入 `SessionHeader`，并挂起等待下一次 turn/step。
+
+```json
+{
+  "from": "default",
+  "to": "plan"
+}
+```
+
+同值重复请求不写。连续切换会写多条（例如 `default→plan` 再 `plan→bypass`）；真正生效时 `permission/changed` 的 `from` 是当时的运行时模式，`to` 是最后一次挂起的目标。
+
+发射者：`PermissionPolicy.request_mode` → `QueryEngine._on_permission_mode_request`。
+
+---
+
+
+
+### 2.12 `permission/changed`
+
+挂起的权限模式在**下一次** `turn/start` 或 `step/start` **之前**应用到运行时，紧挨着那条边界事件。`ignorable=true`。
+
+```json
+{
+  "from": "default",
+  "to": "plan",
+  "at": "turn"
+}
+```
+
+`at` 为 `turn`（回合之间的切换，随下一次 `submit_message` 生效）或 `step`（本回合内切换，随下一个 LLM 请求生效）。本 turn 开头已经 `commit` 过则首个 `step/start` 不再重复写。
+
+resume 从 header 恢复模式时不写本事件。
+
+发射者：`QueryEngine._commit_pending_permission`（`submit_message` 的 turn 边界；`agentic_loop` 每个 `step/start` 之前）。
+
+---
+
+
+
+### 2.13 `tool/result`
 
 每个工具结果一条。并行调用是**连续多条**，`derive_messages` 会把它们并进同一条 user 消息。
 
@@ -532,7 +591,7 @@ sequenceDiagram
 
 
 
-### 2.12 `api/retry`
+### 2.14 `api/retry`
 
 当前 step 的请求失败、准备重试时写，紧接着 `step/end`，然后循环 `continue` 开新 step。
 
@@ -578,7 +637,7 @@ RecoveryChain（如 `prompt_too_long`）：
 | `assistant/message`             | `user/input`（原始输入，只留痕不重建）                 |
 | `tool/result`（连续的并成一条）          | `request/header`（单独用 `fold_request_header`） |
 | `compact/boundary`（整段换成 `kept`） | `assistant/chunk`、`tool/call`、`usage`       |
-|                                 | `api/retry`、`permission/denial`、`memory/*`  |
+|                                 | `api/retry`、`permission/denial`、`permission/onchange`、`permission/changed`、`memory/*`  |
 
 
 看「当时模型看见了什么」用 `derive_messages(events)`；看「为什么这样、花了多少、拒了哪次」按 `seq` 读完整事件流。
@@ -602,6 +661,10 @@ jq -c 'select(.type=="compact/boundary") | {strategy: .data.metadata.strategy, k
 
 # 权限拒绝
 jq 'select(.type=="permission/denial")' ~/.nono-agent/sessions/<sid>.jsonl
+
+# 权限模式何时被请求、何时生效
+jq -c 'select(.type=="permission/onchange" or .type=="permission/changed") | {seq, type, data}' \
+  ~/.nono-agent/sessions/<sid>.jsonl
 ```
 
 实时通道（脱敏后推送，信封与磁盘相同）：`GET /session/<sid>/events`，见 [USAGE.md §7.5](./USAGE.md)。

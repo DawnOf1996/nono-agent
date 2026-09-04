@@ -180,9 +180,19 @@ class PermissionCommand(_SimpleCommand):
                 mode = PermissionMode(args[0])
             except ValueError:
                 return f"Unknown mode '{args[0]}'. Options: {[m.value for m in PermissionMode]}"
-            policy.set_mode(mode)
-            return f"Permission mode set to '{mode.value}'."
-        return f"Permission mode: {policy.mode.value}"
+            if not policy.request_mode(mode):
+                return f"Permission mode is already '{mode.value}'."
+            return (
+                f"Permission mode will switch to '{mode.value}' "
+                "at the next turn or step."
+            )
+        current = f"Permission mode: {policy.mode.value}"
+        pending = policy.pending_mode
+        if pending is not None:
+            current += (
+                f"\nPending: {pending.value} (applies at next turn or step)"
+            )
+        return current
 
 
 class McpCommand(_SimpleCommand):

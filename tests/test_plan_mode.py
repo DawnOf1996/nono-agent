@@ -18,6 +18,12 @@ class TestPlanModeTools:
         tool = EnterPlanModeTool()
         result = await tool.execute({}, ctx)
         assert not result.is_error
+        assert ctx.policy.mode is PermissionMode.DEFAULT
+        assert ctx.policy.pending_mode is PermissionMode.PLAN
+        assert ctx.policy.commit_pending() == (
+            PermissionMode.DEFAULT,
+            PermissionMode.PLAN,
+        )
         assert ctx.policy.mode is PermissionMode.PLAN
 
     @pytest.mark.asyncio
@@ -26,6 +32,12 @@ class TestPlanModeTools:
         tool = ExitPlanModeTool()
         result = await tool.execute({}, ctx)
         assert not result.is_error
+        assert ctx.policy.mode is PermissionMode.PLAN
+        assert ctx.policy.pending_mode is PermissionMode.DEFAULT
+        assert ctx.policy.commit_pending() == (
+            PermissionMode.PLAN,
+            PermissionMode.DEFAULT,
+        )
         assert ctx.policy.mode is PermissionMode.DEFAULT
 
     @pytest.mark.asyncio

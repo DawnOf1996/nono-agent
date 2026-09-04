@@ -74,10 +74,13 @@ config = EngineConfig(
 # 交互式对话
 uv run python -m nono_agent.adapters.cli chat
 
+# 指定工作目录（工具沙箱 / 向上查找项目 .nono-agent/config.yaml）
+uv run python -m nono_agent.adapters.cli chat --cwd D:\WorkSpace\Projects\SomeProject
+
 # 单条消息（非交互）
 uv run python -m nono_agent.adapters.cli chat -m "你好" --model MiniMax-M3
 
-# 恢复历史会话
+# 恢复历史会话（cwd 以该会话 .header.json 为准，不必再传 --cwd）
 uv run python -m nono_agent.adapters.cli chat --resume <session_id>
 
 # 列出本地已保存的会话
@@ -85,6 +88,10 @@ uv run python -m nono_agent.adapters.cli sessions
 ```
 
 CLI 参数：`--model` / `--provider` / `--cwd` / `--resume` / `--message|-m` / `--config|-c` / `--verbose|-v`。
+
+`--cwd` 优先于环境变量 `NONO_CWD`，都未设置时为当前目录 `.`。用户级 `~/.nono-agent/config.yaml` 与 `credentials` 不受 `--cwd` 影响。
+
+`--resume` 接续已有会话时，**以该会话的 `.header.json` 为约束**：`cwd` 为绝对路径（不会存 `.`），`permission_mode` 为最后一次 `/permission`（或 plan 工具）**请求**的目标值（即使尚未跑过下一 turn/step），以及 `agent_preset_id` 覆盖本次 CLI 的 `--cwd` / `NONO_CWD`；项目 YAML、沙箱、skills/rules、权限模式都按 header 加载。不必再手动指定 `--cwd`。会话 ID 直接作为本次引擎 `session_id`，不会另开一条空会话。
 
 ### 2.3 Server（HTTP + SSE）
 
@@ -114,12 +121,15 @@ curl -N http://localhost:8000/session/<session_id>/events
 ```
 
 服务端可选能力（`create_server_app(..., api_key=..., session_ttl=...)`）：
+
 - **鉴权**：设置 `api_key` 后，除 `/health` 外需 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
 - **会话 TTL**：`session_ttl`（秒）空闲超时后台清理。
 - **AskUser SSE**：流中收到 `ask_user` 事件后，用 `POST /session/<id>/answer` 回填 `{"answers": {...}}`。
 - **事件流通道**：`GET /session/<id>/events` 跟随会话事件（`after_seq` 断点续传、`follow=false` 只取快照）。
 
 ---
+
+
 
 ## 3. 配置（外部化，禁止硬编码密钥）
 
@@ -133,7 +143,7 @@ CLI 的 LLM 配置是**命名供应商目录**，不是扁平的单模型 JSON�
 - 项目级：`.nono-agent/config.yaml`（从 cwd 向上查找）
 - Overlay：CLI `--config` 指向的一层 YAML（测试 / 一次性覆盖）
 
-优先级：**CLI `--provider` / `--model` > `--config` overlay > 项目 YAML > 用户 YAML**。
+优先级：**CLI** `--provider` **/** `--model` **>** `--config` **overlay > 项目 YAML > 用户 YAML**。
 
 合并规则：`agent_default_model` 整段覆盖；`llm_provider.providers` 按 provider id 深合并；`models` 按 model id 合并。
 
@@ -171,13 +181,17 @@ NONO_A_API_KEY=sk-...
 
 YAML 中的 `api_key_env` 由供应商 id 稳定生成（`a` → `NONO_A_API_KEY`），不要改成随机名，否则旧凭据会对不上。进程环境变量若已设置则优先于该文件（便于 CI 覆盖）。
 
-| 变量 | 用途 |
-|------|------|
-| `NONO_A_API_KEY` 等（YAML 里的 `api_key_env`） | 对应供应商的 API Key（也可改写 credentials） |
-| `NONO_MODEL` / `NONO_CWD` | 覆盖默认模型 id / 工作目录 |
-| `NONO_SEARCH_URL` / `NONO_SEARCH_API_KEY` | `web_search` 工具端点 |
-| `NONO_LSP_COMMAND` / `NONO_LSP_ARGS`（逗号分隔） | `lsp` 工具的语言服务器 |
-| `NONO_PERMISSION_MODE` | 权限模式 flag 覆盖（`default/accept_edits/plan/bypass`） |
+
+| 变量                                         | 用途                                               |
+| ------------------------------------------ | ------------------------------------------------ |
+| `NONO_A_API_KEY` 等（YAML 里的 `api_key_env`）  | 对应供应商的 API Key（也可改写 credentials）                 |
+| `NONO_MODEL` / `NONO_CWD`                  | 覆盖默认模型 id / 工作目录                                 |
+| `NONO_SEARCH_URL` / `NONO_SEARCH_API_KEY`  | `web_search` 工具端点                                |
+| `NONO_LSP_COMMAND` / `NONO_LSP_ARGS`（逗号分隔） | `lsp` 工具的语言服务器                                   |
+| `NONO_PERMISSION_MODE`                     | 权限模式 flag 覆盖（`default/accept_edits/plan/bypass`） |
+
+
+
 
 ### 3.3 首次运行引导页
 
@@ -200,6 +214,8 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 └── agents/            # 用户全局子 Agent
 ```
 
+
+
 ### 3.4 项目侧约定目录 `.nono-agent/`
 
 ```
@@ -216,11 +232,14 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
 ---
 
+
+
 ## 4. 内置工具（22 个）
 
 `create_builtin_tools()` 返回：`bash`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`list_directory`、`lsp`、`web_fetch`、`web_search`、`tool_search`、`ask_user_question`、`todo_write`、`enter_plan_mode`、`exit_plan_mode`、`enter_worktree`、`exit_worktree`、`task_create`、`task_list`、`task_get`、`task_update`、`task_stop`。
 
 要点：
+
 - 文件工具遵守路径沙箱（`PathSandbox`）与 `.gitignore`/`.nonoignore`（`IgnoreMatcher`）。
 - `web_fetch`/`web_search` 有 SSRF 防护（拒绝私网/回环/链路本地/云元数据）。
 - `bash` 有危险命令分类（`rm -rf`/`mkfs`/`sudo`/fork bomb 等）与超时/截断/abort 联动。
@@ -228,15 +247,19 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
 ---
 
+
+
 ## 5. Slash 命令（REPL 内以 `/` 开头）
 
 `/help` `/model` `/tokens` `/context` `/clear` `/compact` `/rules` `/skills` `/permission` `/mcp` `/plugins` `/memory` `/hooks`。
 
 `/model` 打印当前 `provider / display_name + model id (name)` 以及目录列表；本轮不支持热切换，换模型请重启并加 `--provider` / `--model`。
 
-示例：`/permission plan`（进入计划模式）、`/skills disable <name>`、`/compact`（手动压缩上下文）。
+示例：`/permission plan`（请求进入计划模式，下一次 turn 或 step 生效）、`/skills disable <name>`、`/compact`（手动压缩上下文）。
 
 ---
+
+
 
 ## 6. 扩展面速查
 
@@ -249,6 +272,8 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
 ---
 
+
+
 ## 7. 会话日志与可观测性
 
 会话日志是**事件溯源**的：引擎只向事件流追加 `SessionEvent`，落盘内容只有事件，消息数组由 `derive_messages()` 推导。默认后端是本地 JSONL，无需任何配置即启用。
@@ -257,14 +282,16 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
 ```
 ~/.nono-agent/sessions/<session_id>.jsonl         # 每行一个 SessionEvent（append-only）
-~/.nono-agent/sessions/<session_id>.header.json   # SessionHeader（含 format_version）
+~/.nono-agent/sessions/<session_id>.header.json   # SessionHeader（format_version / cwd / summary / permission_mode）
 ~/.nono-agent/memory/<memory_id>.json             # 跨会话记忆记录
 ```
+
+`SessionHeader.summary` 是用户**第一句话**的前 20 个字符，首轮写入后不再覆盖，便于 `sessions` 命令和 session-viewer 扫一眼对话在干什么。
 
 事件流逐字保留提示词、工具输出与请求配置，因此文件按 `0600`、目录按 `0700` 落盘。外发副本（导出、SSE 推送）走 `redact_events()` 脱敏，见 §7.4。
 
 ```bash
-# 列出本地会话（session id + 事件数）
+# 列出本地会话（session id + 事件数 + 摘要 + cwd）
 uv run python -m nono_agent.adapters.cli sessions
 
 # 直接看某一轮到底发生了什么
@@ -274,22 +301,26 @@ cat ~/.nono-agent/sessions/<session_id>.jsonl | jq -c '{seq, type}'
 cat ~/.nono-agent/sessions/<session_id>.jsonl | jq 'select(.type=="request/header") | .data.header'
 ```
 
-共 17 个事件类型，权威清单是 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`。写出时机、顺序与每条 `data` 的示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。
+共 19 个事件类型，权威清单是 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`。写出时机、顺序与每条 `data` 的示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。
 
-| 类型 | 回答的问题 |
-|------|-----------|
-| `turn/start`、`turn/end` | 一次 `submit_message` 的边界与结束原因 |
-| `step/start`、`step/end` | 一轮里做了几次 LLM 请求、每次为什么结束 |
-| `request/header` | 模型当时被告诉了什么（提供商/协议/上下文大小 + system prompt + 工具） |
-| `user/input` | 用户这一句的原始输入（原话，供审计，不参与重建） |
-| `user/message`、`assistant/message` | 对话本身（组装好的用户信息 + 含 tool_use blocks 的回复） |
-| `assistant/chunk` | 逐 token 增量，用于不调模型重放 UI |
-| `tool/call`、`tool/result` | 调了什么工具、拿到什么结果 |
-| `compact/boundary` | 上下文在哪里被压缩/清空，压缩后保留了什么 |
-| `api/retry` | 重试与 fallback 切换 |
-| `permission/denial` | 被权限规则拦下的操作（审计资产） |
-| `memory/write`、`memory/retrieve` | 写了哪条记忆、检索命中了什么、是否采用 |
-| `usage` | 每步的 token 与模型 |
+
+| 类型                                 | 回答的问题                                         |
+| ---------------------------------- | --------------------------------------------- |
+| `turn/start`、`turn/end`            | 一次 `submit_message` 的边界与结束原因                  |
+| `step/start`、`step/end`            | 一轮里做了几次 LLM 请求、每次为什么结束                        |
+| `request/header`                   | 模型当时被告诉了什么（提供商/协议/上下文大小 + system prompt + 工具） |
+| `user/input`                       | 用户这一句的原始输入（原话，供审计，不参与重建）                      |
+| `user/message`、`assistant/message` | 对话本身（组装好的用户信息 + 含 tool_use blocks 的回复）        |
+| `assistant/chunk`                  | 逐 token 增量，用于不调模型重放 UI                        |
+| `tool/call`、`tool/result`          | 调了什么工具、拿到什么结果                                 |
+| `compact/boundary`                 | 上下文在哪里被压缩/清空，压缩后保留了什么                         |
+| `api/retry`                        | 重试与 fallback 切换                               |
+| `permission/denial`                | 被权限规则拦下的操作（审计资产）                              |
+| `permission/onchange`              | 用户请求切换权限模式（立刻记录，可出现在任意位置）                    |
+| `permission/changed`               | 新权限模式在下一次 turn 或 step 生效                               |
+| `memory/write`、`memory/retrieve`   | 写了哪条记忆、检索命中了什么、是否采用                           |
+| `usage`                            | 每步的 token 与模型                                 |
+
 
 ```bash
 # 一轮里做了几次请求、每次为什么结束
@@ -368,12 +399,16 @@ curl "http://localhost:8000/session/<sid>/events?follow=false"
 
 - **每轮汇总**：`SDKResultMessage.usage` / `model_usage`；CLI 每轮结束打印，REPL 里 `/tokens` 查累计、`/context` 查当前消息数。
 - **下钻到步**：`engine.token_tracker.get_step_usages()`，或直接读事件流里的 `usage` 事件（带 `model`）。
-- **指标**：`nono_agent/observability/metrics.py`，默认内存实现，`get_metrics_recorder().snapshot()` 取快照；可 `set_metrics_recorder()` 换 OTel/Prometheus。事件流会自动投影为指标 —— 每个事件计入 `session.events`（带 `event` 标签），关键事件另计入 `session.turns`/`session.steps`/`tool.executions`/`api.errors`/`compact.operations`/`permission.denials`/`memory.*`，全部带 `session_id`。
+- **指标**：`nono_agent/observability/metrics.py`，默认内存实现，`get_metrics_recorder().snapshot()` 取快照；可 `set_metrics_recorder()` 换 OTel/Prometheus。事件流会自动投影为指标 —— 每个事件计入 `session.events`（带 `event` 标签），关键事件另计入 `session.turns`/`session.steps`/`tool.executions`/`api.errors`/`compact.operations`/`permission.denials`/`memory.`*，全部带 `session_id`。
 - **结构化日志**：`observability/logging.py`（structlog），输出到 stderr，Server 模式可 JSON。
 
 ---
 
+
+
 ## 8. 测试
+
+
 
 ### 8.1 一键跑全套
 
@@ -402,26 +437,33 @@ async with engine:
 ```
 
 要点：
+
 - `MockProvider(responses=[...])` 按序返回脚本化响应，`calls` 记录每次调用参数（可断言 system_prompt/tools/model）。
 - 需要回退测试时，继承 `MockProvider` 抛 `FallbackTriggeredError`（见 `tests/test_fallback.py`）。
 - 结构化输出测试用 `json_schema` 配置 + 返回 JSON 文本（见 `tests/test_structured_output.py`）。
 
+
+
 ### 8.3 各模块测试入口
 
-| 测试文件 | 覆盖 |
-|----------|------|
-| `test_permissions.py` | PermissionMode/PermissionRule/沙箱/Ignore/Bash 分类/denial |
-| `test_builtin_tools.py` | 22 个内置工具 + 工厂 |
-| `test_mcp.py` | MCP stdio 客户端（mock 服务器） |
-| `test_lsp.py` | LSP 客户端（mock 语言服务器） |
-| `test_agents.py` / `test_skills.py` / `test_plugins.py` / `test_rules.py` | 扩展面 |
-| `test_server.py` | Server 鉴权/AskUser 端点/事件流 SSE 通道 |
-| `test_budget.py` / `test_fallback.py` / `test_pipeline.py` | 引擎边界 |
-| `test_transcript_events.py` / `test_session_events.py` / `test_engine_events.py` | 事件流后端 / derive 折叠 / 引擎事件发射 |
-| `test_event_coverage.py` | 17 个事件类型逐个有真实发射路径 + 管线 compact/boundary + 指标投影 |
-| `test_session_invariant.py` | 一致性门禁（strict/warn/off）+ 管线深拷贝 + 接续已有事件流 |
-| `test_session_redact.py` / `test_session_replay.py` | 脱敏投影 / 不调模型回放 |
-| `test_checkpoint.py` / `test_memory.py` | 持久化 |
+
+| 测试文件                                                                             | 覆盖                                                     |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `test_permissions.py`                                                            | PermissionMode/PermissionRule/沙箱/Ignore/Bash 分类/denial |
+| `test_builtin_tools.py`                                                          | 22 个内置工具 + 工厂                                          |
+| `test_mcp.py`                                                                    | MCP stdio 客户端（mock 服务器）                                |
+| `test_lsp.py`                                                                    | LSP 客户端（mock 语言服务器）                                    |
+| `test_agents.py` / `test_skills.py` / `test_plugins.py` / `test_rules.py`        | 扩展面                                                    |
+| `test_server.py`                                                                 | Server 鉴权/AskUser 端点/事件流 SSE 通道                        |
+| `test_budget.py` / `test_fallback.py` / `test_pipeline.py`                       | 引擎边界                                                   |
+| `test_transcript_events.py` / `test_session_events.py` / `test_engine_events.py` | 事件流后端 / derive 折叠 / 引擎事件发射                             |
+| `test_event_coverage.py`                                                         | 19 个事件类型逐个有真实发射路径 + 管线 compact/boundary + 指标投影         |
+| `test_session_invariant.py`                                                      | 一致性门禁（strict/warn/off）+ 管线深拷贝 + 接续已有事件流                |
+| `test_session_redact.py` / `test_session_replay.py`                              | 脱敏投影 / 不调模型回放                                          |
+| `test_checkpoint.py` / `test_memory.py`                                          | 持久化                                                    |
+
+
+
 
 ### 8.4 无外部依赖的 mock 技巧
 
@@ -430,6 +472,8 @@ async with engine:
 - 网络工具只测纯函数（`is_url_blocked`），不发起真实请求。
 
 ---
+
+
 
 ## 9. 包结构速览
 
