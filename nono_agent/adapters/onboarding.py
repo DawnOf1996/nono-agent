@@ -121,7 +121,7 @@ def run_onboarding(console: Any) -> tuple[LlmCatalog, str]:
         border_style="blue",
     ))
 
-    provider_id = console.input("[yellow]① 供应商 id：[/yellow] ").strip()
+    provider_id = console.input("[yellow]① 供应商 id(如openai)：[/yellow] ").strip()
     while not provider_id:
         provider_id = console.input(
             "[yellow]供应商 id 不能为空，请重新输入：[/yellow] "
