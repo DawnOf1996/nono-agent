@@ -604,11 +604,29 @@ async function loadSessionList() {
   }
 }
 
+const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
+
+function looksLikeZstd(buffer, filename) {
+  if (filename && /\.jsonl\.zst$/i.test(filename)) return true;
+  if (!buffer || buffer.byteLength < 4) return false;
+  const bytes = new Uint8Array(buffer, 0, 4);
+  return bytes[0] === ZSTD_MAGIC[0] && bytes[1] === ZSTD_MAGIC[1]
+    && bytes[2] === ZSTD_MAGIC[2] && bytes[3] === ZSTD_MAGIC[3];
+}
+
 function handleFile(file) {
   const reader = new FileReader();
-  reader.onload = () => loadFromText(String(reader.result), null, null);
+  reader.onload = () => {
+    const buffer = reader.result;
+    if (looksLikeZstd(buffer, file.name)) {
+      showToast("压缩会话（.jsonl.zst）请用上方 session_id 从服务端加载；离线拖入仅支持明文 JSONL。");
+      return;
+    }
+    const text = new TextDecoder("utf-8").decode(buffer);
+    loadFromText(text, null, null);
+  };
   reader.onerror = () => showToast("读取文件失败");
-  reader.readAsText(file);
+  reader.readAsArrayBuffer(file);
 }
 
 /* 拖拽载入离线文件 */

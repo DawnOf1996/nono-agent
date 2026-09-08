@@ -7,8 +7,8 @@ append-only 的 `SessionEvent` 事件流按 `turn` → `step` → 消息/工具/
 
 ## 能力
 
-- **给定 `session_id` 加载**：从 `~/.nono-agent/sessions/<id>.jsonl` 读取（后端提供 API）。
-- **离线会话文件**：直接把 `<sid>.jsonl` 拖进页面，或点「打开离线文件」选择；解析全在浏览器内完成。
+- **给定 `session_id` 加载**：从 `~/.nono-agent/sessions/<id>.jsonl.zst`（或旧的明文 `.jsonl`）读取（后端解压并提供 API）。
+- **离线会话文件**：直接把明文 `<sid>.jsonl` 拖进页面，或点「打开离线文件」选择；解析全在浏览器内完成。压缩后的 `.jsonl.zst` 请用 `session_id` 走服务端加载。
 - **轨迹 Timeline 视图**：`turn/start → user/input → memory/retrieve → step/start →
   user/message → request/header → assistant/* → tool/call → tool/result → usage →
   step/end → turn/end` 的分层结构，含相对时间、结束原因、聚合后的流式 chunk。
@@ -19,8 +19,8 @@ append-only 的 `SessionEvent` 事件流按 `turn` → `step` → 消息/工具/
 
 ## 运行（用 uv 管理虚拟环境）
 
-本项目是自包含的：自带 `pyproject.toml`，用 `uv` 管理虚拟环境，只依赖 `fastapi` +
-`uvicorn`，**不依赖** nono-agent 根仓库的包（读取会话目录的逻辑已在 `server.py`
+本项目是自包含的：自带 `pyproject.toml`，用 `uv` 管理虚拟环境，依赖 `fastapi` +
+`uvicorn` + `zstandard`（解压 `.jsonl.zst`），**不依赖** nono-agent 根仓库的包（读取会话目录的逻辑已在 `server.py`
 里内联，无需安装 anthropic/openai/rich 等重依赖）。
 
 两种 uv 用法，任选其一：

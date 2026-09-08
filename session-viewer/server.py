@@ -10,8 +10,8 @@
     uv run python server.py
     # 然后打开 http://127.0.0.1:8765
 
-前端既能按 ``session_id`` 从本服务拉取会话，也能拖入/选择一个离线的
-``<sid>.jsonl`` 文件，全部解析与渲染都在浏览器内完成。
+前端既能按 ``session_id`` 从本服务拉取会话（服务端解压 ``.jsonl.zst``），
+也能拖入/选择一个离线的明文 ``<sid>.jsonl`` 文件，解析与渲染都在浏览器内完成。
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 
+import zstandard as zstd
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +30,10 @@ STATIC_DIR = BASE_DIR / "static"
 
 # 默认会话目录（nono-agent 的事件流落盘位置）
 DEFAULT_SESSION_DIR = Path.home() / ".nono-agent" / "sessions"
+
+JSONL_SUFFIX = ".jsonl"
+JSONL_ZSTD_SUFFIX = ".jsonl.zst"
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 app = FastAPI(title="Nono Agent Session Viewer", version="0.1.0")
 
@@ -51,17 +56,61 @@ def _read_header(session_id: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _read_events(session_id: str) -> list[dict]:
-    """逐行读取事件流，跳过写入中断产生的残行，返回原始事件字典列表。"""
-    session_file = _session_dir() / f"{session_id}.jsonl"
-    if not session_file.is_file():
-        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+def _session_id_from_path(path: Path) -> str:
+    """从 ``.jsonl`` / ``.jsonl.zst`` 文件名取出 session_id。"""
+    name = path.name
+    if name.endswith(JSONL_ZSTD_SUFFIX):
+        return name[: -len(JSONL_ZSTD_SUFFIX)]
+    if name.endswith(JSONL_SUFFIX):
+        return name[: -len(JSONL_SUFFIX)]
+    return path.stem
 
-    try:
-        text = session_file.read_text(encoding="utf-8")
-    except OSError as exc:  # 权限/IO 错误
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+def _existing_session_file(session_id: str, session_dir: Path | None = None) -> Path | None:
+    """明文 ``.jsonl`` 优先，否则 ``.jsonl.zst``。"""
+    directory = session_dir or _session_dir()
+    jsonl = directory / f"{session_id}{JSONL_SUFFIX}"
+    zst = directory / f"{session_id}{JSONL_ZSTD_SUFFIX}"
+    if jsonl.is_file():
+        return jsonl
+    if zst.is_file():
+        return zst
+    return None
+
+
+def _decompress_zstd_frames(data: bytes) -> bytes:
+    """解压拼接的 zstd 独立帧；截断的最后一帧跳过。与 transcript.py 保持同语义。"""
+    dctx = zstd.ZstdDecompressor()
+    chunks: list[bytes] = []
+    remaining = data
+    while remaining.startswith(ZSTD_MAGIC):
+        dobj = dctx.decompressobj()
+        try:
+            chunk = dobj.decompress(remaining)
+            tail = dobj.flush()
+        except zstd.ZstdError:
+            break
+        chunks.append(chunk)
+        if tail:
+            chunks.append(tail)
+        unused = dobj.unused_data
+        if not unused or unused == remaining:
+            break
+        remaining = unused
+    return b"".join(chunks)
+
+
+def _decode_transcript(path: Path) -> str:
+    """读取事件流并解码为 JSONL 文本（兼容明文与 zstd）。"""
+    data = path.read_bytes()
+    if not data:
+        return ""
+    if data.startswith(ZSTD_MAGIC):
+        return _decompress_zstd_frames(data).decode("utf-8")
+    return data.decode("utf-8")
+
+
+def _parse_events(text: str) -> list[dict]:
     events: list[dict] = []
     for line in text.splitlines():
         line = line.strip()
@@ -76,6 +125,17 @@ def _read_events(session_id: str) -> list[dict]:
     return events
 
 
+def _read_events(session_id: str) -> list[dict]:
+    """逐行读取事件流，跳过写入中断产生的残行，返回原始事件字典列表。"""
+    session_file = _existing_session_file(session_id)
+    if session_file is None:
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+    try:
+        return _parse_events(_decode_transcript(session_file))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 def _list_sessions(session_dir: Path | None = None) -> list[dict]:
     """列出会话目录下的事件流文件（id + 事件数 + 最后修改时间 + 元信息）。"""
     directory = session_dir or _session_dir()
@@ -83,18 +143,31 @@ def _list_sessions(session_dir: Path | None = None) -> list[dict]:
         return []
 
     sessions: list[dict] = []
-    for file in sorted(directory.glob("*.jsonl")):
+    seen: set[str] = set()
+    files: list[Path] = []
+    for pattern in (f"*{JSONL_SUFFIX}", f"*{JSONL_ZSTD_SUFFIX}"):
+        for file in sorted(directory.glob(pattern)):
+            session_id = _session_id_from_path(file)
+            if session_id in seen:
+                continue
+            seen.add(session_id)
+            files.append(file)
+
+    for file in files:
         try:
-            line_count = sum(1 for line in file.open(encoding="utf-8") if line.strip())
-        except OSError:
+            line_count = sum(
+                1 for line in _decode_transcript(file).splitlines() if line.strip()
+            )
+        except (OSError, UnicodeDecodeError):
             line_count = 0
         sessions.append(
             {
-                "session_id": file.stem,
+                "session_id": _session_id_from_path(file),
                 "event_count": line_count,
                 "last_modified": file.stat().st_mtime,
             }
         )
+    sessions.sort(key=lambda item: str(item["session_id"]))
     return sessions
 
 

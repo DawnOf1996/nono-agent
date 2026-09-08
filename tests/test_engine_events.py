@@ -22,6 +22,7 @@ from nono_agent.session.events import (
     EVENT_USAGE,
     EVENT_USER_MESSAGE,
 )
+from nono_agent.session.transcript import JSONL_ZSTD_SUFFIX, ZSTD_MAGIC, decode_transcript_bytes
 
 
 async def _collect(engine):
@@ -66,11 +67,14 @@ async def test_default_writer_is_local_file_event_stream(tmp_path):
 
     writer = engine.transcript_writer
     assert isinstance(writer, LocalFileTranscriptWriter)
-    assert writer.session_file.suffix == ".jsonl"
+    assert writer.session_file.name.endswith(JSONL_ZSTD_SUFFIX)
+    assert writer.session_file.read_bytes().startswith(ZSTD_MAGIC)
 
-    # 每一行都是事件信封，没有任何消息副本
+    # 解压后每一行都是事件信封，没有任何消息副本
     lines = [
-        line for line in writer.session_file.read_text(encoding="utf-8").splitlines() if line
+        line
+        for line in decode_transcript_bytes(writer.session_file.read_bytes()).splitlines()
+        if line
     ]
     assert lines
     events = await writer.read_events()

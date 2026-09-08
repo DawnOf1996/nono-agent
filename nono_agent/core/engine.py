@@ -846,11 +846,20 @@ class QueryEngine:
         record_event_metric(type_, data, session_id=self._session_id)
 
     async def _flush_events(self) -> None:
-        """按序把待写事件 append 到事件流。"""
-        if self._transcript_writer is None:
+        """按序把待写事件 append 到事件流。
+
+        整批交给 ``append_events``，JSONL 后端可以把多行打进同一 zstd 帧。
+        失败时把本批放回队列头部，避免 await 期间新入队的事件被丢掉或重排。
+        """
+        if self._transcript_writer is None or not self._pending_events:
             return
-        while self._pending_events:
-            await self._transcript_writer.append_event(self._pending_events.pop(0))
+        batch = self._pending_events
+        self._pending_events = []
+        try:
+            await self._transcript_writer.append_events(batch)
+        except BaseException:
+            self._pending_events = list(batch) + self._pending_events
+            raise
 
     async def _verify_log_matches_state(self) -> None:
         """请求前一致性门禁 —— 校验事件流能重建出当前运行时消息状态。
@@ -1048,7 +1057,7 @@ class QueryEngine:
 
     @staticmethod
     def _create_writer_for(session_id: str) -> LocalFileTranscriptWriter:
-        """为指定 session_id 创建默认本地事件流写入器（JSONL 每行一个事件）。"""
+        """为指定 session_id 创建默认本地事件流写入器（JSONL / zstd）。"""
         return LocalFileTranscriptWriter(DEFAULT_SESSION_DIR / f"{session_id}.jsonl")
 
     def _restore_turn_count(self, events: list[SessionEvent]) -> None:

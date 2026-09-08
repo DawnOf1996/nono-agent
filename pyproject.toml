@@ -20,6 +20,7 @@ dependencies = [
     "sse-starlette>=2.0",
     "aiofiles>=24.0",
     "pyyaml>=6.0",
+    "zstandard>=0.23",
 ]
 
 [project.optional-dependencies]

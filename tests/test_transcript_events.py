@@ -125,7 +125,7 @@ class TestLocalFileSpecifics:
     @pytest.mark.asyncio
     async def test_truncated_line_skipped(self, tmp_path):
         path = tmp_path / "session.jsonl"
-        w = LocalFileTranscriptWriter(path)
+        w = LocalFileTranscriptWriter(path, compress=False)
         await w.append_event(SessionEvent.make(0, EVENT_USER_MESSAGE, content="hi"))
         with path.open("a", encoding="utf-8") as f:
             f.write('{"seq": 2, "type": "user/mes\n')  # 写入中断的残行
@@ -253,3 +253,129 @@ class TestListSessionFiles:
 
     def test_empty(self, tmp_path):
         assert list_session_files(tmp_path / "nonexistent") == []
+
+
+class TestLocalFileZstd:
+    @pytest.mark.asyncio
+    async def test_new_session_writes_zst(self, tmp_path):
+        from nono_agent.session.transcript import JSONL_ZSTD_SUFFIX, ZSTD_MAGIC
+
+        w = LocalFileTranscriptWriter(tmp_path / "s.jsonl")
+        await w.append_event(SessionEvent.make(0, EVENT_USER_MESSAGE, content="hi"))
+        assert w.compressed
+        assert w.session_file.name.endswith(JSONL_ZSTD_SUFFIX)
+        raw = w.session_file.read_bytes()
+        assert raw.startswith(ZSTD_MAGIC)
+        events = await w.read_events()
+        assert events[0].data["content"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_legacy_jsonl_stays_uncompressed_when_disabled(self, tmp_path):
+        path = tmp_path / "old.jsonl"
+        first = LocalFileTranscriptWriter(path, compress=False)
+        await first.append_event(SessionEvent.make(0, EVENT_USER_MESSAGE, content="one"))
+
+        second = LocalFileTranscriptWriter(path, compress=False)
+        assert not second.compressed
+        assert second.session_file == path
+        await second.append_event(SessionEvent.make(0, EVENT_USER_MESSAGE, content="two"))
+        text = path.read_text(encoding="utf-8")
+        assert '"content":"one"' in text
+        assert '"content":"two"' in text
+        events = await second.read_events()
+        assert [e.data["content"] for e in events] == ["one", "two"]
+
+    @pytest.mark.asyncio
+    async def test_resume_migrates_jsonl_to_zst(self, tmp_path):
+        from nono_agent.session.transcript import JSONL_ZSTD_SUFFIX, ZSTD_MAGIC
+
+        path = tmp_path / "old.jsonl"
+        first = LocalFileTranscriptWriter(path, compress=False)
+        await first.append_event(SessionEvent.make(0, EVENT_USER_MESSAGE, content="one"))
+
+        resumed = LocalFileTranscriptWriter(path)
+        before = await resumed.read_events()
+        assert [e.data["content"] for e in before] == ["one"]
+        assert path.is_file()
+
+        appended = await resumed.append_event(
+            SessionEvent.make(0, EVENT_USER_MESSAGE, content="two")
+        )
+        assert appended.seq == 2
+        assert resumed.compressed
+        assert resumed.session_file.name.endswith(JSONL_ZSTD_SUFFIX)
+        assert resumed.session_file.read_bytes().startswith(ZSTD_MAGIC)
+        assert not path.exists()
+        events = await resumed.read_events()
+        assert [e.data["content"] for e in events] == ["one", "two"]
+        assert [e.seq for e in events] == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_seq_continues_after_reopen_zst(self, tmp_path):
+        path = tmp_path / "session.jsonl"
+        first = LocalFileTranscriptWriter(path)
+        for ev in _events():
+            await first.append_event(ev)
+
+        second = LocalFileTranscriptWriter(path)
+        appended = await second.append_event(
+            SessionEvent.make(0, EVENT_USER_MESSAGE, content="again")
+        )
+        assert appended.seq == 4
+        assert [e.seq for e in await second.read_events()] == [1, 2, 3, 4]
+        assert second.session_file == first.session_file
+
+    @pytest.mark.asyncio
+    async def test_truncated_zstd_frame_skipped(self, tmp_path):
+        from nono_agent.session.transcript import ZSTD_MAGIC
+
+        w = LocalFileTranscriptWriter(tmp_path / "s.jsonl")
+        await w.append_event(SessionEvent.make(0, EVENT_USER_MESSAGE, content="ok"))
+        with w.session_file.open("ab") as f:
+            f.write(ZSTD_MAGIC + b"\x00\x01truncated-frame")
+        events = await w.read_events()
+        assert [e.data["content"] for e in events] == ["ok"]
+
+    @pytest.mark.asyncio
+    async def test_append_events_one_frame(self, tmp_path):
+        from nono_agent.session.transcript import ZSTD_MAGIC
+
+        w = LocalFileTranscriptWriter(tmp_path / "s.jsonl")
+        await w.append_events(_events())
+        raw = w.session_file.read_bytes()
+        assert raw.count(ZSTD_MAGIC) == 1
+        assert [e.seq for e in await w.read_events()] == [1, 2, 3]
+
+    @pytest.mark.asyncio
+    async def test_compression_shrinks_repetitive_payload(self, tmp_path):
+        blob = ("lorem ipsum dolor sit amet " * 80).strip()
+        zst = LocalFileTranscriptWriter(tmp_path / "a.jsonl")
+        plain = LocalFileTranscriptWriter(tmp_path / "b.jsonl", compress=False)
+        for writer in (zst, plain):
+            await writer.append_event(
+                SessionEvent.make(0, EVENT_ASSISTANT_MESSAGE, content=blob)
+            )
+        assert zst.session_file.stat().st_size < plain.session_file.stat().st_size
+        assert (await zst.read_events())[0].data["content"] == blob
+
+    @pytest.mark.asyncio
+    async def test_list_counts_zst_and_does_not_double_count(self, tmp_path):
+        zst = LocalFileTranscriptWriter(tmp_path / "a.jsonl")
+        await zst.append_event(SessionEvent.make(0, EVENT_USER_MESSAGE, content="hi"))
+        await zst.append_event(SessionEvent.make(0, EVENT_USER_MESSAGE, content="hi"))
+        plain = LocalFileTranscriptWriter(tmp_path / "b.jsonl", compress=False)
+        await plain.append_event(SessionEvent.make(0, EVENT_USER_MESSAGE, content="x"))
+
+        sessions = list_session_files(tmp_path)
+        by_id = {item["session_id"]: item for item in sessions}
+        assert set(by_id) == {"a", "b"}
+        assert by_id["a"]["event_count"] == 2
+        assert by_id["b"]["event_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_header_beside_zst(self, tmp_path):
+        w = LocalFileTranscriptWriter(tmp_path / "abc.jsonl")
+        await w.write_header(make_header("abc"))
+        assert w.header_file.name == "abc.header.json"
+        assert w.session_file.name == "abc.jsonl.zst"
+        assert json.loads(w.header_file.read_text())["session_id"] == "abc"

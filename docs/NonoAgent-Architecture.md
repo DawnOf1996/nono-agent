@@ -446,7 +446,7 @@ TS 版使用三个独立数组（`mutableMessages`, `messages`, `messagesForQuer
         │
         ▼
 TranscriptWriter（协议）
-  ├─ LocalFile：~/.nono-agent/sessions/<sid>.jsonl  ← 每行一个 SessionEvent
+  ├─ LocalFile：~/.nono-agent/sessions/<sid>.jsonl.zst  ← 默认 zstd；旧 .jsonl 在 resume 首次追加时迁移
   │              ~/.nono-agent/sessions/<sid>.header.json ← SessionHeader（含格式版本）
   └─ SQLite：events 表 + session_header 表
         │

@@ -276,12 +276,13 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
 ## 7. 会话日志与可观测性
 
-会话日志是**事件溯源**的：引擎只向事件流追加 `SessionEvent`，落盘内容只有事件，消息数组由 `derive_messages()` 推导。默认后端是本地 JSONL，无需任何配置即启用。
+会话日志是**事件溯源**的：引擎只向事件流追加 `SessionEvent`，落盘内容只有事件，消息数组由 `derive_messages()` 推导。默认后端是本地 JSONL（新会话为 zstd 压缩的 `.jsonl.zst`），无需任何配置即启用。
 
 ### 7.1 事件流落在哪里
 
 ```
-~/.nono-agent/sessions/<session_id>.jsonl         # 每行一个 SessionEvent（append-only）
+~/.nono-agent/sessions/<session_id>.jsonl.zst     # 默认：每行一个 SessionEvent，zstd 独立帧可追加
+~/.nono-agent/sessions/<session_id>.jsonl         # 旧会话：未压缩 JSONL；resume 后第一次追加会迁成 .jsonl.zst
 ~/.nono-agent/sessions/<session_id>.header.json   # SessionHeader（format_version / cwd / summary / permission_mode）
 ~/.nono-agent/memory/<memory_id>.json             # 跨会话记忆记录
 ```
@@ -294,11 +295,11 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 # 列出本地会话（session id + 事件数 + 摘要 + cwd）
 uv run python -m nono_agent.adapters.cli sessions
 
-# 直接看某一轮到底发生了什么
-cat ~/.nono-agent/sessions/<session_id>.jsonl | jq -c '{seq, type}'
+# 直接看某一轮到底发生了什么（新会话是 .jsonl.zst；旧的明文 .jsonl 用 cat）
+zstdcat ~/.nono-agent/sessions/<session_id>.jsonl.zst | jq -c '{seq, type}'
 
 # 「模型当时被告诉了什么」——请求配置快照
-cat ~/.nono-agent/sessions/<session_id>.jsonl | jq 'select(.type=="request/header") | .data.header'
+zstdcat ~/.nono-agent/sessions/<session_id>.jsonl.zst | jq 'select(.type=="request/header") | .data.header'
 ```
 
 共 19 个事件类型，权威清单是 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`。写出时机、顺序与每条 `data` 的示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。
@@ -324,10 +325,10 @@ cat ~/.nono-agent/sessions/<session_id>.jsonl | jq 'select(.type=="request/heade
 
 ```bash
 # 一轮里做了几次请求、每次为什么结束
-cat ~/.nono-agent/sessions/<sid>.jsonl | jq -c 'select(.type=="step/end") | .data'
+zstdcat ~/.nono-agent/sessions/<sid>.jsonl.zst | jq -c 'select(.type=="step/end") | .data'
 
 # 上下文被压缩过几次、每次剩多少条消息
-cat ~/.nono-agent/sessions/<sid>.jsonl \
+zstdcat ~/.nono-agent/sessions/<sid>.jsonl.zst \
   | jq -c 'select(.type=="compact/boundary") | {strategy: .data.metadata.strategy, kept: (.data.kept|length)}'
 ```
 
@@ -369,6 +370,7 @@ EngineConfig(session_invariant="off")     # 不校验，省掉每次请求的一
 from nono_agent.session import LocalFileTranscriptWriter, redact_events, replay_sdk_messages
 
 events = await LocalFileTranscriptWriter("~/.nono-agent/sessions/s1.jsonl").read_events()
+# 传入 .jsonl 即可：已有明文文件可直接读；resume 后第一次追加会迁成 .jsonl.zst
 
 # 外发前脱敏（密钥/token/JWT/私钥块/敏感键名）；信封 seq 不变，仍可按序对齐
 safe = redact_events(events)

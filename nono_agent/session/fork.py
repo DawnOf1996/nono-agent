@@ -28,9 +28,9 @@ async def fork_transcript(
         new_session_id: 新会话 ID。
     """
     source_header = await source.read_header()
-    for event in await source.read_events():
-        if event.seq <= boundary_seq:
-            await target.append_event(event)
+    prefix = [event for event in await source.read_events() if event.seq <= boundary_seq]
+    if prefix:
+        await target.append_events(prefix)
     await target.write_header(
         make_header(
             new_session_id,

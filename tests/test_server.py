@@ -122,7 +122,7 @@ class TestSessionEventChannel:
         from nono_agent.session.events import EVENT_TOOL_RESULT
 
         secret = "sk-abcdefghijklmnopqrstuvwxyz012345"
-        self._write_session(
+        writer = self._write_session(
             tmp_path,
             monkeypatch,
             [(EVENT_TOOL_RESULT, {"call_id": "t1", "result": f"key={secret}"})],
@@ -133,8 +133,10 @@ class TestSessionEventChannel:
         assert secret not in body
         assert "redacted" in body
 
-        # 磁盘上的事件流仍然逐字真实
-        log = (tmp_path / "sessions" / "sid.jsonl").read_text(encoding="utf-8")
+        # 磁盘上的事件流仍然逐字真实（可能是 zstd 帧，按事件流解码）
+        from nono_agent.session.transcript import read_transcript_text
+
+        log = read_transcript_text(writer.session_file)
         assert secret in log
 
     def test_legacy_log_reports_error_event(self, tmp_path, monkeypatch):

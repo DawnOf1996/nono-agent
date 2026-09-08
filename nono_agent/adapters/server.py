@@ -28,6 +28,7 @@ from nono_agent.session.redact import redact_events
 from nono_agent.session.transcript import (
     DEFAULT_SESSION_DIR,
     LocalFileTranscriptWriter,
+    existing_transcript_path,
     peek_session_header,
 )
 from nono_agent.tools.context import PermissionChecker
@@ -473,8 +474,8 @@ def create_server_app(
         engine = sessions.get(session_id)
         if engine is not None and engine.transcript_writer is not None:
             return engine.transcript_writer
-        session_file = DEFAULT_SESSION_DIR / f"{session_id}.jsonl"
-        if not session_file.exists():
+        session_file = existing_transcript_path(DEFAULT_SESSION_DIR, session_id)
+        if session_file is None:
             raise HTTPException(status_code=404, detail="Session log not found")
         return LocalFileTranscriptWriter(session_file)
 

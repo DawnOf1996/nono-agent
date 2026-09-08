@@ -18,10 +18,10 @@
 
 `seq` 在该会话事件流内自增；`timestamp` 是毫秒。下文示例只写 `data`。
 
-查看顺序：
+查看顺序（新会话是 `.jsonl.zst`，用 `zstdcat`；旧的明文 `.jsonl` 用 `cat`）：
 
 ```bash
-jq -c '{seq, type}' ~/.nono-agent/sessions/<sid>.jsonl
+zstdcat ~/.nono-agent/sessions/<sid>.jsonl.zst | jq -c '{seq, type}'
 
 {"seq":1,"type":"turn/start"}
 {"seq":2,"type":"user/input"}
@@ -650,21 +650,21 @@ RecoveryChain（如 `prompt_too_long`）：
 
 ```bash
 # 一轮里做了几次请求、每次为什么结束
-jq -c 'select(.type=="step/end") | .data' ~/.nono-agent/sessions/<sid>.jsonl
+zstdcat ~/.nono-agent/sessions/<sid>.jsonl.zst | jq -c 'select(.type=="step/end") | .data'
 
 # 模型当时的 system prompt / 工具
-jq 'select(.type=="request/header") | .data.header' ~/.nono-agent/sessions/<sid>.jsonl
+zstdcat ~/.nono-agent/sessions/<sid>.jsonl.zst | jq 'select(.type=="request/header") | .data.header'
 
 # 压缩过几次、每次剩多少条
-jq -c 'select(.type=="compact/boundary") | {strategy: .data.metadata.strategy, kept: (.data.kept|length)}' \
-  ~/.nono-agent/sessions/<sid>.jsonl
+zstdcat ~/.nono-agent/sessions/<sid>.jsonl.zst \
+  | jq -c 'select(.type=="compact/boundary") | {strategy: .data.metadata.strategy, kept: (.data.kept|length)}'
 
 # 权限拒绝
-jq 'select(.type=="permission/denial")' ~/.nono-agent/sessions/<sid>.jsonl
+zstdcat ~/.nono-agent/sessions/<sid>.jsonl.zst | jq 'select(.type=="permission/denial")'
 
 # 权限模式何时被请求、何时生效
-jq -c 'select(.type=="permission/onchange" or .type=="permission/changed") | {seq, type, data}' \
-  ~/.nono-agent/sessions/<sid>.jsonl
+zstdcat ~/.nono-agent/sessions/<sid>.jsonl.zst \
+  | jq -c 'select(.type=="permission/onchange" or .type=="permission/changed") | {seq, type, data}'
 ```
 
 实时通道（脱敏后推送，信封与磁盘相同）：`GET /session/<sid>/events`，见 [USAGE.md §7.5](./USAGE.md)。

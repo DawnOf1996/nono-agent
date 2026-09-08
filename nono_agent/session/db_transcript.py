@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -91,21 +92,32 @@ class SQLiteTranscriptWriter:
 
     async def append_event(self, event: SessionEvent) -> SessionEvent:
         """追加一条事件；seq 由数据库自增分配。"""
+        written = await self.append_events([event])
+        return written[0]
+
+    async def append_events(self, events: Sequence[SessionEvent]) -> list[SessionEvent]:
+        """按序追加一批事件，同一事务提交。"""
+        if not events:
+            return []
         conn = self._connection()
+        assigned: list[SessionEvent] = []
         with self._lock:
-            cur = conn.execute(
-                "INSERT INTO events (type, data, timestamp, ignorable) VALUES (?, ?, ?, ?)",
-                (
-                    event.type,
-                    json.dumps(event.data, ensure_ascii=False),
-                    event.timestamp,
-                    1 if event.ignorable else 0,
-                ),
-            )
+            for event in events:
+                cur = conn.execute(
+                    "INSERT INTO events (type, data, timestamp, ignorable) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        event.type,
+                        json.dumps(event.data, ensure_ascii=False),
+                        event.timestamp,
+                        1 if event.ignorable else 0,
+                    ),
+                )
+                if cur.lastrowid is not None:
+                    event.seq = cur.lastrowid
+                assigned.append(event)
             conn.commit()
-            if cur.lastrowid is not None:
-                event.seq = cur.lastrowid
-        return event
+        return assigned
 
     async def read_events(self) -> list[SessionEvent]:
         """读取全部事件（按 seq 升序），跳过 data 列损坏的行。"""

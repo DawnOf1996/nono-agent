@@ -1,6 +1,6 @@
 """Transcript Writer 工厂 —— 按配置创建事件流后端。
 
-支持 ``file``（JSONL 事件流，默认）与 ``sqlite``（events 表）两种后端，
+支持 ``file``（JSONL / zstd 事件流，默认）与 ``sqlite``（events 表）两种后端，
 便于 CLI/Server 切换。
 """
 
@@ -23,7 +23,7 @@ def create_transcript_writer(
 
     Args:
         kind: ``"file"``（JSONL 事件流）或 ``"sqlite"``（events 表）。
-        path: 事件流文件路径（JSONL 文件或 SQLite 文件）。
+        path: 事件流文件路径（JSONL / ``.jsonl.zst`` 或 SQLite 文件）。
 
     Returns:
         对应后端实例。

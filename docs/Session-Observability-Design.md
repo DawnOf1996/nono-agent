@@ -23,7 +23,7 @@
 |---------|------|------|---------|
 | `MessageStore` | `session/store.py` | 进程内当前上下文窗口；`snapshot_for_request()` 交给管线的是**深拷贝** | 按设计只存「当前窗口」；历史由事件流承载 |
 | `TranscriptWriter` 协议 | `session/transcript.py` | `append_event/read_events/read_events_from/write_header/read_header/flush` | 多进程并发写同一事件流未定义 |
-| `LocalFileTranscriptWriter` | 同上 | `<sid>.jsonl` 每行一个事件 + `<sid>.header.json`；0600 权限；重启后 seq 续接；残行跳过；旧格式拒读 | 无 zstd 压缩 |
+| `LocalFileTranscriptWriter` | 同上 | 默认 `<sid>.jsonl.zst`（zstd 独立帧可追加）+ `<sid>.header.json`；既有 `<sid>.jsonl` 在首次追加时迁成 zst；0600 权限；重启后 seq 续接；残行/残帧跳过；旧格式拒读 | — |
 | `SQLiteTranscriptWriter` | `session/db_transcript.py` | `events(seq, type, data, timestamp, ignorable)` + `type` 索引 + `session_header` 表 | 无按步骤/工具的聚合查询封装 |
 | `derive_messages()` | `session/derive.py` | 事件流 → 消息数组纯函数；`compact/boundary` 整体重置为 `kept` 窗口；连续 `tool/result` 并入一条消息；未知必读事件拒重建 | — |
 | 一致性门禁 | `session/derive.py` + `core/engine.py` | 每次 LLM 请求前 `verify_reconstruction`，失败定位到第一条差异；`session_invariant` 可选 strict/warn/off | — |
@@ -36,7 +36,7 @@
 | `MetricsRecorder` | `observability/metrics.py` | counter/histogram/gauge + 标签约定 + `record_event_metric` 事件投影 | 内存实现无持久化（可换 OTel/Prometheus） |
 | `structlog` | `observability/logging.py` | 结构化日志、JSON/彩色输出 | 与事件流**无关联**，无法从日志反查会话 |
 
-**结论：** 落盘内容只有事件；§4.1 的 19 个事件类型全部有真实发射路径；「可证明一致」的强门禁已成立 —— 每次 LLM 请求前校验事件流能重建出运行时状态，任何绕过事件流的状态变更都会被拦下（见 §6）。剩余缺口是存储效率（zstd）、多进程并发写、structlog 与事件流的关联键。
+**结论：** 落盘内容只有事件；§4.1 的 19 个事件类型全部有真实发射路径；「可证明一致」的强门禁已成立 —— 每次 LLM 请求前校验事件流能重建出运行时状态，任何绕过事件流的状态变更都会被拦下（见 §6）。剩余缺口是多进程并发写、structlog 与事件流的关联键。
 
 ---
 
@@ -219,14 +219,14 @@ header = {
 
 | 后端 | 布局 | 说明 |
 |------|------|------|
-| `LocalFileTranscriptWriter`（默认） | `$SESSIONS/<sid>.jsonl`，每行一个 `SessionEvent` | append-only；每次追加开闭文件，进程被杀不丢已写事件；重启后从既有最大 `seq` 续接 |
+| `LocalFileTranscriptWriter`（默认） | `$SESSIONS/<sid>.jsonl.zst`（新会话）；既有 `<sid>.jsonl` 在首次追加时迁成 zst | append-only；zstd 独立帧可追加，引擎 flush 时一批事件打成一帧；每次追加开闭文件；重启后从既有最大 `seq` 续接 |
 | `SQLiteTranscriptWriter` | `events(seq, type, data, timestamp, ignorable)` + `type` 索引 + `session_header` | 结构化列可索引查询，支撑回溯面板 |
 | `SessionHeader` | LocalFile 存 `<sid>.header.json`；SQLite 存 `session_header` 表 | `{session_id, format_version, created_at, cwd, parent_session, agent_preset_id, summary, permission_mode}` |
 
 - **协议没有全量覆写接口**：覆写会与追加交错并破坏事件流，「修正」用新事件表达（`compact/boundary`、tombstone）。
 - **版本门**：`SESSION_FORMAT_VERSION` 写入 SessionHeader；版本不符**直接拒读**。事件格式之前的消息副本 transcript（JSONL 行缺事件信封字段 / SQLite 存在 `messages` 表）同样拒读，不静默当作空会话。
 - **残行自愈**：JSONL 中非法 JSON 行（写入中断残留）跳过；合法 JSON 但不是事件信封则拒读。
-- **写入策略**：事件先同步入队（使 `compact()`、`clear_session()` 这类同步 API 与循环的同步 sink 都能记事件），在最近的 await 点按序落盘。顺序为 `turn/start` → `user/input` →（组 prompt 时的 `memory/retrieve`）→（管线压缩时的 `compact/boundary`）→ `step/start` → `user/message` → `request/header`；`user/message` 与 `request/header` 在首个 `RequestStartEvent` 时（即 LLM 调用前）`await` 落盘以保证 resume。`strict` 门禁在每次请求前也会先排空队列。zstd 压缩与 write-behind 批量见 §11。
+- **写入策略**：事件先同步入队（使 `compact()`、`clear_session()` 这类同步 API 与循环的同步 sink 都能记事件），在最近的 await 点按序落盘。顺序为 `turn/start` → `user/input` →（组 prompt 时的 `memory/retrieve`）→（管线压缩时的 `compact/boundary`）→ `step/start` → `user/message` → `request/header`；`user/message` 与 `request/header` 在首个 `RequestStartEvent` 时（即 LLM 调用前）`await` 落盘以保证 resume。`strict` 门禁在每次请求前也会先排空队列。JSONL 默认 zstd：`append_events` 把一批行打进同一帧。
 - **文件权限**：会话文件 `0600`、会话目录 `0700`。事件流逐字保留提示词、工具输出与请求配置，落盘时就要挡住同机其它用户；不支持 POSIX 权限位的平台上 `chmod` 是无操作。
 
 ---
@@ -263,7 +263,7 @@ header = {
 | **P0** | 事件信封 + `SessionEvent` 类型目录 + `turn/request-header/user/assistant/tool/usage` 事件；`derive_messages()`；两个后端都改事件流（落盘只有事件，默认 LocalFile）；`resume` 走事件流 | ✅ 已落地 |
 | **P1** | `request/header` 的 initial/resume/change + `header_equals`；`SessionHeader` + 版本门 + 旧格式拒读；每步 `usage` 事件；`fork_session` | ✅ 已落地 |
 | **P2** | 状态变更全事件化（管线压缩 / 恢复 / `/clear`）+ 管线深拷贝 → 请求前 invariant 强门禁；`step/*`、`assistant/chunk`、`api/retry`、`permission/denial`、`permission/onchange`、`permission/changed`、`memory/*` 事件；redact 层 + 会话文件权限；Metrics 标签约定 + 事件投影；Server `session/event` SSE 通道；replay | ✅ 已落地 |
-| **P3** | zstd 压缩 + write-behind 批量；增量 derive（缓存上次结果，只折叠新事件）；structlog 绑定 `session_id/step/seq`；SQLite 按步骤/工具的聚合查询；回溯面板 UI；replay CLI 子命令；多进程并发写语义；跨版本迁移器 | 待做 |
+| **P3** | 增量 derive（缓存上次结果，只折叠新事件）；structlog 绑定 `session_id/step/seq`；SQLite 按步骤/工具的聚合查询；回溯面板 UI；replay CLI 子命令；多进程并发写语义；跨版本迁移器 | 待做 |
 
 ---
 
@@ -275,7 +275,7 @@ header = {
 
 ### 12.2 性能 —— ✅ 可控
 - append-only 写入与「追加一条消息」同复杂度；每轮多写 `turn/*`、`request/header`、`usage` 等少量元事件。
-- 事件量增长由 zstd + write-behind + 可选归档控制；SQLite 结构化列索引支撑回溯查询。
+- 事件量增长由 JSONL zstd（独立帧 + flush 批量打帧）与可选归档控制；SQLite 结构化列索引支撑回溯查询。
 - invariant 的 `derive_messages` 是纯函数，可在「请求前」增量校验（缓存上次 derive 结果，仅对新事件做增量折叠），避免每 step 全量重算。
 
 ### 12.3 正确性 —— ✅ 强（本设计的核心价值）
@@ -315,7 +315,7 @@ header = {
 | 全量覆写与 append 交错 | 事件流损坏/丢事件 | 已消除：协议只有 `append_event`，无覆写接口；「修正」用 `compact/boundary`、tombstone 等新事件表达 |
 | invariant 误报阻断 | 正常流程 fail | 校验只读不写；`session_invariant=warn/off` 可降级（§6.2）；`ignorable` 事件不参与严格比对 |
 | 门禁的读取开销 | 每次请求全量读事件流 | 长会话用 `warn`/`off`；增量 derive 见 §11 P3 |
-| 事件量/存储膨胀 | 磁盘/查询压力 | `log_assistant_chunks=False` 降级为「仅保留合并 message」；zstd + write-behind + 归档见 §11 P3 |
+| 事件量/存储膨胀 | 磁盘/查询压力 | `log_assistant_chunks=False` 降级为「仅保留合并 message」；JSONL 默认 zstd（`.jsonl.zst` 独立帧 + flush 批量打帧） |
 | 敏感数据落盘 | 泄漏 | 文件权限 `0600` + 外发侧 redact（§12.6）；Server 默认 deny-write |
 | 跨版本日志不兼容 | 拒读 | 版本门 + `ignorable`；升级时提供一次性迁移器（对标 dsh migrate scripts） |
 
@@ -328,7 +328,7 @@ header = {
 | `nono_agent/session/events.py` | `SessionEvent` 信封 + 类型目录 + `KNOWN_EVENT_TYPES` + `SessionEventSink` 协议 | ✅ |
 | `nono_agent/session/header.py` | `SessionHeader` + `make_header` + 版本门 | ✅ |
 | `nono_agent/session/derive.py` | `derive_messages()` + `fold_request_header()` + `verify_reconstruction()` + 消息互转 | ✅ |
-| `nono_agent/session/transcript.py` | `TranscriptWriter` 改事件协议；`LocalFile` 事件 JSONL + header 侧车 + 旧格式拒读 + `0600` 权限 | ✅ |
+| `nono_agent/session/transcript.py` | `TranscriptWriter` 改事件协议；`LocalFile` JSONL / zstd（`.jsonl.zst` 独立帧）+ header 侧车 + 旧格式拒读 + `0600` 权限 | ✅ |
 | `nono_agent/session/store.py` | `snapshot_for_request()` 返回深拷贝，管线无法改写已记录历史 | ✅ |
 | `nono_agent/session/redact.py` | `redact_text/redact_value/redact_event/redact_events` 读取侧脱敏 | ✅ |
 | `nono_agent/session/replay.py` | `replay_sdk_messages()` + `replay_transcript_text()` | ✅ |

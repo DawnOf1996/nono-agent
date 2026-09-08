@@ -8,6 +8,7 @@ license = { text = "MIT" }
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
+    "zstandard>=0.23",
 ]
 
 # 这是一个「脚本 + 静态文件」的非包项目：uv 只负责管理依赖虚拟环境，
