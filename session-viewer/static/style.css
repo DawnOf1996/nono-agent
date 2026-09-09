@@ -70,6 +70,8 @@ body { display: flex; flex-direction: column; }
   white-space: nowrap;
 }
 .btn:hover { border-color: var(--accent); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn:disabled:hover { border-color: var(--border); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #06121f; font-weight: 600; }
 .btn.ghost { background: transparent; }
 .btn.small { padding: 2px 8px; font-size: 12px; }
@@ -141,12 +143,79 @@ body { display: flex; flex-direction: column; }
   flex: 1;
   overflow: auto;
   margin: 0;
+  padding: 0;
+}
+.inspector-body pre {
+  margin: 0;
   padding: 12px;
   font-family: var(--mono);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
   color: #d7dce6;
+}
+
+/* ---------- session list ---------- */
+.session-list { display: flex; flex-direction: column; }
+.session-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.session-item:hover { background: var(--panel-2); }
+.session-item.selected { border-left-color: var(--accent); background: #1a2436; }
+.session-item .sid {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  word-break: break-all;
+}
+.session-item .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+/* ---------- event locate bar ---------- */
+.locate-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.locate-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 4px;
+}
+.locate-label { color: var(--muted); font-size: 12px; }
+#locate-type {
+  min-width: 200px;
+  padding: 5px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+#locate-type:focus { outline: none; border-color: var(--accent); }
+.locate-status {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 64px;
+  text-align: center;
+}
+
+@keyframes locate-flash {
+  0% { background: #1a2a44; }
+  100% { background: transparent; }
+}
+.locate-target {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  animation: locate-flash 1.2s ease-out;
 }
 
 /* ---------- trajectory ---------- */
@@ -179,6 +248,7 @@ body { display: flex; flex-direction: column; }
 .badge.memory { color: #9ecbff; }
 .badge.turn { color: #9ecbff; }
 
+[data-event-type] { scroll-margin: 12px; }
 .event { margin-left: 34px; padding: 8px 10px; cursor: pointer; }
 .event:hover { border-color: var(--accent); }
 .event .row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }

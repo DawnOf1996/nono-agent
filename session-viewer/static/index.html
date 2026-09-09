@@ -35,6 +35,16 @@
     <button class="tab" data-view="conversation">对话 Chat</button>
   </nav>
 
+  <div id="locate-bar" class="locate-bar hidden">
+    <button id="fold-all" class="btn small" type="button" title="展开所有 Turn / Step">全部展开</button>
+    <span class="locate-sep" aria-hidden="true"></span>
+    <span class="locate-label">按事件定位</span>
+    <select id="locate-type" title="选择事件类型，定位到该类型的第一个节点"></select>
+    <button id="locate-prev" class="btn ghost small" type="button" title="上一个">上一个</button>
+    <span id="locate-status" class="locate-status">0 / 0</span>
+    <button id="locate-next" class="btn ghost small" type="button" title="下一个">下一个</button>
+  </div>
+
   <main class="content">
     <section id="trajectory" class="view active"></section>
     <section id="conversation" class="view"></section>
@@ -43,7 +53,7 @@
         <span id="inspector-title">事件详情</span>
         <button id="inspector-close" class="btn ghost small">×</button>
       </div>
-      <pre id="inspector-body" class="inspector-body"></pre>
+      <div id="inspector-body" class="inspector-body"></div>
     </aside>
   </main>
 

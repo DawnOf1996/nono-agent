@@ -284,6 +284,7 @@ function renderTurn(turn) {
     head.appendChild(el("span", "meta", "· reason=" + turn.end.data.reason));
   }
   if (turn.end && turn.end._dur != null) head.appendChild(el("span", "meta", "· " + fmtMs(turn.end._dur)));
+  markLocate(head, "turn/start", turn.start && turn.start.seq);
   node.appendChild(head);
 
   const body = el("div", "turn-body");
@@ -295,7 +296,7 @@ function renderTurn(turn) {
     body.appendChild(renderStep(st, turn));
   }
   node.appendChild(body);
-  bindCollapse(head, body);
+  bindCollapse(head, body, true);
   return node;
 }
 
@@ -308,6 +309,7 @@ function renderStep(st, turn) {
   head.appendChild(el("span", "meta", "· " + (st.model || "?")));
   if (st.end && st.end.data && st.end.data.reason) head.appendChild(el("span", "meta", "· reason=" + st.end.data.reason));
   if (st.start && st.end && st.end._dur != null) head.appendChild(el("span", "meta", "· " + fmtMs(st.end._dur)));
+  markLocate(head, "step/start", st.start && st.start.seq);
   node.appendChild(head);
 
   const body = el("div", "step-body");
@@ -323,7 +325,7 @@ function renderStep(st, turn) {
     body.appendChild(renderChunkSummary(chunks, turn));
   }
   node.appendChild(body);
-  bindCollapse(head, body);
+  bindCollapse(head, body, true);
   return node;
 }
 
@@ -334,6 +336,7 @@ function renderChunkSummary(chunks, turn) {
   r.appendChild(el("span", "ts", fmtMs(chunks[0]._dur) + " → " + fmtMs(chunks[chunks.length - 1]._dur)));
   r.appendChild(el("span", "preview", "流式增量（点击查看详情）"));
   row.appendChild(r);
+  markLocate(row, "assistant/chunk", chunks[0] && chunks[0].seq);
   row.addEventListener("click", () => openInspector({ type: "assistant/chunk (aggregated)", data: { count: chunks.length, chunks } }));
   return row;
 }
@@ -346,6 +349,7 @@ function renderEventRow(ev, turn) {
   const preview = previewFor(ev);
   if (preview) r.appendChild(el("span", "preview", preview));
   row.appendChild(r);
+  markLocate(row, ev.type, ev.seq);
 
   // 内容型事件直接内联展开（放在标题行下方）
   if (ev.type === "assistant/message" && Array.isArray(ev.data.content)) {
@@ -448,11 +452,59 @@ function renderUsageBlock(data) {
   return d;
 }
 
-function bindCollapse(head, body) {
+function markLocate(node, type, seq) {
+  if (!node || !type) return;
+  node.dataset.eventType = type;
+  if (seq != null) node.dataset.seq = String(seq);
+}
+
+function setSectionCollapsed(section, collapsed) {
+  const body = section.querySelector(":scope > .turn-body, :scope > .step-body");
+  const caret = section.querySelector(":scope > .head .caret");
+  if (!body) return;
+  body.classList.toggle("hidden", collapsed);
+  if (caret) caret.textContent = collapsed ? "▸" : "▾";
+}
+
+function trajectoryBodies() {
+  return Array.from(document.querySelectorAll("#trajectory .turn-body, #trajectory .step-body"));
+}
+
+function isFullyExpanded() {
+  const bodies = trajectoryBodies();
+  return bodies.length > 0 && bodies.every((b) => !b.classList.contains("hidden"));
+}
+
+function setAllCollapsed(collapsed) {
+  document.querySelectorAll("#trajectory section.turn, #trajectory section.step").forEach((s) => {
+    setSectionCollapsed(s, collapsed);
+  });
+  updateFoldButton();
+}
+
+function toggleAllFold() {
+  setAllCollapsed(isFullyExpanded());
+}
+
+function updateFoldButton() {
+  const btn = document.getElementById("fold-all");
+  if (!btn) return;
+  const expanded = isFullyExpanded();
+  btn.textContent = expanded ? "全部折叠" : "全部展开";
+  btn.title = expanded ? "收起所有 Turn / Step" : "展开所有 Turn / Step";
+}
+
+function bindCollapse(head, body, collapsed) {
+  if (collapsed) {
+    body.classList.add("hidden");
+    const caret = head.querySelector(".caret");
+    if (caret) caret.textContent = "▸";
+  }
   head.addEventListener("click", (e) => {
     if (e.target.closest(".event, details, .block")) return;
     body.classList.toggle("hidden");
     head.querySelector(".caret").textContent = body.classList.contains("hidden") ? "▸" : "▾";
+    updateFoldButton();
   });
 }
 
@@ -540,14 +592,55 @@ function msgBubble(cls, who, text, bubbleNode) {
 /* Inspector                                                           */
 /* ------------------------------------------------------------------ */
 
-function openInspector(ev) {
+function setInspector(titleText, contentNode) {
   const panel = document.getElementById("inspector");
   const title = document.getElementById("inspector-title");
   const body = document.getElementById("inspector-body");
   panel.classList.remove("hidden");
-  title.textContent = (ev.seq != null ? "#" + ev.seq + " " : "") + ev.type;
+  title.textContent = titleText;
+  body.innerHTML = "";
+  body.appendChild(contentNode);
+}
+
+function openInspector(ev) {
   const payload = { type: ev.type, seq: ev.seq, timestamp: ev.timestamp, _dur: ev._dur, data: ev.data };
-  body.textContent = JSON.stringify(payload, null, 2);
+  const pre = el("pre");
+  pre.textContent = JSON.stringify(payload, null, 2);
+  setInspector((ev.seq != null ? "#" + ev.seq + " " : "") + ev.type, pre);
+}
+
+function fmtMtime(ts) {
+  if (ts == null) return "";
+  return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
+}
+
+function renderSessionList(list) {
+  const wrap = el("div", "session-list");
+  const currentId = document.getElementById("session-id").value.trim();
+  for (const item of list) {
+    const sid = item.session_id || "";
+    const row = el("div", "session-item" + (sid === currentId ? " selected" : ""));
+    row.title = "点击填入 session_id";
+    row.appendChild(el("div", "sid", sid));
+    const bits = [];
+    if (item.event_count != null) bits.push(item.event_count + " 事件");
+    if (item.last_modified != null) bits.push(fmtMtime(item.last_modified));
+    const header = item.header || {};
+    if (header.summary) bits.push(header.summary);
+    else if (header.cwd) bits.push(header.cwd);
+    if (bits.length) row.appendChild(el("div", "meta", bits.join(" · ")));
+    row.addEventListener("click", () => {
+      const input = document.getElementById("session-id");
+      input.value = sid;
+      input.focus();
+      input.select();
+      wrap.querySelectorAll(".session-item").forEach((n) => n.classList.remove("selected"));
+      row.classList.add("selected");
+      showToast("已填入 session_id，点击「加载会话」打开");
+    });
+    wrap.appendChild(row);
+  }
+  setInspector("本地会话列表（点击填入 session_id）", wrap);
 }
 
 /* ------------------------------------------------------------------ */
@@ -561,6 +654,7 @@ function renderAll(model) {
   renderSummary(model);
   renderTrajectory(model);
   renderConversation(model);
+  setupLocateBar();
 }
 
 function showToast(msg) {
@@ -597,8 +691,7 @@ async function loadSessionList() {
     if (!resp.ok) throw new Error(resp.statusText);
     const list = await resp.json();
     if (!list.length) { showToast("没有找到本地会话（~/.nono-agent/sessions/ 为空）"); return; }
-    openInspector({ type: "sessions", data: list });
-    document.getElementById("inspector-title").textContent = "本地会话列表（点击左侧“加载会话”并粘贴 id）";
+    renderSessionList(list);
   } catch (err) {
     showToast("获取会话列表失败：" + err.message);
   }
@@ -653,6 +746,118 @@ function setupDrop() {
   });
 }
 
+/* ------------------------------------------------------------------ */
+/* 按事件类型定位                                                      */
+/* ------------------------------------------------------------------ */
+
+const locateState = { type: "", matches: [], index: 0 };
+
+function setupLocateBar() {
+  const bar = document.getElementById("locate-bar");
+  const select = document.getElementById("locate-type");
+  const root = document.getElementById("trajectory");
+  const nodes = Array.from(root.querySelectorAll("[data-event-type]"));
+  if (!nodes.length) {
+    bar.classList.add("hidden");
+    locateState.matches = [];
+    locateState.index = 0;
+    updateLocateStatus();
+    return;
+  }
+  bar.classList.remove("hidden");
+
+  const counts = {};
+  for (const n of nodes) {
+    const t = n.dataset.eventType;
+    counts[t] = (counts[t] || 0) + 1;
+  }
+  const ordered = [];
+  for (const t of Object.keys(EVENT_META)) if (counts[t]) ordered.push(t);
+  for (const t of Object.keys(counts)) if (!EVENT_META[t]) ordered.push(t);
+
+  select.innerHTML = "";
+  const placeholder = el("option");
+  placeholder.value = "";
+  placeholder.textContent = "选择事件类型…";
+  select.appendChild(placeholder);
+  for (const t of ordered) {
+    const opt = el("option");
+    opt.value = t;
+    opt.textContent = t + "  (" + counts[t] + ")";
+    select.appendChild(opt);
+  }
+  // 新会话默认不选中，由用户选择类型后再跳到该类型的第一个节点
+  select.value = "";
+  rebuildLocateMatches(false);
+  updateFoldButton();
+}
+
+function rebuildLocateMatches(scrollToFirst) {
+  const select = document.getElementById("locate-type");
+  const type = select.value;
+  const root = document.getElementById("trajectory");
+  locateState.type = type;
+  locateState.matches = type
+    ? Array.from(root.querySelectorAll("[data-event-type]")).filter((n) => n.dataset.eventType === type)
+    : [];
+  locateState.index = 0;
+  updateLocateStatus();
+  if (scrollToFirst && locateState.matches.length) locateTo(0);
+}
+
+function updateLocateStatus() {
+  const status = document.getElementById("locate-status");
+  const n = locateState.matches.length;
+  status.textContent = n ? (locateState.index + 1) + " / " + n : "0 / 0";
+  const disabled = n === 0;
+  document.getElementById("locate-prev").disabled = disabled;
+  document.getElementById("locate-next").disabled = disabled;
+}
+
+function activateTrajectoryTab() {
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === "trajectory"));
+  document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "trajectory"));
+}
+
+function expandAncestors(node) {
+  let p = node.parentElement;
+  while (p && p.id !== "trajectory") {
+    if (p.classList.contains("turn") || p.classList.contains("step")) {
+      const head = p.querySelector(":scope > .head");
+      if (head !== node && !(head && head.contains(node))) {
+        setSectionCollapsed(p, false);
+      }
+    }
+    p = p.parentElement;
+  }
+  updateFoldButton();
+}
+
+function highlightLocate(node) {
+  document.querySelectorAll(".locate-target").forEach((n) => n.classList.remove("locate-target"));
+  void node.offsetWidth;
+  node.classList.add("locate-target");
+}
+
+function locateTo(index) {
+  const n = locateState.matches.length;
+  if (!n) return;
+  locateState.index = ((index % n) + n) % n;
+  const node = locateState.matches[locateState.index];
+  activateTrajectoryTab();
+  expandAncestors(node);
+  updateLocateStatus();
+  const afterLayout = () => {
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+    highlightLocate(node);
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(afterLayout);
+  else afterLayout();
+}
+
+function locatePrev() { locateTo(locateState.index - 1); }
+function locateNext() { locateTo(locateState.index + 1); }
+
 function setup() {
   document.getElementById("load-session").addEventListener("click", loadSessionById);
   document.getElementById("session-id").addEventListener("keydown", (e) => { if (e.key === "Enter") loadSessionById(); });
@@ -663,6 +868,10 @@ function setup() {
   });
   document.getElementById("list-sessions").addEventListener("click", loadSessionList);
   document.getElementById("inspector-close").addEventListener("click", () => document.getElementById("inspector").classList.add("hidden"));
+  document.getElementById("fold-all").addEventListener("click", toggleAllFold);
+  document.getElementById("locate-type").addEventListener("change", () => rebuildLocateMatches(true));
+  document.getElementById("locate-prev").addEventListener("click", locatePrev);
+  document.getElementById("locate-next").addEventListener("click", locateNext);
 
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -684,4 +893,5 @@ function setup() {
   }
 }
 
-document.addEventListener("DOMContentLoaded", setup);
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", setup);
+else setup();
