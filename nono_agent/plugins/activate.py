@@ -12,7 +12,7 @@ from nono_agent.agents.definition import AgentDefinition
 from nono_agent.mcp.config import MCPServerConfig
 from nono_agent.plugins.manifest import PluginManifest
 from nono_agent.rules.models import Rule
-from nono_agent.skills.loader import parse_skill_markdown
+from nono_agent.skills.loader import coerce_meta_str, parse_skill_markdown
 from nono_agent.skills.models import Skill
 
 
@@ -31,9 +31,11 @@ def activate_rules(manifest: PluginManifest) -> list[Rule]:
         body = body.strip()
         if not body:
             continue
-        globs = meta.get("globs", [])
+        globs = meta.get("globs") or []
         if isinstance(globs, str):
             globs = [globs]
+        elif not isinstance(globs, list):
+            globs = []
         rules.append(
             Rule(
                 name=f"{manifest.name}/{file.name}",
@@ -69,10 +71,11 @@ def activate_skills(manifest: PluginManifest) -> list[Skill]:
             continue
         tools_raw = meta.get("tools", [])
         tools = [str(t) for t in tools_raw] if isinstance(tools_raw, list) else []
+        name = coerce_meta_str(meta.get("name"), skill_dir.name)
         skills.append(
             Skill(
-                name=str(meta.get("name") or skill_dir.name),
-                description=str(meta.get("description") or skill_dir.name),
+                name=name,
+                description=coerce_meta_str(meta.get("description"), name),
                 content=body,
                 source=str(skill_file),
                 scope="plugin",
@@ -99,10 +102,11 @@ def activate_agents(manifest: PluginManifest) -> list[AgentDefinition]:
             continue
         tools_raw = meta.get("tools", [])
         tools = [str(t) for t in tools_raw] if isinstance(tools_raw, list) else []
+        name = coerce_meta_str(meta.get("name"), file.stem)
         agents.append(
             AgentDefinition(
-                name=str(meta.get("name") or file.stem),
-                description=str(meta.get("description") or file.stem),
+                name=name,
+                description=coerce_meta_str(meta.get("description"), name),
                 system_prompt=body,
                 tools=tools,
                 model=str(meta["model"]) if meta.get("model") else None,

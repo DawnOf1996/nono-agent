@@ -7,7 +7,7 @@ from typing import Protocol, runtime_checkable
 
 from nono_agent.agents.definition import AgentDefinition
 from nono_agent.paths import project_dir, user_home
-from nono_agent.skills.loader import parse_skill_markdown  # 复用 frontmatter 解析
+from nono_agent.skills.loader import coerce_meta_str, parse_skill_markdown
 
 
 @runtime_checkable
@@ -55,8 +55,8 @@ class FileSystemAgentLoader:
         if not body:
             return None
 
-        name = str(meta.get("name") or file.stem)
-        description = str(meta.get("description") or name)
+        name = coerce_meta_str(meta.get("name"), file.stem)
+        description = coerce_meta_str(meta.get("description"), name)
         tools_raw = meta.get("tools", [])
         tools = [str(t) for t in tools_raw] if isinstance(tools_raw, list) else []
         model = meta.get("model")
