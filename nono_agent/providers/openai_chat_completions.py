@@ -25,6 +25,7 @@ from nono_agent.providers._openai_chat_completions_utils import (
     openai_chat_usage_buckets,
     to_openai_tool,
 )
+from nono_agent.providers._request_log import maybe_log_api_request
 from nono_agent.providers.base import FallbackTriggeredError
 from nono_agent.utils.tokens import estimate_messages_tokens
 
@@ -128,6 +129,9 @@ class OpenAIChatCompletionsProvider:
             logger.debug(
                 "Stream API call: model=%s, messages=%d, tools=%d",
                 model, len(api_messages), len(tools) if tools else 0,
+            )
+            maybe_log_api_request(
+                self._config, protocol=self.name, params=params
             )
             stream = await client.chat.completions.create(**params)
             yield MessageStartEvent(message={"usage": {}})

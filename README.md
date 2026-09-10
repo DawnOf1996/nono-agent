@@ -85,6 +85,7 @@ config = EngineConfig(
 ```bash
 python -m nono_agent.adapters.cli chat
 python -m nono_agent.adapters.cli chat -m "你好" --model MiniMax-M3 --provider a
+python -m nono_agent.adapters.cli chat --log-api-requests   # 发 HTTP 前 dump 请求体
 python -m nono_agent.adapters.cli sessions   # 列出历史会话
 ```
 

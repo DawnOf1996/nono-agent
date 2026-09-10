@@ -478,6 +478,12 @@ def _render_blocks(blocks: list[dict[str, Any]]) -> str:
 
 ENV_MODEL = "NONO_MODEL"
 ENV_CWD = "NONO_CWD"
+ENV_LOG_API_REQUESTS = "NONO_LOG_API_REQUESTS"
+
+
+def _env_truthy(name: str) -> bool:
+    """环境变量是否为开启（1/true/yes/on，大小写不敏感）。"""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def resolve_resume_bindings(
@@ -514,6 +520,7 @@ def build_engine_config(
     cwd: str | None = None,
     verbose: bool = False,
     config_file: str | None = None,
+    log_api_requests: bool = False,
 ) -> EngineConfig:
     """从 YAML 目录解析 EngineConfig。
 
@@ -528,6 +535,9 @@ def build_engine_config(
         provider_id=provider,
         model_id=resolved_model,
     )
+    dump_api = log_api_requests or _env_truthy(ENV_LOG_API_REQUESTS)
+    if dump_api and not pc.log_api_requests:
+        pc = pc.model_copy(update={"log_api_requests": True})
     return EngineConfig(
         model=pc.model_id,
         cwd=resolved_cwd,
@@ -535,6 +545,7 @@ def build_engine_config(
         verbose=verbose,
         provider=pc,
         include_partial_messages=True,  # 启用流式事件，实现实时文本渲染
+        log_api_requests=dump_api,
     )
 
 
@@ -626,6 +637,11 @@ def create_cli_app() -> Any:
             None, "--config", "-c", help="YAML catalog overlay path"
         ),
         verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging"),
+        log_api_requests: bool = typer.Option(
+            False,
+            "--log-api-requests",
+            help="Log the SDK request payload immediately before each LLM HTTP call",
+        ),
     ) -> None:
         """Start an interactive chat session with the agent.
 
@@ -661,7 +677,12 @@ def create_cli_app() -> Any:
             cwd=resolved_cwd,
             verbose=verbose,
             config_file=config_file,
+            log_api_requests=log_api_requests,
         )
+        if config.log_api_requests:
+            from nono_agent.providers._request_log import enable_api_request_logging
+
+            enable_api_request_logging()
         if session_id:
             config = config.model_copy(update={"session_id": session_id})
 

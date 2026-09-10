@@ -296,6 +296,8 @@ header = {
 - 覆盖 `sk-`/`ghp_` 类前缀密钥、AWS access key、JWT、`Bearer` 头、PEM 私钥块、`password=`/`token:` 赋值式，以及 `api_key`/`secret`/`credential` 等敏感键名（整值替换）。启发式匹配，不承诺完备。
 - `permission/denial` 事件本身是审计资产，完整保留。
 
+HTTP 线上请求体（SDK `params`）**不**进事件流：体积大、含协议字段与 `extra_body`，且管线/中间件改写后的数组本就不等于会话状态。调试用 `EngineConfig.log_api_requests` / CLI `--log-api-requests`，见 [USAGE.md §2.2.1](./USAGE.md)。
+
 ### 12.7 与 deepseek-harness 对照自检
 | dsh 要素 | 本项目落地 |
 |----------|-----------|
@@ -342,4 +344,4 @@ header = {
 | `nono_agent/memory/manager.py` | 写入/检索观察者 → `memory/write`、`memory/retrieve` | ✅ |
 | `nono_agent/observability/metrics.py` | 标签常量 + `record_event_metric()` 事件投影 | ✅ |
 | `nono_agent/adapters/server.py` | `GET /session/{id}/events` SSE 通道（脱敏 + `after_seq` + `follow`） | ✅ |
-| `nono_agent/core/config.py` | `session_invariant`、`log_assistant_chunks` | ✅ |
+| `nono_agent/core/config.py` | `session_invariant`、`log_assistant_chunks`、`log_api_requests` | ✅ |

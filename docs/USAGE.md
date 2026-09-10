@@ -87,11 +87,46 @@ uv run python -m nono_agent.adapters.cli chat --resume <session_id>
 uv run python -m nono_agent.adapters.cli sessions
 ```
 
-CLI 参数：`--model` / `--provider` / `--cwd` / `--resume` / `--message|-m` / `--config|-c` / `--verbose|-v`。
+CLI 参数：`--model` / `--provider` / `--cwd` / `--resume` / `--message|-m` / `--config|-c` / `--verbose|-v` / `--log-api-requests`。
 
 `--cwd` 优先于环境变量 `NONO_CWD`，都未设置时为当前目录 `.`。用户级 `~/.nono-agent/config.yaml` 与 `credentials` 不受 `--cwd` 影响。
 
 `--resume` 接续已有会话时，**以该会话的 `.header.json` 为约束**：`cwd` 为绝对路径（不会存 `.`），`permission_mode` 为最后一次 `/permission`（或 plan 工具）**请求**的目标值（即使尚未跑过下一 turn/step），以及 `agent_preset_id` 覆盖本次 CLI 的 `--cwd` / `NONO_CWD`；项目 YAML、沙箱、skills/rules、权限模式都按 header 加载。不必再手动指定 `--cwd`。会话 ID 直接作为本次引擎 `session_id`，不会另开一条空会话。
+
+### 2.2.1 抓取发给模型的 HTTP 请求体
+
+默认不记录。打开后，三类 Provider 在 SDK **即将发 HTTP 之前**把组好的 `params`（协议转换 + `extra_body` 合并后）打成一行 JSON 到 logger `nono_agent.providers.api_request`（INFO）。这不是会话事件：不进 transcript，也不参与 `derive_messages`。
+
+```bash
+# CLI 开关（不必再叠 --verbose；该 logger 会被单独调到 INFO）
+uv run python -m nono_agent.adapters.cli chat --log-api-requests
+
+# 或者转存为日志文件（输出量大）
+uv run python -m nono_agent.adapters.cli chat --log-api-requests 2 > api-requests.log
+
+# 或环境变量
+NONO_LOG_API_REQUESTS=1 uv run python -m nono_agent.adapters.cli chat
+```
+
+库用法：
+
+```python
+config = EngineConfig(
+    model="MiniMax-M3",
+    provider=ProviderConfig(
+        model_id="MiniMax-M3",
+        adapter="openai_chat_completions",
+        api_key="...",
+        base_url="https://api.example.com/v1",
+        log_api_requests=True,   # 也可只设 EngineConfig.log_api_requests=True
+    ),
+    log_api_requests=True,
+)
+```
+
+日志里 `api_key` / `Authorization` / `token` 等键会被替换成 `***`。payload 含完整 messages / tools / system，体积可能很大，只在调试时打开。写出编码为 **UTF-8**（Windows 上也会把 stderr 从 GBK 改成 UTF-8），用 `2> api-requests.log` 重定向后请按 UTF-8 打开；不要用系统默认 ANSI/GBK，否则中文会显示成乱码，emoji 可能变成 `\U0001f44b`。那只是日志文件编码，**不是**发给模型的原文。
+
+与 `request/header` 的差别：事件流记录的是**会话状态**（system + tools schema + 压缩后的对话窗口）；`--log-api-requests` 记录的是**这一次 HTTP 请求体**（含管线截断、中间件改写、协议字段、`stream_options`、`extra_body`）。压缩摘要（ContextCollapse）走同一条 Provider 路径，也会被记到。
 
 ### 2.3 Server（HTTP + SSE）
 
@@ -186,6 +221,7 @@ YAML 中的 `api_key_env` 由供应商 id 稳定生成（`a` → `NONO_A_API_KEY
 | ------------------------------------------ | ------------------------------------------------ |
 | `NONO_A_API_KEY` 等（YAML 里的 `api_key_env`）  | 对应供应商的 API Key（也可改写 credentials）                 |
 | `NONO_MODEL` / `NONO_CWD`                  | 覆盖默认模型 id / 工作目录                                 |
+| `NONO_LOG_API_REQUESTS`                    | `1`/`true`/`yes`/`on`：SDK 发 HTTP 前 dump 请求体（同 `--log-api-requests`） |
 | `NONO_SEARCH_URL` / `NONO_SEARCH_API_KEY`  | `web_search` 工具端点                                |
 | `NONO_LSP_COMMAND` / `NONO_LSP_ARGS`（逗号分隔） | `lsp` 工具的语言服务器                                   |
 | `NONO_PERMISSION_MODE`                     | 权限模式 flag 覆盖（`default/accept_edits/plan/bypass`） |
@@ -361,6 +397,8 @@ EngineConfig(session_invariant="strict")  # 默认：不一致即终止本轮
 EngineConfig(session_invariant="warn")    # 记日志 + session.desync 指标，继续跑
 EngineConfig(session_invariant="off")     # 不校验，省掉每次请求的一次全量事件读取
 ```
+
+调试单次 HTTP 请求体（协议转换后、发网前）用 `EngineConfig(log_api_requests=True)` 或 CLI `--log-api-requests`，见 §2.2.1。不要把这份 payload 写进事件流。
 
 自定义组件（自研 stage、直接操作 `engine.message_store`）触发它，通常是真漏了事件而非误报。
 

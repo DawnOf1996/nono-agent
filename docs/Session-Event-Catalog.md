@@ -344,6 +344,8 @@ sequenceDiagram
 
 发射者：`QueryEngine._compute_request_header`（写入由 `submit_message` 在首个 `step/start` 之后完成）。
 
+`request/header` 不是线上 HTTP 请求体。要看 SDK 发网前的 `params`，用 `EngineConfig.log_api_requests` / CLI `--log-api-requests`（见 [USAGE.md §2.2.1](./USAGE.md)），不要往事件流里塞。
+
 ---
 
 

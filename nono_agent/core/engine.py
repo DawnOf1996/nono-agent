@@ -228,6 +228,13 @@ class QueryEngine:
         self._session_id = config.session_id
         self._turn_count = 0
 
+        if config.log_api_requests or (
+            config.provider is not None and config.provider.log_api_requests
+        ):
+            from nono_agent.providers._request_log import enable_api_request_logging
+
+            enable_api_request_logging()
+
     # ------------------------------------------------------------------
     # 生命周期管理
     # ------------------------------------------------------------------
@@ -368,7 +375,7 @@ class QueryEngine:
 
         # 解析 Provider：必须有显式 adapter（来自 YAML 目录的 api）
         provider = self._provider_registry.resolve(
-            self._config.effective_model, self._config.provider
+            self._config.effective_model, self._config.provider_config_for_api()
         )
         logger.debug("Provider resolved: %s", type(provider).__name__)
 
@@ -1407,7 +1414,7 @@ class QueryEngine:
             summary_model = self._config.context_collapse_model or self._config.effective_model
             summarizer = ProviderSummarizer(
                 provider_factory=lambda: self._provider_registry.resolve(
-                    summary_model, self._config.provider
+                    summary_model, self._config.provider_config_for_api()
                 ),
                 model=summary_model,
             )

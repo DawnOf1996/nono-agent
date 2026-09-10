@@ -562,6 +562,7 @@ nono_agent/
 │   ├── openai_chat_completions.py # ✅ Chat Completions（AsyncOpenAI）
 │   ├── openai_responses.py        # ✅ Responses（AsyncOpenAI）
 │   ├── anthropic_messages.py      # ✅ Messages（AsyncAnthropic）
+│   ├── _request_log.py            # ✅ SDK 发 HTTP 前的 params dump（log_api_requests）
 │   ├── _openai_chat_completions_utils.py
 │   ├── _openai_responses_utils.py
 │   └── _anthropic_messages_utils.py
@@ -804,6 +805,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-27 | session：会话日志改事件溯源 —— 落盘只有 `SessionEvent`（LocalFile JSONL 默认 / SQLite `events`+`session_header`），`derive_messages()` 重建消息，`resume`/`fork` 走事件流；移除消息副本落盘与全量覆写接口 |
 | 2026-08-27 | session：事件目录全量实装（16 类）+ 请求前一致性门禁 —— 循环经 `SessionEventSink` 上报 `step/*`/`api/retry`/`store.replace()`，`snapshot_for_request()` 改深拷贝，`session_invariant` 默认 `strict`；新增读取侧脱敏、不调模型回放、Metrics 事件投影、`GET /session/{id}/events` SSE 通道、会话文件 `0600` 权限 |
 | 2026-09-02 | Provider 协议瘦身为三类，一律走对应 SDK：`openai_chat_completions` / `openai_responses` / `anthropic_messages`；移除 httpx 兼容层与旧 adapter 别名 |
+| 2026-09-10 | Provider：`log_api_requests` 开关（CLI `--log-api-requests` / `NONO_LOG_API_REQUESTS`）在 SDK 发 HTTP 前 dump 协议级 `params`；脱敏敏感键；不写入会话事件流 |
 
 
 ## 附录

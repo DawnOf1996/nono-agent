@@ -113,6 +113,29 @@ class TestBuildEngineConfig:
         config = build_engine_config(cwd=str(tmp_path), model="MiniMax-M3")
         assert config.model == "MiniMax-M3"
 
+    def test_log_api_requests_flag(self, tmp_path, monkeypatch):
+        _write_user_yaml(_user_yaml())
+        monkeypatch.setenv("A_API_KEY", "sk-test")
+        monkeypatch.delenv("NONO_LOG_API_REQUESTS", raising=False)
+        off = build_engine_config(cwd=str(tmp_path))
+        assert off.log_api_requests is False
+        assert off.provider is not None
+        assert off.provider.log_api_requests is False
+
+        on = build_engine_config(cwd=str(tmp_path), log_api_requests=True)
+        assert on.log_api_requests is True
+        assert on.provider is not None
+        assert on.provider.log_api_requests is True
+
+    def test_log_api_requests_env(self, tmp_path, monkeypatch):
+        _write_user_yaml(_user_yaml())
+        monkeypatch.setenv("A_API_KEY", "sk-test")
+        monkeypatch.setenv("NONO_LOG_API_REQUESTS", "true")
+        config = build_engine_config(cwd=str(tmp_path))
+        assert config.log_api_requests is True
+        assert config.provider is not None
+        assert config.provider.log_api_requests is True
+
     def test_unconfigured_context_falls_back(self, tmp_path, monkeypatch):
         data = {
             "agent_default_model": {"provider": "a", "model": "m"},

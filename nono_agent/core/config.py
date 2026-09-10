@@ -58,6 +58,8 @@ class ProviderConfig(BaseModel):
     max_retries: int = 3                       # 最大重试次数
     # 单次补全 max tokens；未配置时由各协议实现自己的默认值
     max_tokens: int | None = None
+    # 是否在 SDK 发 HTTP 前把请求 params 打到日志（默认关；体积大，可能含提示词）
+    log_api_requests: bool = False
 
 
 class ThinkingConfig(BaseModel):
@@ -146,7 +148,21 @@ class EngineConfig(BaseModel):
     # 关闭为降级模式，只保留合并后的 assistant/message。
     log_assistant_chunks: bool = True
 
+    # 是否在 SDK 发 HTTP 前把请求 params 打到日志（默认关）。
+    # 记录协议转换与 extra_body 合并后的请求体，不写入会话事件流。
+    # CLI：``--log-api-requests`` 或环境变量 ``NONO_LOG_API_REQUESTS=1``。
+    log_api_requests: bool = False
+
     model_config = ConfigDict(frozen=True)  # 不可变，防止运行期意外修改配置
+
+    def provider_config_for_api(self) -> ProviderConfig | None:
+        """resolve Provider 时使用的配置：把引擎级 ``log_api_requests`` 拷到 Provider。"""
+        pc = self.provider
+        if pc is None:
+            return None
+        if self.log_api_requests and not pc.log_api_requests:
+            return pc.model_copy(update={"log_api_requests": True})
+        return pc
 
     @property
     def effective_model(self) -> str:

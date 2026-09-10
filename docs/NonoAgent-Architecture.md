@@ -422,6 +422,9 @@ graph TB
 ```
 
 > 协议：`openai_chat_completions` / `openai_responses` / `anthropic_messages`。未指定 adapter 时前缀回退：`claude-*` → Anthropic、`gpt-*`/`o1`/`o3`/`o4` → OpenAI Chat Completions。
+
+调试开关 `EngineConfig.log_api_requests`（CLI `--log-api-requests` / `NONO_LOG_API_REQUESTS=1`）会在三个 Provider 调用 SDK **之前**把组好的 `params` 打到 logger `nono_agent.providers.api_request`。这是线上请求体，不是会话事件流里的 `request/header`。实现见 `providers/_request_log.py`。
+
 ---
 
 ## 5. 关键设计决策

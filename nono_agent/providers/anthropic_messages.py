@@ -25,6 +25,7 @@ from nono_agent.providers._anthropic_messages_utils import (
     normalize_usage,
 )
 from nono_agent.providers._openai_chat_completions_utils import deep_merge
+from nono_agent.providers._request_log import maybe_log_api_request
 from nono_agent.providers.base import FallbackTriggeredError
 from nono_agent.utils.tokens import estimate_messages_tokens
 
@@ -115,6 +116,9 @@ class AnthropicMessagesProvider:
 
         try:
             self._start_usage = normalize_usage({})
+            maybe_log_api_request(
+                self._config, protocol=self.name, params=params
+            )
             async with client.messages.stream(**params) as stream:
                 async for event in stream:
                     mapped = self._map_stream_event(event)

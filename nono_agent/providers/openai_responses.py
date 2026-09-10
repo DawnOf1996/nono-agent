@@ -25,6 +25,7 @@ from nono_agent.providers._openai_responses_utils import (
     responses_usage_buckets,
     to_responses_tool,
 )
+from nono_agent.providers._request_log import maybe_log_api_request
 from nono_agent.utils.tokens import estimate_messages_tokens
 
 
@@ -88,6 +89,8 @@ class OpenAIResponsesProvider:
             params["max_output_tokens"] = max_tokens
         if self._extra_body:
             params["extra_body"] = self._extra_body
+
+        maybe_log_api_request(self._config, protocol=self.name, params=params)
 
         yield MessageStartEvent(message={"usage": {}})
 

@@ -148,6 +148,8 @@ def create_server_app(
                 cwd=(header.cwd if header and header.cwd else default_config.cwd),
                 session_id=session_id,
                 include_partial_messages=True,
+                provider=default_config.provider,
+                log_api_requests=default_config.log_api_requests,
             )
             engine = QueryEngine(
                 engine_config,
@@ -407,6 +409,8 @@ def create_server_app(
             cwd=(header.cwd if header and header.cwd else default_config.cwd),
             session_id=session_id,
             include_partial_messages=True,
+            provider=default_config.provider,
+            log_api_requests=default_config.log_api_requests,
         )
         engine = QueryEngine(engine_config, permission_checker=permission_checker)
         await engine.initialize()
