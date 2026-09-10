@@ -105,6 +105,9 @@ function buildModel(events, sessionId, header) {
         break;
     }
 
+    // turn/start、turn/end 挂在 turn 对象上，按时间线在步骤前/后单独渲染；
+    // 否则 turn/end 会掉进 preEvents，标签出现在 step 前面。
+    if (ev.type === "turn/start" || ev.type === "turn/end") continue;
     if (curStep) curStep.events.push(ev);
     else if (curTurn) curTurn.preEvents.push(ev);
   }
@@ -142,11 +145,25 @@ function summarize(events, turns) {
     else if (ev.type === "step/start") steps++;
   }
   usage.total_tokens = usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
-  const first = events[0];
-  const last = events[events.length - 1];
-  const wall = (first && last && first.timestamp != null && last.timestamp != null)
-    ? (last.timestamp - first.timestamp) : null;
-  return { turns: turns.length, steps, toolCalls, toolResults, usage, wallMs: wall };
+  // 会话用时 = 各轮 turn/start → turn/end 的差值合计（不含回合之间的空闲）
+  let durationMs = 0;
+  let completedTurns = 0;
+  for (const turn of turns) {
+    const start = turn.start && turn.start.timestamp;
+    const end = turn.end && turn.end.timestamp;
+    if (start != null && end != null) {
+      durationMs += end - start;
+      completedTurns++;
+    }
+  }
+  return {
+    turns: turns.length,
+    steps,
+    toolCalls,
+    toolResults,
+    usage,
+    wallMs: completedTurns ? durationMs : null,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -255,7 +272,7 @@ function renderSummary(model) {
   box.appendChild(kv(title, headline, s.turns + " 轮 / " + s.steps + " 步"));
   box.appendChild(kv("工具调用", s.toolCalls + " / " + s.toolResults, ""));
   box.appendChild(kv("累计 token", s.usage.total_tokens, "in=" + s.usage.input_tokens + " out=" + s.usage.output_tokens + " cache_r=" + s.usage.cache_read_input_tokens + " cache_c=" + s.usage.cache_creation_input_tokens));
-  if (s.wallMs != null) box.appendChild(kv("会话时长", fmtMs(s.wallMs), ""));
+  if (s.wallMs != null) box.appendChild(kv("会话用时", fmtMs(s.wallMs), ""));
 }
 
 /* ------------------------------------------------------------------ */
@@ -289,12 +306,13 @@ function renderTurn(turn) {
 
   const body = el("div", "turn-body");
   for (const ev of turn.preEvents) {
-    if (ev.type === "turn/start") continue;
+    if (ev.type === "turn/start" || ev.type === "turn/end") continue;
     body.appendChild(renderEventRow(ev, turn));
   }
   for (const st of turn.steps) {
     body.appendChild(renderStep(st, turn));
   }
+  if (turn.end) body.appendChild(renderEventRow(turn.end, turn));
   node.appendChild(body);
   bindCollapse(head, body, true);
   return node;
@@ -771,9 +789,19 @@ function setupLocateBar() {
     const t = n.dataset.eventType;
     counts[t] = (counts[t] || 0) + 1;
   }
+  // 按事件流里首次出现的顺序排标签，避免 EVENT_META 把 turn/end 提前到 step 前面
   const ordered = [];
-  for (const t of Object.keys(EVENT_META)) if (counts[t]) ordered.push(t);
-  for (const t of Object.keys(counts)) if (!EVENT_META[t]) ordered.push(t);
+  const seen = new Set();
+  const stream = (currentModel && currentModel.events) || [];
+  for (const ev of stream) {
+    const t = ev && ev.type;
+    if (!t || seen.has(t) || !counts[t]) continue;
+    seen.add(t);
+    ordered.push(t);
+  }
+  for (const t of Object.keys(counts)) {
+    if (!seen.has(t)) ordered.push(t);
+  }
 
   select.innerHTML = "";
   const placeholder = el("option");
