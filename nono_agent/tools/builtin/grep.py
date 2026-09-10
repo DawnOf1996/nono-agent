@@ -4,6 +4,7 @@
 - 正则/字面量搜索
 - include glob 过滤文件类型
 - 尊重 Ignore
+- UTF-8 优先，失败则按本机编码 / gb18030 解码
 - 结果截断（文件数 / 每文件匹配数）
 """
 
@@ -14,7 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from nono_agent.core.types import ToolResult
-from nono_agent.tools.builtin._common import error_result, ok_result, resolve_path
+from nono_agent.tools.builtin._common import (
+    decode_text,
+    error_result,
+    is_binary,
+    ok_result,
+    resolve_path,
+)
 from nono_agent.tools.protocol import ToolBase
 
 # 结果上限
@@ -108,9 +115,12 @@ class GrepTool(ToolBase):
                 files_scanned += 1
 
                 try:
-                    text = p.read_text(encoding="utf-8", errors="replace")
+                    data = p.read_bytes()
                 except OSError:
                     continue
+                if is_binary(data):
+                    continue
+                text, _encoding = decode_text(data)
 
                 file_matches = 0
                 for line_no, line in enumerate(text.splitlines(), start=1):

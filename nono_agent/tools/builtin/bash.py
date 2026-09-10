@@ -15,7 +15,7 @@ from typing import Any
 
 from nono_agent.core.types import ToolResult
 from nono_agent.permissions.bash_classify import BashClassifier, BashRisk
-from nono_agent.tools.builtin._common import ok_result, resolve_path, truncate_text
+from nono_agent.tools.builtin._common import decode_text, ok_result, resolve_path, truncate_text
 from nono_agent.tools.protocol import ToolBase
 
 # 默认输出上限（字符）
@@ -131,7 +131,7 @@ class BashTool(ToolBase):
             if abort_task is not None:
                 abort_task.cancel()
 
-        output = (stdout or b"").decode("utf-8", errors="replace")
+        output, _encoding = decode_text(stdout or b"")
         output = truncate_text(output, _MAX_OUTPUT_CHARS)
 
         prefix = f"[{risk.value}] " if risk is not BashRisk.SAFE else ""

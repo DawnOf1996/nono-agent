@@ -1,5 +1,7 @@
 """Tests for production builtin tools (bash / read / write / edit / glob / grep)."""
 
+import sys
+
 import pytest
 
 from nono_agent.permissions.sandbox import IgnoreMatcher, PathSandbox
@@ -54,6 +56,41 @@ class TestBuiltinFactory:
         }
 
 
+class TestDecodeText:
+    def test_utf8_roundtrip(self):
+        from nono_agent.tools.builtin._common import decode_text, encoding_note, is_utf8_family
+
+        text, enc = decode_text("你好".encode())
+        assert text == "你好"
+        assert is_utf8_family(enc)
+        assert encoding_note(enc) is None
+
+    def test_utf8_bom(self):
+        from nono_agent.tools.builtin._common import decode_text, is_utf8_family
+
+        text, enc = decode_text("你好".encode("utf-8-sig"))
+        assert text == "你好"
+        assert is_utf8_family(enc)
+
+    def test_gbk_chinese(self):
+        from nono_agent.tools.builtin._common import decode_text, encoding_note, is_utf8_family
+
+        text, enc = decode_text("你好".encode("gbk"))
+        assert text == "你好"
+        assert not is_utf8_family(enc)
+        note = encoding_note(enc)
+        assert note is not None
+        assert "decoded as" in note
+
+    def test_lossy_fallback(self, monkeypatch):
+        from nono_agent.tools.builtin import _common as common
+
+        monkeypatch.setattr(common, "_decode_candidates", lambda: ["utf-8"])
+        text, enc = common.decode_text(b"\x80")
+        assert enc == common.LOSSY_ENCODING
+        assert "\ufffd" in text
+
+
 class TestWriteAndRead:
     async def test_write_then_read_with_line_numbers(self, ctx, tmp_path):
         w = WriteFileTool()
@@ -82,6 +119,21 @@ class TestWriteAndRead:
         result = await r.execute({"path": "bin.dat"}, ctx)
         assert result.is_error
         assert "binary" in result.content
+
+    async def test_read_gbk_file(self, ctx, tmp_path):
+        (tmp_path / "gbk.txt").write_bytes("你好世界".encode("gbk"))
+        r = ReadFileTool()
+        result = await r.execute({"path": "gbk.txt"}, ctx)
+        assert not result.is_error
+        assert "你好世界" in result.content
+        assert "decoded as" in result.content
+
+    async def test_read_utf8_has_no_encoding_note(self, ctx, tmp_path):
+        (tmp_path / "u.txt").write_text("你好", encoding="utf-8")
+        r = ReadFileTool()
+        result = await r.execute({"path": "u.txt"}, ctx)
+        assert "你好" in result.content
+        assert "decoded as" not in result.content
 
     async def test_write_atomic(self, ctx, tmp_path):
         w = WriteFileTool()
@@ -117,6 +169,33 @@ class TestEdit:
         )
         assert not result.is_error
         assert (tmp_path / "f.txt").read_text() == "cc bb cc\n"
+
+    async def test_edit_gbk_file_rewrites_utf8(self, ctx, tmp_path):
+        path = tmp_path / "gbk.txt"
+        path.write_bytes("你好世界".encode("gbk"))
+        e = EditFileTool()
+        result = await e.execute(
+            {"path": "gbk.txt", "old_string": "世界", "new_string": "中国"},
+            ctx,
+        )
+        assert not result.is_error
+        assert "UTF-8" in result.content
+        assert path.read_text(encoding="utf-8") == "你好中国"
+
+    async def test_edit_refuses_undecodable(self, ctx, tmp_path, monkeypatch):
+        from nono_agent.tools.builtin import _common as common
+        from nono_agent.tools.builtin import edit as edit_mod
+
+        monkeypatch.setattr(common, "_decode_candidates", lambda: ["utf-8"])
+        monkeypatch.setattr(edit_mod, "decode_text", common.decode_text)
+        (tmp_path / "bad.txt").write_bytes(b"\x80\x81")
+        e = EditFileTool()
+        result = await e.execute(
+            {"path": "bad.txt", "old_string": "a", "new_string": "b"},
+            ctx,
+        )
+        assert result.is_error
+        assert "Could not decode" in result.content
 
 
 class TestGlob:
@@ -163,6 +242,13 @@ class TestGrep:
         result = await g.execute({"pattern": "zzz_nothing"}, ctx)
         assert "No matches" in result.content
 
+    async def test_grep_gbk_file(self, ctx, tmp_path):
+        (tmp_path / "gbk.txt").write_bytes("hello 你好\n".encode("gbk"))
+        g = GrepTool()
+        result = await g.execute({"pattern": "你好"}, ctx)
+        assert "gbk.txt" in result.content
+        assert "你好" in result.content
+
 
 class TestBash:
     async def test_bash_echo(self, ctx):
@@ -173,7 +259,13 @@ class TestBash:
 
     async def test_bash_timeout(self, ctx):
         b = BashTool()
-        result = await b.execute({"command": "sleep 5", "timeout": 1}, ctx)
+        result = await b.execute(
+            {
+                "command": f'"{sys.executable}" -c "import time; time.sleep(5)"',
+                "timeout": 1,
+            },
+            ctx,
+        )
         assert result.is_error
         assert "timed out" in result.content
 

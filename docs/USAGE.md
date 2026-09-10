@@ -277,6 +277,7 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 要点：
 
 - 文件工具遵守路径沙箱（`PathSandbox`）与 `.gitignore`/`.nonoignore`（`IgnoreMatcher`）。
+- `read_file` / `grep` / `edit_file` / `bash` 读文本时 UTF-8 优先，失败则回退本机默认编码与 gb18030；`edit_file` 写回 UTF-8。
 - `web_fetch`/`web_search` 有 SSRF 防护（拒绝私网/回环/链路本地/云元数据）。
 - `bash` 有危险命令分类（`rm -rf`/`mkfs`/`sudo`/fork bomb 等）与超时/截断/abort 联动。
 - MCP 工具以 `mcp__<server>__<tool>` 命名，fail-closed（默认需授权）。

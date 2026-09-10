@@ -4,7 +4,7 @@
 - 行号输出（offset 起始行、limit 行数）
 - 大文件分段（offset/limit 控制，避免一次性读爆）
 - 二进制检测（含 NUL 字节时拒绝或摘要）
-- 编码容错（errors=replace）
+- 编码：UTF-8 优先，失败则回退本机默认编码 / gb18030
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from typing import Any
 
 from nono_agent.core.types import ToolResult
 from nono_agent.tools.builtin._common import (
+    decode_text,
+    encoding_note,
     error_result,
     is_binary,
     ok_result,
@@ -84,7 +86,7 @@ class ReadFileTool(ToolBase):
                 f"File appears to be binary ({len(data)} bytes); refusing to display.",
             )
 
-        text = data.decode("utf-8", errors="replace")
+        text, encoding = decode_text(data)
         truncated = len(data) > _MAX_BYTES
 
         lines = text.splitlines()
@@ -107,6 +109,9 @@ class ReadFileTool(ToolBase):
             numbered.append(f"{offset + i:>{width}}  {line}")
 
         result = "\n".join(numbered)
+        note = encoding_note(encoding)
+        if note:
+            result = f"{note}\n{result}"
         if truncated or len(selected) < len(lines):
             result += f"\n... [showing lines {offset}-{offset + len(selected) - 1} of {len(lines)}]"
 

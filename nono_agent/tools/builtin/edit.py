@@ -4,6 +4,7 @@
 - old_string 唯一性校验（0 次或多次匹配时明确报错）
 - replace_all 支持多处替换
 - 保留文件其余内容不变
+- 非 UTF-8 源文件按 locale/gb18030 读入，写回 UTF-8
 - 路径沙箱校验
 """
 
@@ -12,7 +13,15 @@ from __future__ import annotations
 from typing import Any
 
 from nono_agent.core.types import ToolResult
-from nono_agent.tools.builtin._common import error_result, ok_result, resolve_path
+from nono_agent.tools.builtin._common import (
+    LOSSY_ENCODING,
+    decode_text,
+    error_result,
+    is_binary,
+    is_utf8_family,
+    ok_result,
+    resolve_path,
+)
 from nono_agent.tools.protocol import ToolBase
 
 
@@ -67,12 +76,26 @@ class EditFileTool(ToolBase):
             return error_result(self._name, str(exc))
 
         try:
-            with open(file_path, encoding="utf-8") as f:
-                original = f.read()
+            with open(file_path, "rb") as f:
+                data = f.read()
         except FileNotFoundError:
             return error_result(self._name, f"File not found: {file_path}")
         except OSError as exc:
             return error_result(self._name, f"Failed to read '{file_path}': {exc}")
+
+        if is_binary(data):
+            return error_result(
+                self._name,
+                f"File appears to be binary; refusing to edit '{file_path}'.",
+            )
+
+        original, encoding = decode_text(data)
+        if encoding == LOSSY_ENCODING:
+            return error_result(
+                self._name,
+                f"Could not decode '{file_path}' as UTF-8 or the locale encoding; "
+                "refusing to edit to avoid corrupting the file.",
+            )
 
         count = original.count(old_string)
         if count == 0:
@@ -90,13 +113,16 @@ class EditFileTool(ToolBase):
         updated = original.replace(old_string, new_string)
 
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
+            with open(file_path, "w", encoding="utf-8", newline="") as f:
                 f.write(updated)
         except OSError as exc:
             return error_result(self._name, f"Failed to write '{file_path}': {exc}")
 
         replaced = count if replace_all else 1
+        note = ""
+        if not is_utf8_family(encoding):
+            note = f" Rewrote as UTF-8 (was {encoding})."
         return ok_result(
             self._name,
-            f"Edited {file_path}: replaced {replaced} occurrence(s).",
+            f"Edited {file_path}: replaced {replaced} occurrence(s).{note}",
         )
