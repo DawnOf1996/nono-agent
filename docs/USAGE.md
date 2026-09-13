@@ -101,8 +101,8 @@ CLI 参数：`--model` / `--provider` / `--cwd` / `--resume` / `--message|-m` / 
 # CLI 开关（不必再叠 --verbose；该 logger 会被单独调到 INFO）
 uv run python -m nono_agent.adapters.cli chat --log-api-requests
 
-# 或者转存为日志文件（输出量大）
-uv run python -m nono_agent.adapters.cli chat --log-api-requests 2 > api-requests.log
+# 或者把 stderr 转存为日志文件（输出量大；`2>` 中间不能有空格）
+uv run python -m nono_agent.adapters.cli chat --log-api-requests 2> api-requests.log
 
 # 或环境变量
 NONO_LOG_API_REQUESTS=1 uv run python -m nono_agent.adapters.cli chat
@@ -263,7 +263,21 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 ├── agents/*.md        # 子 Agent 定义
 ├── plugins/<name>/plugin.json
 ├── hooks.json         # 用户态 Hooks
-└── mcp.json           # MCP 服务器声明
+└── mcp.json           # MCP 连接清单（不含启停 / 工具禁用）
+```
+
+`mcp.json` 只写 Cursor 同款连接字段（`mcpServers`、`type`/`command`/`args`/`env`/`url`/`headers`）。是否启用、禁用其中部分工具，按 server id 写在同目录 `settings.json`：
+
+```json
+{
+  "mcp": {
+    "enabled": true,
+    "servers": {
+      "calculator": { "enabled": true, "disabledTools": ["divide"] },
+      "username": { "enabled": false }
+    }
+  }
+}
 ```
 
 ---
@@ -280,7 +294,7 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 - `read_file` / `grep` / `edit_file` / `bash` 读文本时 UTF-8 优先，失败则回退本机默认编码与 gb18030；`edit_file` 写回 UTF-8。
 - `web_fetch`/`web_search` 有 SSRF 防护（拒绝私网/回环/链路本地/云元数据）。
 - `bash` 有危险命令分类（`rm -rf`/`mkfs`/`sudo`/fork bomb 等）与超时/截断/abort 联动。
-- MCP 工具以 `mcp__<server>__<tool>` 命名，fail-closed（默认需授权）。
+- MCP 工具以 `mcp__<server>__<tool>` 命名；沿用全局权限模式。单 server 启停与部分工具禁用写在 `settings.mcp.servers.<id>`，不写进 `mcp.json`。
 
 ---
 
@@ -304,7 +318,7 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 - **Skills**：`SKILL.md`（frontmatter：`name`/`description`/`tools`），模型用 `skill` 工具激活。
 - **子 Agent**：`.nono-agent/agents/*.md`；内置 `general-purpose`/`explore`；模型用 `agent` 工具派发。
 - **Plugins**：`plugin.json` 组合注册 rules/skills/agents/mcp/权限/自定义 slash。
-- **MCP**：`.nono-agent/mcp.json` 声明 stdio 服务器，桥接 tools + resources。
+- **MCP**：`.nono-agent/mcp.json` 只写连接清单（对齐 [Cursor mcp.json](https://cursor.com/cn/docs/mcp)）：`mcpServers` / `servers` + `type`/`command`/`args`/`env`/`envFile`/`url`/`headers`/`auth`。总开关 `settings.mcp.enabled` 或 `NONO_MCP_ENABLED`；按 server id 的启停与工具禁用写在 `settings.mcp.servers.<id>`（`enabled`、`disabledTools`）。
 - **权限**：`PermissionMode`（`default/accept_edits/plan/bypass`）+ 可落盘 `PermissionRule`（工具名/path glob/bash 正则）。
 
 ---

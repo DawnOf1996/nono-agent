@@ -42,6 +42,31 @@ from nono_agent.tools.context import PermissionChecker
 logger = logging.getLogger(__name__)
 
 
+def _print_mcp_startup_feedback(console: Any, engine: QueryEngine) -> None:
+    """引擎启动后立刻打印 MCP 失败，避免只在 /mcp 里才看到。"""
+    runtime = getattr(engine, "mcp_runtime", None)
+    if runtime is None or not getattr(runtime, "enabled", False):
+        return
+    statuses = list(getattr(runtime, "statuses", []) or [])
+    failed = [
+        status
+        for status in statuses
+        if getattr(status, "enabled", True) and not getattr(status, "running", False)
+    ]
+    if not failed:
+        return
+    from rich.markup import escape
+
+    console.print("[yellow]MCP startup errors:[/yellow]")
+    for status in failed:
+        target = getattr(status, "url", None) or getattr(status, "command", None) or ""
+        where = f" ({target})" if target else ""
+        detail = getattr(status, "error", None) or "failed to start"
+        console.print(
+            f"  [red]{escape(str(status.name))}[/red]{escape(where)}: {escape(str(detail))}"
+        )
+
+
 def _make_cli_permission_checker(console: Any) -> PermissionChecker:
     """创建终端交互式权限检查器 —— 每次写操作前向用户确认。"""
 
@@ -224,6 +249,7 @@ async def run_cli(
                          f"({len(messages)} messages)[/dim]")
 
         if not interactive and initial_message:
+            _print_mcp_startup_feedback(console, engine)
             # Single-shot mode
             await _process_one_message(engine, initial_message, console)
             return
@@ -236,6 +262,7 @@ async def run_cli(
             f"Type /help for commands.",
             border_style="blue",
         ))
+        _print_mcp_startup_feedback(console, engine)
 
         while True:
             # Windows bash (Git Bash) 中 Ctrl+C 发送 SIGINT 到进程组，
@@ -266,7 +293,9 @@ async def run_cli(
                 output = command_registry.execute(
                     name, args, CommandContext(engine=engine, cwd=config.cwd)
                 )
-                console.print(f"[dim]{output}[/dim]")
+                from rich.markup import escape
+
+                console.print(f"[dim]{escape(output)}[/dim]")
                 continue
 
             await _process_one_message(engine, user_input, console)

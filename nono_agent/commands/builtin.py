@@ -200,18 +200,70 @@ class McpCommand(_SimpleCommand):
     _description = "List configured MCP servers"
 
     def execute(self, args: list[str], ctx: CommandContext) -> str:
+        from nono_agent.settings import load_settings_from_env
+
+        settings = load_settings_from_env(ctx.cwd)
+        enabled = bool(settings.get("mcp.enabled", True))
+        lines = [f"MCP enabled: {'on' if enabled else 'off'}"]
+
+        runtime = getattr(ctx.engine, "mcp_runtime", None) if ctx.engine is not None else None
+        if runtime is not None:
+            if not runtime.enabled:
+                lines.append("Runtime not started (disabled by settings).")
+                return "\n".join(lines)
+            if not runtime.statuses:
+                lines.append("No MCP servers configured (.nono-agent/mcp.json).")
+                return "\n".join(lines)
+            lines.append("MCP servers:")
+            for status in runtime.statuses:
+                if status.running:
+                    state = "running"
+                elif not status.enabled:
+                    state = "disabled"
+                else:
+                    state = "error"
+                detail = status.url or status.command or ""
+                extra = f" ({detail})" if detail else ""
+                tools = f", {status.tool_count} tools" if status.running else ""
+                hidden = (
+                    f", disabledTools={','.join(status.disabled_tools)}"
+                    if status.disabled_tools
+                    else ""
+                )
+                lines.append(
+                    f"- {status.name}: {status.transport} [{state}{tools}{hidden}]{extra}"
+                )
+                if status.error:
+                    lines.append(f"  error: {status.error}")
+            return "\n".join(lines)
+
         from nono_agent.mcp.config import load_mcp_config
+        from nono_agent.mcp.policy import resolve_server_policy
         from nono_agent.paths import project_dir
 
         mcp_path = project_dir(ctx.cwd) / "mcp.json"
         servers = load_mcp_config(mcp_path)
         if not servers:
-            return "No MCP servers configured (.nono-agent/mcp.json)."
-        lines = [
-            f"- {name}: {s.transport}" + (f" ({s.command})" if s.command else "")
-            for name, s in servers.items()
-        ]
-        return "MCP servers:\n" + "\n".join(lines)
+            lines.append("No MCP servers configured (.nono-agent/mcp.json).")
+            return "\n".join(lines)
+        lines.append("MCP servers:")
+        for name, server in servers.items():
+            extra = ""
+            if server.command:
+                extra = f" ({server.command})"
+            elif server.url:
+                extra = f" ({server.url})"
+            policy = resolve_server_policy(settings, name)
+            state = "enabled" if policy.enabled else "disabled"
+            hidden = (
+                f", disabledTools={','.join(sorted(policy.disabled_tools))}"
+                if policy.disabled_tools
+                else ""
+            )
+            lines.append(
+                f"- {name}: {server.normalized_transport} [{state}{hidden}]{extra}"
+            )
+        return "\n".join(lines)
 
 
 class PluginsCommand(_SimpleCommand):

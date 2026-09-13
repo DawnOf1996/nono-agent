@@ -1,4 +1,7 @@
-"""MCP 服务器配置 —— mcp.json 清单与 stdio/SSE 传输参数。"""
+"""MCP 服务器清单 —— 只解析连接字段（对齐 Cursor mcp.json）。
+
+启停与工具禁用见 ``settings.mcp.servers.<id>``，不写在本文件。
+"""
 
 from __future__ import annotations
 
@@ -7,23 +10,53 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+_HTTP_ALIASES = {"http", "streamable-http", "streamable_http", "streamablehttp"}
+
+
+def normalize_transport(value: str | None) -> str:
+    """归一化传输名：``http`` / ``sse`` / ``stdio``。"""
+    raw = (value or "stdio").strip().lower().replace("_", "-")
+    if raw in _HTTP_ALIASES:
+        return "http"
+    if raw == "sse":
+        return "sse"
+    return "stdio"
+
+
+def _infer_transport(data: dict[str, Any]) -> str:
+    raw = data.get("type", data.get("transport"))
+    if raw:
+        return str(raw)
+    if data.get("url") and not data.get("command"):
+        return "http"
+    return "stdio"
+
 
 @dataclass
 class MCPServerConfig:
-    """单个 MCP 服务器配置。"""
+    """单个 MCP 服务器连接配置。"""
 
-    name: str                                   # 唯一名称（前缀工具名）
-    command: str | None = None                  # stdio: 启动命令
-    args: list[str] = field(default_factory=list)   # stdio: 命令参数
-    env: dict[str, str] = field(default_factory=dict)  # stdio: 环境变量
-    transport: str = "stdio"                    # stdio | sse
-    url: str | None = None                      # sse: 端点 URL
-    enabled: bool = True                        # 是否启用
-    token: str | None = None                    # 静态令牌（stdio 经 env 传递 / sse 经 header）
-    headers: dict[str, str] = field(default_factory=dict)  # sse: 额外 HTTP 头
+    name: str
+    command: str | None = None
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    transport: str = "stdio"
+    url: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+    auth: dict[str, Any] = field(default_factory=dict)
+    env_file: str | None = None
+    runtime: str | None = None
+    entrypoint: str | None = None
+    requirements: str | None = None
+    cwd: str | None = None
+
+    @property
+    def normalized_transport(self) -> str:
+        return normalize_transport(self.transport)
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> MCPServerConfig:
+        auth = data.get("auth")
         return cls(
             name=name,
             command=data.get("command"),
@@ -37,20 +70,28 @@ class MCPServerConfig:
                 if isinstance(data.get("env"), dict)
                 else {}
             ),
-            transport=str(data.get("transport", "stdio")),
+            transport=_infer_transport(data),
             url=data.get("url"),
-            enabled=bool(data.get("enabled", True)),
-            token=data.get("token"),
             headers=(
                 {str(k): str(v) for k, v in data.get("headers", {}).items()}
                 if isinstance(data.get("headers"), dict)
                 else {}
             ),
+            auth=(
+                {str(k): v for k, v in auth.items()}
+                if isinstance(auth, dict)
+                else {}
+            ),
+            env_file=str(data["envFile"]) if data.get("envFile") else None,
+            runtime=str(data["runtime"]) if data.get("runtime") else None,
+            entrypoint=str(data["entrypoint"]) if data.get("entrypoint") else None,
+            requirements=str(data["requirements"]) if data.get("requirements") else None,
+            cwd=str(data["cwd"]) if data.get("cwd") else None,
         )
 
 
 def load_mcp_config(path: str | Path) -> dict[str, MCPServerConfig]:
-    """从 mcp.json 加载服务器配置。文件不存在/损坏返回空字典。"""
+    """从 mcp.json 加载服务器连接配置。文件不存在/损坏返回空字典。"""
     p = Path(path)
     if not p.exists():
         return {}
@@ -59,7 +100,9 @@ def load_mcp_config(path: str | Path) -> dict[str, MCPServerConfig]:
     except (json.JSONDecodeError, OSError):
         return {}
 
-    servers_raw = data.get("servers", data) if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    servers_raw = data.get("mcpServers", data.get("servers", data))
     servers: dict[str, MCPServerConfig] = {}
     if isinstance(servers_raw, dict):
         for name, server_data in servers_raw.items():

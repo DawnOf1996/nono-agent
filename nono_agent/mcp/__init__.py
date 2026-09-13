@@ -1,14 +1,29 @@
-"""MCP 客户端 —— 配置 / 生命周期 / tools 桥接（resources 与 auth 规划中）。"""
+"""MCP 客户端 —— 官方 SDK 2.x 生命周期与 tools 桥接。"""
 
-from nono_agent.mcp.bridge import MCPTool, bridge_mcp_server
-from nono_agent.mcp.client import MCPClient, MCPClientError
-from nono_agent.mcp.config import MCPServerConfig, load_mcp_config
+from nono_agent.mcp.bridge import MCPTool, bridge_mcp_server, tools_from_client
+from nono_agent.mcp.client import MCPClient, MCPClientError, describe_exception
+from nono_agent.mcp.config import MCPServerConfig, load_mcp_config, normalize_transport
+from nono_agent.mcp.launcher import LaunchRecipe, MCPLaunchError, resolve_launch, synthesize_env
+from nono_agent.mcp.policy import MCPServerPolicy, resolve_server_policy
+from nono_agent.mcp.runtime import MCPRuntime, MCPServerStatus, start_mcp_runtime
 
 __all__ = [
+    "LaunchRecipe",
     "MCPClient",
     "MCPClientError",
+    "MCPLaunchError",
+    "MCPRuntime",
     "MCPServerConfig",
+    "MCPServerPolicy",
+    "MCPServerStatus",
     "MCPTool",
     "bridge_mcp_server",
+    "describe_exception",
     "load_mcp_config",
+    "normalize_transport",
+    "resolve_launch",
+    "resolve_server_policy",
+    "start_mcp_runtime",
+    "synthesize_env",
+    "tools_from_client",
 ]

@@ -105,6 +105,35 @@ class TestCommandsWithEngine:
         # 默认无 skills/rules 也应返回非错误文本
         assert "No skills" in registry.execute("skills", [], ctx)
 
+    def test_mcp_shows_startup_error(self):
+        from types import SimpleNamespace
+
+        from nono_agent.mcp.runtime import MCPServerStatus
+
+        engine = SimpleNamespace(
+            mcp_runtime=SimpleNamespace(
+                enabled=True,
+                statuses=[
+                    MCPServerStatus(
+                        name="username",
+                        transport="http",
+                        enabled=True,
+                        running=False,
+                        url="http://127.0.0.1:8765/mcp",
+                        error="Client error '404 Not Found' for url 'http://127.0.0.1:8765/mcp'",
+                    )
+                ],
+            )
+        )
+        registry = CommandRegistry()
+        for cmd in create_builtin_commands(registry):
+            registry.register(cmd)
+        ctx = CommandContext(engine=engine, cwd=".")
+        output = registry.execute("mcp", [], ctx)
+        assert "[error]" in output
+        assert "404 Not Found" in output
+        assert "error:" in output
+
     def test_compact(self):
         engine = self._engine()
         registry = CommandRegistry()

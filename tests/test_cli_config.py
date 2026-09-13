@@ -236,3 +236,38 @@ class TestTokenSummary:
     def test_summary_matches_total_tokens_property(self):
         usage = Usage(input_tokens=10, output_tokens=5, cache_creation_input_tokens=7)
         assert f"total {usage.total_tokens}" in format_token_summary(usage)
+
+
+class TestMcpStartupFeedback:
+    def test_prints_failed_servers(self):
+        from types import SimpleNamespace
+
+        from nono_agent.adapters.cli import _print_mcp_startup_feedback
+        from nono_agent.mcp.runtime import MCPServerStatus
+
+        lines: list[str] = []
+
+        class _Console:
+            def print(self, message: str) -> None:
+                lines.append(message)
+
+        engine = SimpleNamespace(
+            mcp_runtime=SimpleNamespace(
+                enabled=True,
+                statuses=[
+                    MCPServerStatus(
+                        name="username",
+                        transport="http",
+                        enabled=True,
+                        running=False,
+                        url="http://127.0.0.1:8765/mcp",
+                        error="Client error '404 Not Found' for url 'http://127.0.0.1:8765/mcp'",
+                    )
+                ],
+            )
+        )
+        _print_mcp_startup_feedback(_Console(), engine)
+        text = "\n".join(lines)
+        assert "MCP startup errors" in text
+        assert "username" in text
+        assert "404 Not Found" in text

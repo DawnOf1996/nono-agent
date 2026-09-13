@@ -419,6 +419,7 @@ def create_test_engine(
         **(config_overrides or {}),
     )
 
+    engine_kwargs.setdefault("auto_load_mcp", False)
     return QueryEngine(
         config,
         provider_registry=registry,

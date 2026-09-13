@@ -17,6 +17,7 @@ from nono_agent.settings.models import Settings
 # 默认引擎内置设置（后续可扩展）
 DEFAULT_SETTINGS: dict[str, Any] = {
     "permissions": {"mode": "default", "rules": []},
+    "mcp": {"enabled": True, "servers": {}},
 }
 
 _USER_SETTINGS_PATH = user_home() / "settings.json"
@@ -104,10 +105,20 @@ def _record_sources(
 def load_settings_from_env(cwd: str | Path) -> Settings:
     """从环境变量加载 flag 层（NONO_*）并合并。
 
-    支持的 flag：``NONO_PERMISSION_MODE`` → permissions.mode。
+    支持的 flag：``NONO_PERMISSION_MODE`` → permissions.mode；
+    ``NONO_MCP_ENABLED`` → mcp.enabled。
+    单 server 启停 / 工具禁用见 ``mcp.servers.<id>``，不走环境变量。
     """
     flags: dict[str, Any] = {}
     mode = os.environ.get("NONO_PERMISSION_MODE")
     if mode:
         flags.setdefault("permissions", {})["mode"] = mode
+    mcp_enabled = os.environ.get("NONO_MCP_ENABLED")
+    if mcp_enabled is not None:
+        flags.setdefault("mcp", {})["enabled"] = mcp_enabled.strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
     return load_settings(cwd, flag_settings=flags)

@@ -171,6 +171,7 @@ class QueryEngine:
         register_agent_tool: bool = True,
         memory_store: MemoryStore | None = None,
         memory_manager: MemoryManager | None = None,
+        auto_load_mcp: bool = True,
     ) -> None:
         self._config = config
         self._initialized = False
@@ -223,6 +224,8 @@ class QueryEngine:
 
         # AskUserQuestion 通道（Phase 1 CLI / Phase 3 Server）
         self._ask_user = ask_user
+        self._auto_load_mcp = auto_load_mcp
+        self._mcp_runtime: Any = None
 
         # 会话信息
         self._session_id = config.session_id
@@ -272,14 +275,17 @@ class QueryEngine:
         if not self._store.all_messages():
             await self._hydrate_from_log(writer)
 
-        # 加载 Skills / 子 Agent（必须在 header 绑定 cwd 之后）
+        # 加载 Skills / 子 Agent / MCP（必须在 header 绑定 cwd 之后）
         self._load_workspace_extensions()
+        if self._auto_load_mcp:
+            await self._load_mcp()
 
         self._initialized = True
         logger.info("QueryEngine initialized (session=%s)", self._session_id)
 
     async def close(self) -> None:
         """清理资源 —— 排空待写事件、flush 事件流并注销事件观察者。"""
+        await self._close_mcp()
         await self._persist_permission_mode()
         if self._header_persist_tasks:
             await asyncio.gather(*self._header_persist_tasks, return_exceptions=True)
@@ -789,6 +795,10 @@ class QueryEngine:
     def transcript_writer(self) -> TranscriptWriter | None:
         return self._transcript_writer
 
+    @property
+    def mcp_runtime(self) -> Any:
+        return self._mcp_runtime
+
     # ------------------------------------------------------------------
     # 事件溯源辅助
     # ------------------------------------------------------------------
@@ -1014,6 +1024,8 @@ class QueryEngine:
             if existing is not None:
                 await self._bind_existing_header(writer)
             self._load_workspace_extensions()
+            if self._auto_load_mcp:
+                await self._load_mcp()
         logger.info("Resumed session %s with %d messages", session_id, len(messages))
         return messages
 
@@ -1231,6 +1243,28 @@ class QueryEngine:
             self._provider_registry, self._tool_registry, self._config
         )
         self._tool_registry.register(AgentTool(definitions, runner))
+
+    async def _load_mcp(self) -> None:
+        """按当前 cwd 启动 MCP 并把工具注册进表。失败隔离在 runtime 内完成。"""
+        from nono_agent.mcp.runtime import start_mcp_runtime
+
+        await self._close_mcp()
+        runtime = await start_mcp_runtime(self._config.cwd)
+        self._mcp_runtime = runtime
+        for tool in runtime.tools:
+            if self._tool_registry.has(tool.name):
+                self._tool_registry.unregister(tool.name)
+            self._tool_registry.register(tool)
+
+    async def _close_mcp(self) -> None:
+        runtime = self._mcp_runtime
+        self._mcp_runtime = None
+        if runtime is None:
+            return
+        for tool in list(self._tool_registry.all()):
+            if tool.name.startswith("mcp__") and self._tool_registry.has(tool.name):
+                self._tool_registry.unregister(tool.name)
+        await runtime.close()
 
     async def _ensure_session_summary(self, user_input: str) -> None:
         """若 header 尚无摘要，写入用户第一句话的前 20 字（只写一次）。"""
