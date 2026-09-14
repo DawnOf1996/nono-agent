@@ -7,8 +7,8 @@
     "build:web": "pnpm --filter @nono/web build"
   },
   "workspaces": [
-    "apps/web",
-    "apps/desktop",
+    "web",
+    "desktop",
     "packages/*"
   ]
 }

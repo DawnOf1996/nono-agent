@@ -14,7 +14,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(rootDir, "./src"),
-      "@nono/protocol": path.resolve(rootDir, "../../packages/protocol/src/index.ts"),
+      "@nono/protocol": path.resolve(rootDir, "../packages/protocol/src/index.ts"),
     },
   },
   server: {

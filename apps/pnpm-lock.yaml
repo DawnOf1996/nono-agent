@@ -8,17 +8,19 @@ importers:
 
   .: {}
 
-  apps/desktop:
+  desktop:
     devDependencies:
       electron:
         specifier: ^37.3.1
         version: 37.10.3
 
-  apps/web:
+  packages/protocol: {}
+
+  web:
     dependencies:
       '@nono/protocol':
         specifier: workspace:*
-        version: link:../../packages/protocol
+        version: link:../packages/protocol
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -65,8 +67,6 @@ importers:
       vite:
         specifier: ^7.1.5
         version: 7.3.6(@types/node@24.13.4)(jiti@2.7.0)(lightningcss@1.32.0)
-
-  packages/protocol: {}
 
 packages:
 

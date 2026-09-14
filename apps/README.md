@@ -7,8 +7,9 @@ apps/
   server/     Python sidecar（FastAPI + SSE）
   web/        Vite + React + shadcn 风格组件
   desktop/    Electron：加载 web，必要时 spawn server
-packages/
-  protocol/   前后端共享 TypeScript 类型
+  packages/
+    protocol/ 前后端共享 TypeScript 类型
+  package.json / pnpm-workspace.yaml / pnpm-lock.yaml
 ```
 
 ## 开发
@@ -23,7 +24,8 @@ cd apps/server
 uv sync
 uv run nono-app-server
 
-# 2. web（仓库根）
+# 2. web（apps/ 是 pnpm workspace 根）
+cd apps
 pnpm install
 pnpm dev:web
 

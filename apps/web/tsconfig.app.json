@@ -21,7 +21,7 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
-      "@nono/protocol": ["../../packages/protocol/src/index.ts"]
+      "@nono/protocol": ["../packages/protocol/src/index.ts"]
     }
   },
   "include": ["src"]

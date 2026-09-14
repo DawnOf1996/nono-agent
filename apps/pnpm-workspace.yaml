@@ -1,6 +1,6 @@
 packages:
-  - "apps/web"
-  - "apps/desktop"
+  - "web"
+  - "desktop"
   - "packages/*"
 
 onlyBuiltDependencies:
