@@ -2,10 +2,12 @@
 
 把本目录当作 `--cwd`。连接清单在 `.nono-agent/mcp.json`；启停与工具禁用在 `.nono-agent/settings.json` 的 `mcp.servers.<id>`。
 
-| server | 传输 | 工具 | 说明 |
-|---|---|---|---|
-| `calculator` | stdio | `add` / `subtract` / `multiply` / `divide` | CLI 启动时按 `command`/`args` 原样拉起 |
-| `username` | Streamable HTTP | `get_user_name` | 需先单独起进程；校验 Bearer + 自定义头 |
+
+| server       | 传输              | 工具                                         | 说明                             |
+| ------------ | --------------- | ------------------------------------------ | ------------------------------ |
+| `calculator` | stdio           | `add` / `subtract` / `multiply` / `divide` | CLI 启动时按 `command`/`args` 原样拉起 |
+| `username`   | Streamable HTTP | `get_user_name`                            | 需先单独起进程；校验 Bearer + 自定义头       |
+
 
 HTTP 认证约定（写在 `mcp.json` 的 `headers` 里，对齐 Cursor）：
 
@@ -23,7 +25,7 @@ HTTP 认证约定（写在 `mcp.json` 的 `headers` 里，对齐 Cursor）：
 uv run python runtime-test/mcp_servers/username_http.py
 ```
 
-健康检查：`http://127.0.0.1:8765/health`
+健康检查：`http://127.0.0.1:8889/health`
 
 ## 2. 再开 nono-agent
 
@@ -44,6 +46,8 @@ uv run python -m nono_agent.adapters.cli chat --cwd runtime-test
 - `mcp__calculator__add`
 - `mcp__username__get_user_name`
 
+
+
 ## 3. 不走对话的冒烟
 
 同样先起 HTTP 服务，再：
@@ -51,3 +55,4 @@ uv run python -m nono_agent.adapters.cli chat --cwd runtime-test
 ```bash
 uv run python runtime-test/verify_mcp.py
 ```
+
