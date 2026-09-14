@@ -26,10 +26,10 @@ export function NewTaskDialog() {
   }
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/55 p-6">
-      <div className="w-full max-w-lg border border-line bg-ink p-5">
-        <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-copper">新任务</div>
-        <h2 className="mt-2 text-lg font-medium">选一个工作空间，再选模型</h2>
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/30 p-6">
+      <div className="w-full max-w-lg rounded-2xl border border-line bg-bg p-5 shadow-xl">
+        <div className="text-xs text-faint">新会话</div>
+        <h2 className="mt-1 text-lg font-medium">选一个工作空间，再选模型</h2>
         <p className="mt-1 text-sm leading-6 text-muted">
           工具读写都落在这个目录里。桌面端可浏览文件夹；浏览器里请粘贴绝对路径。
         </p>
@@ -52,11 +52,7 @@ export function NewTaskDialog() {
 
         <div className="mt-4">
           <FieldLabel htmlFor="model">模型</FieldLabel>
-          <Select
-            id="model"
-            value={model}
-            onChange={(event) => setModel(event.target.value)}
-          >
+          <Select id="model" value={model} onChange={(event) => setModel(event.target.value)}>
             {!model ? <option value="">选择模型</option> : null}
             {(catalog?.providers ?? []).map((provider) => (
               <optgroup key={provider.id} label={provider.display_name}>
@@ -71,7 +67,7 @@ export function NewTaskDialog() {
           </Select>
           <button
             type="button"
-            className="mt-2 text-xs text-steel hover:text-copper"
+            className="mt-2 text-xs text-muted hover:text-ink"
             onClick={() => {
               setNewTaskOpen(false);
               setSettingsOpen(true);
@@ -85,10 +81,7 @@ export function NewTaskDialog() {
           <Button variant="ghost" onClick={() => setNewTaskOpen(false)}>
             取消
           </Button>
-          <Button
-            onClick={() => void newSession({ cwd: workspace, model })}
-            disabled={!workspace.trim()}
-          >
+          <Button onClick={() => void newSession({ cwd: workspace, model })} disabled={!workspace.trim()}>
             开始
           </Button>
         </div>

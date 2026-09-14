@@ -39,14 +39,12 @@ export function SettingsPanel() {
   }
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/55 p-6">
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-auto border border-line bg-ink p-5">
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/30 p-6">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl border border-line bg-bg p-5 shadow-xl">
         <div className="flex items-start justify-between">
           <div>
-            <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-copper">
-              设置
-            </div>
-            <h2 className="mt-2 text-lg font-medium">模型</h2>
+            <div className="text-xs text-faint">设置</div>
+            <h2 className="mt-1 text-lg font-medium">模型</h2>
           </div>
           <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(false)}>
             关闭
@@ -58,21 +56,16 @@ export function SettingsPanel() {
             <li className="text-sm text-muted">还没有模型。在下面添加一条供应商。</li>
           ) : (
             catalog?.providers.map((provider) => (
-              <li key={provider.id} className="border border-line p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm">{provider.display_name}</div>
-                    <div className="font-mono text-[11px] text-muted">
-                      {provider.id} · {provider.api}
-                      {provider.has_key ? "" : " · 缺密钥"}
-                    </div>
-                  </div>
+              <li key={provider.id} className="rounded-xl border border-line p-3">
+                <div className="text-sm">{provider.display_name}</div>
+                <div className="font-mono text-[11px] text-muted">
+                  {provider.id} · {provider.api}
+                  {provider.has_key ? "" : " · 缺密钥"}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {provider.models.map((item) => {
                     const selected =
-                      catalog?.default?.provider === provider.id &&
-                      catalog.default.model === item.id;
+                      catalog?.default?.provider === provider.id && catalog.default.model === item.id;
                     return (
                       <Button
                         key={item.id}
@@ -95,9 +88,7 @@ export function SettingsPanel() {
         </ul>
 
         <div className="mt-6 border-t border-line pt-4">
-          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
-            添加 / 更新
-          </div>
+          <div className="text-xs text-muted">添加 / 更新</div>
           <div className="mt-3 grid grid-cols-2 gap-3">
             <div>
               <FieldLabel htmlFor="pid">供应商 ID</FieldLabel>

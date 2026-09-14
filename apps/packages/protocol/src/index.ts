@@ -1,11 +1,27 @@
 /** 与 apps/server + nono_agent.adapters.server 对齐的前端契约。 */
 
+export type PermissionMode = "default" | "accept_edits" | "plan" | "bypass";
+
+export type SlashCommandInfo = {
+  name: string;
+  description: string;
+};
+
+export type SlashCommandResult = {
+  name: string;
+  args: string[];
+  result: string;
+};
+
 export type SessionInfo = {
   session_id: string;
   model: string;
   cwd?: string;
   turn_count: number;
   total_tokens: number;
+  permission_mode?: PermissionMode;
+  summary?: string;
+  updated_at?: number;
 };
 
 export type AppInfo = {
@@ -102,9 +118,36 @@ export type SdkResultMessage = {
   is_error: boolean;
   result?: string;
   session_id?: string;
+  duration_ms?: number;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
   };
+  context_usage?: {
+    usage_ratio?: number;
+    total_tokens?: number;
+    context_window?: number;
+  } | null;
   errors?: string[];
+};
+
+export type SessionEvent = {
+  seq: number;
+  type: string;
+  data: Record<string, unknown>;
+  timestamp: number;
+  ignorable?: boolean;
+};
+
+export type FsEntry = {
+  name: string;
+  path: string;
+  is_dir: boolean;
+};
+
+export type FsListing = {
+  path: string;
+  parent: string | null;
+  home: string;
+  entries: FsEntry[];
 };

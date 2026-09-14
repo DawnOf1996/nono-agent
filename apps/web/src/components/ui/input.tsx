@@ -6,7 +6,7 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return (
     <input
       className={cn(
-        "h-9 w-full border border-line bg-ink px-2.5 text-sm text-paper placeholder:text-muted focus:border-copper/70 focus:outline-none",
+        "h-9 w-full rounded-lg border border-line bg-bg px-2.5 text-sm text-ink placeholder:text-faint focus:border-line-strong focus:outline-none",
         className,
       )}
       {...props}
@@ -18,7 +18,7 @@ export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectE
   return (
     <select
       className={cn(
-        "h-9 w-full border border-line bg-ink px-2 text-sm text-paper focus:border-copper/70 focus:outline-none",
+        "h-9 w-full rounded-lg border border-line bg-bg px-2 text-sm text-ink focus:border-line-strong focus:outline-none",
         className,
       )}
       {...props}
@@ -28,12 +28,6 @@ export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectE
 
 export function FieldLabel({ className, ...props }: LabelHTMLAttributes<HTMLLabelElement>) {
   return (
-    <label
-      className={cn(
-        "mb-1 block font-mono text-[10px] uppercase tracking-[0.16em] text-muted",
-        className,
-      )}
-      {...props}
-    />
+    <label className={cn("mb-1 block text-xs text-muted", className)} {...props} />
   );
 }

@@ -2,9 +2,13 @@ import type {
   AppInfo,
   AskUserSignal,
   CatalogSnapshot,
+  PermissionMode,
   PermissionRequest,
   ProviderUpsert,
+  SdkResultMessage,
+  SessionEvent,
   SessionInfo,
+  SlashCommandInfo,
 } from "@nono/protocol";
 import { create } from "zustand";
 
@@ -15,24 +19,63 @@ import {
   createSession,
   fetchAppInfo,
   fetchCatalog,
+  fetchCommands,
   fetchHealth,
   fetchPermissions,
+  fetchSessionEvents,
+  runSlashCommand,
   fetchSessions,
   postChat,
   saveDefaultModel,
   saveProvider,
+  setSessionPermission,
 } from "@/api/client";
-import { extractAssistantText, extractTextDelta, extractToolNames, parseSse } from "@/api/sse";
-import { loadDraftModel, loadDraftWorkspace, saveDraftModel, saveDraftWorkspace } from "@/lib/workspace";
+import {
+  extractAssistantText,
+  extractAssistantThinking,
+  extractTextDelta,
+  extractThinkingDelta,
+  extractToolNames,
+  isTextBlockStart,
+  isThinkingBlockStart,
+  messagesFromEvents,
+  parseSse,
+} from "@/api/sse";
+import {
+  loadDraftPermissionMode,
+  normalizePermissionMode,
+  saveDraftPermissionMode,
+} from "@/lib/permissions";
+import {
+  loadDraftModel,
+  loadDraftWorkspace,
+  loadWorkspaces,
+  mergeWorkspaces,
+  saveDraftModel,
+  saveDraftWorkspace,
+  saveWorkspaces,
+} from "@/lib/workspace";
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
+export type MainView = "chat" | "trajectory";
 
 export type ChatMessage = {
   id: string;
   role: ChatRole;
   text: string;
+  thinking?: string;
+  thinkingRunning?: boolean;
   tools?: string[];
   streaming?: boolean;
+};
+
+export type TurnUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  contextRatio: number | null;
+  contextTotal: number | null;
+  contextWindow: number | null;
 };
 
 type ChatState = {
@@ -41,9 +84,13 @@ type ChatState = {
   catalog: CatalogSnapshot | null;
   sessions: SessionInfo[];
   sessionId: string | null;
+  sessionTitles: Record<string, string>;
+  events: SessionEvent[];
   messages: ChatMessage[];
   input: string;
   workspace: string;
+  workspaces: string[];
+  permissionMode: PermissionMode;
   model: string;
   streaming: boolean;
   error: string | null;
@@ -51,15 +98,24 @@ type ChatState = {
   permissions: PermissionRequest[];
   newTaskOpen: boolean;
   settingsOpen: boolean;
+  view: MainView;
+  usage: TurnUsage | null;
+  commands: SlashCommandInfo[];
   setInput: (value: string) => void;
   setWorkspace: (value: string) => void;
+  addWorkspace: (value: string) => void;
+  setPermissionMode: (mode: PermissionMode) => Promise<void>;
   setModel: (value: string) => void;
   setNewTaskOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
+  setView: (view: MainView) => void;
   refresh: () => Promise<void>;
+  refreshHealth: () => Promise<void>;
+  refreshPermissions: () => Promise<void>;
   newSession: (opts?: { model?: string; cwd?: string }) => Promise<void>;
-  openSession: (sessionId: string) => void;
+  openSession: (sessionId: string) => Promise<void>;
   send: () => Promise<void>;
+  runCommand: (line: string) => Promise<void>;
   abort: () => Promise<void>;
   resolvePermission: (requestId: string, allow: boolean) => Promise<void>;
   resolveAsk: (answers: Record<string, unknown>) => Promise<void>;
@@ -71,15 +127,82 @@ function nextId(): string {
   return crypto.randomUUID();
 }
 
+function mergeTools(current: string[] | undefined, extra: string[]): string[] {
+  return [...new Set([...(current ?? []), ...extra])];
+}
+
+function titleFromText(text: string): string {
+  const line = text.trim().split(/\r?\n/)[0] ?? "";
+  return line.slice(0, 32) || "新会话";
+}
+
+function titlesFromEvents(events: SessionEvent[]): string | null {
+  const first = messagesFromEvents(events).find((item) => item.role === "user");
+  return first ? titleFromText(first.text) : null;
+}
+
+function titlesFromSessions(
+  sessions: SessionInfo[],
+  current: Record<string, string>,
+): Record<string, string> {
+  const next = { ...current };
+  for (const item of sessions) {
+    const summary = item.summary?.trim();
+    if (!summary) continue;
+    if (!next[item.session_id] || next[item.session_id] === "新会话") {
+      next[item.session_id] = summary;
+    }
+  }
+  return next;
+}
+
+async function resolveSessionTitles(
+  sessions: SessionInfo[],
+  current: Record<string, string>,
+): Promise<Record<string, string>> {
+  const next = titlesFromSessions(sessions, current);
+  const missing = sessions.filter((item) => {
+    if (item.turn_count <= 0) return false;
+    const title = next[item.session_id];
+    return !title || title === "新会话";
+  });
+  if (!missing.length) return next;
+  const found = await Promise.all(
+    missing.map(async (item) => {
+      const events = await fetchSessionEvents(item.session_id);
+      return [item.session_id, titlesFromEvents(events)] as const;
+    }),
+  );
+  for (const [id, title] of found) {
+    if (title) next[id] = title;
+  }
+  return next;
+}
+
+function usageFromResult(result: SdkResultMessage): TurnUsage {
+  return {
+    inputTokens: result.usage?.input_tokens ?? 0,
+    outputTokens: result.usage?.output_tokens ?? 0,
+    durationMs: result.duration_ms ?? 0,
+    contextRatio: result.context_usage?.usage_ratio ?? null,
+    contextTotal: result.context_usage?.total_tokens ?? null,
+    contextWindow: result.context_usage?.context_window ?? null,
+  };
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   healthOk: false,
   info: null,
   catalog: null,
   sessions: [],
   sessionId: null,
+  sessionTitles: {},
+  events: [],
   messages: [],
   input: "",
   workspace: loadDraftWorkspace(),
+  workspaces: mergeWorkspaces([loadDraftWorkspace(), ...loadWorkspaces()]),
+  permissionMode: loadDraftPermissionMode(),
   model: loadDraftModel(),
   streaming: false,
   error: null,
@@ -87,11 +210,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
   permissions: [],
   newTaskOpen: false,
   settingsOpen: false,
+  view: "chat",
+  usage: null,
+  commands: [],
 
   setInput: (value) => set({ input: value }),
   setWorkspace: (value) => {
     saveDraftWorkspace(value);
-    set({ workspace: value });
+    set((state) => {
+      const workspaces = mergeWorkspaces([value, ...state.workspaces]);
+      saveWorkspaces(workspaces);
+      return { workspace: value, workspaces };
+    });
+  },
+  addWorkspace: (value) => {
+    get().setWorkspace(value);
+  },
+  setPermissionMode: async (mode) => {
+    saveDraftPermissionMode(mode);
+    set({ permissionMode: mode });
+    const sessionId = get().sessionId;
+    if (!sessionId) return;
+    try {
+      const result = await setSessionPermission(sessionId, mode);
+      set({ permissionMode: normalizePermissionMode(result.effective) });
+    } catch {
+      // 会话尚未在 sidecar 里时，等发送/新建时再带上
+    }
   },
   setModel: (value) => {
     saveDraftModel(value);
@@ -99,20 +244,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
   setNewTaskOpen: (open) => set({ newTaskOpen: open }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setView: (view) => set({ view }),
 
   refresh: async () => {
     try {
-      const [health, info, sessions, permissions, catalog] = await Promise.all([
+      const [health, info, sessions, permissions, catalog, commands] = await Promise.all([
         fetchHealth(),
         fetchAppInfo().catch(() => null),
         fetchSessions().catch(() => []),
         fetchPermissions().catch(() => []),
         fetchCatalog().catch(() => null),
+        fetchCommands().catch(() => get().commands),
       ]);
       const state = get();
       let model = state.model;
       if (!model && catalog?.default?.model) model = catalog.default.model;
       if (!model && info?.model) model = info.model;
+      const workspaces = mergeWorkspaces([
+        ...state.workspaces,
+        state.workspace,
+        ...sessions.map((item) => item.cwd),
+      ]);
+      saveWorkspaces(workspaces);
+      const live = sessions.find((item) => item.session_id === state.sessionId);
+      const permissionMode = live?.permission_mode
+        ? normalizePermissionMode(live.permission_mode)
+        : state.permissionMode;
+      if (live?.permission_mode) saveDraftPermissionMode(permissionMode);
+      const sessionTitles = await resolveSessionTitles(sessions, state.sessionTitles);
       set({
         healthOk: health.status === "ok",
         info,
@@ -120,7 +279,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         permissions,
         catalog,
         model,
-        error: null,
+        workspaces,
+        permissionMode,
+        sessionTitles,
+        commands,
       });
       if (model) saveDraftModel(model);
     } catch (error) {
@@ -131,6 +293,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  refreshHealth: async () => {
+    try {
+      const health = await fetchHealth();
+      set({ healthOk: health.status === "ok" });
+    } catch {
+      set({ healthOk: false });
+    }
+  },
+
+  refreshPermissions: async () => {
+    try {
+      set({ permissions: await fetchPermissions() });
+    } catch {
+      // keep last list
+    }
+  },
+
   newSession: async (opts) => {
     const cwd = (opts?.cwd ?? get().workspace).trim();
     const model = (opts?.model ?? get().model).trim();
@@ -138,33 +317,107 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ newTaskOpen: true, error: "先选择工作空间目录" });
       return;
     }
-    const session = await createSession({ model: model || undefined, cwd });
+    const permissionMode = get().permissionMode;
+    const session = await createSession({
+      model: model || undefined,
+      cwd,
+      permission_mode: permissionMode,
+    });
+    const nextMode = normalizePermissionMode(session.permission_mode || permissionMode);
     saveDraftWorkspace(cwd);
     saveDraftModel(session.model);
-    set((state) => ({
+    saveDraftPermissionMode(nextMode);
+    set((state) => {
+      const workspaces = mergeWorkspaces([session.cwd || cwd, ...state.workspaces]);
+      saveWorkspaces(workspaces);
+      return {
       sessionId: session.session_id,
       workspace: session.cwd || cwd,
+      workspaces,
+      permissionMode: nextMode,
       model: session.model,
       sessions: [session, ...state.sessions.filter((item) => item.session_id !== session.session_id)],
+      sessionTitles: { ...state.sessionTitles, [session.session_id]: "新会话" },
       messages: [],
+      events: [],
+      usage: null,
       error: null,
       newTaskOpen: false,
-    }));
+      view: "chat",
+    };
+    });
   },
 
-  openSession: (sessionId) => {
+  openSession: async (sessionId) => {
     const session = get().sessions.find((item) => item.session_id === sessionId);
+    const permissionMode = session?.permission_mode
+      ? normalizePermissionMode(session.permission_mode)
+      : get().permissionMode;
+    if (session?.permission_mode) saveDraftPermissionMode(permissionMode);
     set({
       sessionId,
       workspace: session?.cwd || get().workspace,
       model: session?.model || get().model,
-      messages: [],
+      permissionMode,
+      error: null,
     });
+    try {
+      const events = await fetchSessionEvents(sessionId);
+      const messages = messagesFromEvents(events);
+      const title = titlesFromEvents(events);
+      set((state) => ({
+        events,
+        messages,
+        sessionTitles: title
+          ? { ...state.sessionTitles, [sessionId]: title }
+          : state.sessionTitles,
+      }));
+    } catch {
+      set({ events: [], messages: [] });
+    }
+  },
+
+  runCommand: async (line) => {
+    const raw = line.trim();
+    const commandLine = raw.startsWith("/") ? raw : `/${raw}`;
+    if (!commandLine.slice(1).trim() || get().streaming) return;
+    if (!get().workspace.trim() && !get().sessionId) {
+      set({ newTaskOpen: true, error: "先选择工作空间目录" });
+      return;
+    }
+    set({ input: "", error: null, view: "chat" });
+    try {
+      const out = await runSlashCommand({
+        line: commandLine,
+        session_id: get().sessionId ?? undefined,
+        cwd: get().workspace || undefined,
+      });
+      if (out.name === "clear") {
+        set({ messages: [], events: [], usage: null });
+        return;
+      }
+      set((state) => ({
+        messages: [
+          ...state.messages,
+          {
+            id: nextId(),
+            role: "system",
+            text: `/${out.name}${out.args.length ? ` ${out.args.join(" ")}` : ""}\n${out.result}`,
+          },
+        ],
+      }));
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : "指令执行失败" });
+    }
   },
 
   send: async () => {
     const text = get().input.trim();
     if (!text || get().streaming) return;
+    if (text.startsWith("/")) {
+      await get().runCommand(text);
+      return;
+    }
     if (!get().workspace.trim()) {
       set({ newTaskOpen: true, error: "先选择工作空间目录" });
       return;
@@ -181,11 +434,36 @@ export const useChatStore = create<ChatState>((set, get) => ({
       input: "",
       streaming: true,
       error: null,
+      view: "chat",
+      sessionTitles: {
+        ...state.sessionTitles,
+        [sessionId]: state.sessionTitles[sessionId] && state.sessionTitles[sessionId] !== "新会话"
+          ? state.sessionTitles[sessionId]
+          : titleFromText(text),
+      },
       messages: [...state.messages, userMessage, { id: draftId, role: "assistant", text: "", streaming: true }],
     }));
 
+    const patchDraft = (updater: (item: ChatMessage) => ChatMessage) => {
+      set((state) => {
+        let found = false;
+        const messages = state.messages.map((item) => {
+          if (item.id !== draftId) return item;
+          found = true;
+          return updater(item);
+        });
+        if (found) return { messages };
+        return { messages: [...messages, updater({ id: draftId, role: "assistant", text: "", streaming: true })] };
+      });
+    };
+
     try {
-      const response = await postChat(sessionId, text, get().model || undefined);
+      const response = await postChat(
+        sessionId,
+        text,
+        get().model || undefined,
+        get().permissionMode,
+      );
       if (!response.ok) {
         throw new Error(await response.text());
       }
@@ -196,45 +474,53 @@ export const useChatStore = create<ChatState>((set, get) => ({
           throw new Error(payload.error || "stream error");
         }
         if (frame.event === "ask_user") {
-          const ask = JSON.parse(frame.data) as AskUserSignal;
-          set({ ask });
+          set({ ask: JSON.parse(frame.data) as AskUserSignal });
           continue;
         }
         if (!frame.data) continue;
         const payload = JSON.parse(frame.data) as unknown;
         if (frame.event === "stream_event") {
-          const delta = extractTextDelta(payload);
-          if (!delta) continue;
-          set((state) => ({
-            messages: state.messages.map((item) =>
-              item.id === draftId ? { ...item, text: item.text + delta } : item,
-            ),
+          if (isThinkingBlockStart(payload)) {
+            patchDraft((item) => ({ ...item, thinkingRunning: true, streaming: true }));
+            continue;
+          }
+          const thinkingDelta = extractThinkingDelta(payload);
+          if (thinkingDelta) {
+            patchDraft((item) => ({
+              ...item,
+              thinking: (item.thinking ?? "") + thinkingDelta,
+              thinkingRunning: true,
+              streaming: true,
+            }));
+            continue;
+          }
+          const textStarted = isTextBlockStart(payload);
+          const textDelta = extractTextDelta(payload);
+          if (!textDelta && !textStarted) continue;
+          patchDraft((item) => ({
+            ...item,
+            text: textDelta ? item.text + textDelta : item.text,
+            thinkingRunning: false,
+            streaming: true,
           }));
         } else if (frame.event === "assistant") {
           const full = extractAssistantText(payload);
+          const thinking = extractAssistantThinking(payload);
           const tools = extractToolNames(payload);
-          set((state) => ({
-            messages: state.messages.map((item) =>
-              item.id === draftId
-                ? { ...item, text: full || item.text, tools: tools.length ? tools : item.tools }
-                : item,
-            ),
-          }));
-        } else if (frame.event === "system") {
-          const system = payload as { content?: string; subtype?: string };
-          const note = system.content || system.subtype;
-          if (!note) continue;
-          set((state) => ({
-            messages: [
-              ...state.messages.filter((item) => item.id !== draftId || item.text),
-              { id: nextId(), role: "system", text: note },
-            ],
+          patchDraft((item) => ({
+            ...item,
+            text: full || item.text,
+            thinking: thinking || item.thinking,
+            thinkingRunning: false,
+            tools: tools.length ? mergeTools(item.tools, tools) : item.tools,
+            streaming: true,
           }));
         } else if (frame.event === "result") {
-          const result = payload as { result?: string; is_error?: boolean; errors?: string[] };
+          const result = payload as SdkResultMessage;
           if (result.is_error) {
             set({ error: result.errors?.join("\n") || result.result || "本轮失败" });
           }
+          set({ usage: usageFromResult(result) });
         }
       }
     } catch (error) {
@@ -243,10 +529,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set((state) => ({
         streaming: false,
         messages: state.messages.map((item) =>
-          item.id === draftId ? { ...item, streaming: false } : item,
+          item.id === draftId ? { ...item, streaming: false, thinkingRunning: false } : item,
         ),
       }));
       await get().refresh();
+      const liveId = get().sessionId;
+      if (liveId) {
+        const events = await fetchSessionEvents(liveId).catch(() => get().events);
+        set({ events });
+      }
     }
   },
 

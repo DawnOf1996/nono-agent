@@ -28,7 +28,7 @@ import aiofiles  # type: ignore[import-untyped]
 import zstandard as zstd
 
 from nono_agent.paths import user_home
-from nono_agent.session.events import SessionEvent
+from nono_agent.session.events import EVENT_TURN_START, SessionEvent
 from nono_agent.session.header import (
     SessionHeader,
     VersionMismatchError,
@@ -202,18 +202,32 @@ def list_session_files(session_dir: Path | None = None) -> list[dict[str, Any]]:
 
     for file in files:
         session_id = transcript_session_id(file)
+        line_count = 0
+        turn_count = 0
         try:
-            line_count = sum(1 for line in read_transcript_text(file).splitlines() if line.strip())
+            text = read_transcript_text(file)
         except OSError:
-            line_count = 0
+            text = ""
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            line_count += 1
+            try:
+                event = parse_event_line(line)
+            except VersionMismatchError:
+                continue
+            if event is not None and event.type == EVENT_TURN_START:
+                turn_count += 1
         header = peek_session_header(session_id, directory)
         sessions.append(
             {
                 "session_id": session_id,
                 "event_count": line_count,
+                "turn_count": turn_count,
                 "last_modified": file.stat().st_mtime,
                 "cwd": header.cwd if header else "",
                 "summary": header.summary if header else "",
+                "permission_mode": header.permission_mode if header else "default",
             }
         )
     sessions.sort(key=lambda item: str(item["session_id"]))

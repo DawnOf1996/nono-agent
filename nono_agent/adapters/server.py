@@ -21,16 +21,20 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+from nono_agent.commands import CommandContext, CommandRegistry, parse_slash
+from nono_agent.commands.builtin import create_builtin_commands
 from nono_agent.core.config import EngineConfig
 from nono_agent.core.engine import QueryEngine
 from nono_agent.paths import resolve_session_cwd
 from nono_agent.providers.catalog import load_catalog
-from nono_agent.session.header import VersionMismatchError
+from nono_agent.permissions.policy import PermissionMode
+from nono_agent.session.header import VersionMismatchError, normalize_permission_mode
 from nono_agent.session.redact import redact_events
 from nono_agent.session.transcript import (
     DEFAULT_SESSION_DIR,
     LocalFileTranscriptWriter,
     existing_transcript_path,
+    list_session_files,
     peek_session_header,
 )
 from nono_agent.tools.context import PermissionChecker
@@ -112,6 +116,10 @@ def create_server_app(
     ask_signal: dict[str, asyncio.Queue[dict[str, Any]]] = {}  # session_id -> 信号队列
 
     default_config = config or EngineConfig()
+
+    command_registry = CommandRegistry()
+    for command in create_builtin_commands(command_registry):
+        command_registry.register(command)
 
     def _touch(session_id: str) -> None:
         last_activity[session_id] = time.monotonic()
@@ -270,6 +278,7 @@ def create_server_app(
         message: str                                    # 用户消息文本
         session_id: str | None = None                   # 会话 ID（可选，不传则自动创建）
         model: str | None = None                        # 模型覆盖（可选）
+        permission_mode: str | None = None              # 本轮生效的权限模式
         attachments: list[dict[str, Any]] | None = None # 附件列表（可选）
 
     class SessionInfo(BaseModel):
@@ -279,11 +288,54 @@ def create_server_app(
         cwd: str = ""            # 工具工作空间
         turn_count: int          # 已完成的对话轮次
         total_tokens: int        # 累计 token 数
+        permission_mode: str = "default"  # 当前或已请求的权限模式
+        summary: str = ""                # header 里用户第一句话的短摘要
+        updated_at: float = 0            # 最近活动时间（unix 秒）
 
     class NewSessionRequest(BaseModel):
-        """创建会话 —— JSON 体可指定 model / cwd。"""
+        """创建会话 —— JSON 体可指定 model / cwd / permission_mode。"""
         model: str | None = None
         cwd: str | None = None
+        permission_mode: str | None = None
+
+    class PermissionModeBody(BaseModel):
+        """切换会话权限模式。"""
+        mode: str
+
+    class CommandRequest(BaseModel):
+        """执行一条斜杠指令。"""
+        line: str
+        session_id: str | None = None
+        cwd: str | None = None
+
+    def _effective_permission_mode(engine: QueryEngine) -> str:
+        pending = engine.permission_policy.pending_mode
+        return (pending or engine.permission_policy.mode).value
+
+    def _request_permission_mode(engine: QueryEngine, raw: str | None) -> str:
+        mode = PermissionMode(normalize_permission_mode(raw))
+        engine.permission_policy.request_mode(mode)
+        return _effective_permission_mode(engine)
+
+    def _session_summary(engine: QueryEngine) -> str:
+        header = engine._session_header
+        if header is not None and header.summary:
+            return header.summary
+        peeked = peek_session_header(engine._config.session_id)
+        return peeked.summary if peeked and peeked.summary else ""
+
+    def _session_updated_at(engine: QueryEngine) -> float:
+        writer = engine.transcript_writer
+        path = getattr(writer, "session_file", None) if writer is not None else None
+        if path is not None:
+            try:
+                return float(path.stat().st_mtime)
+            except OSError:
+                pass
+        header = engine._session_header
+        if header is not None and header.created_at:
+            return header.created_at / 1000.0
+        return time.time()
 
     def _session_info(engine: QueryEngine) -> SessionInfo:
         return SessionInfo(
@@ -292,6 +344,9 @@ def create_server_app(
             cwd=engine._config.cwd,
             turn_count=engine._turn_count,
             total_tokens=engine.token_tracker.get_total_tokens(),
+            permission_mode=_effective_permission_mode(engine),
+            summary=_session_summary(engine),
+            updated_at=_session_updated_at(engine),
         )
 
     class AbortRequest(BaseModel):
@@ -330,6 +385,8 @@ def create_server_app(
         """
         session_id = request.session_id or str(uuid.uuid4())
         engine = await _get_or_create_engine(session_id, model=request.model)
+        if request.permission_mode:
+            _request_permission_mode(engine, request.permission_mode)
         _touch(session_id)
 
         async def event_generator() -> Any:
@@ -405,17 +462,100 @@ def create_server_app(
                 req = NewSessionRequest.model_validate(raw)
         session_id = str(uuid.uuid4())
         engine = await _get_or_create_engine(session_id, model=req.model, cwd=req.cwd)
+        if req.permission_mode:
+            _request_permission_mode(engine, req.permission_mode)
         info = _session_info(engine)
         return info.model_copy(update={"turn_count": 0, "total_tokens": 0})
 
+    def _disk_session_info(item: dict[str, Any]) -> SessionInfo:
+        return SessionInfo(
+            session_id=str(item["session_id"]),
+            model="",
+            cwd=str(item.get("cwd") or ""),
+            turn_count=int(item.get("turn_count") or 0),
+            total_tokens=0,
+            permission_mode=normalize_permission_mode(
+                str(item.get("permission_mode") or "")
+            ),
+            summary=str(item.get("summary") or ""),
+            updated_at=float(item.get("last_modified") or 0),
+        )
+
+    @app.get("/commands")
+    async def list_commands() -> dict[str, Any]:
+        """列出可在输入框用 ``/`` 调用的斜杠指令。"""
+        items = []
+        for name in command_registry.names():
+            command = command_registry.find(name)
+            if command is None:
+                continue
+            items.append({"name": name, "description": command.description})
+        return {"commands": items}
+
+    @app.post("/command")
+    async def run_command(body: CommandRequest) -> dict[str, Any]:
+        """执行斜杠指令，返回给 UI 展示的文本（不经过模型）。"""
+        raw = body.line.strip()
+        if raw and not raw.startswith("/"):
+            raw = f"/{raw}"
+        parsed = parse_slash(raw)
+        if parsed is None:
+            raise HTTPException(status_code=400, detail="Not a slash command")
+        name, args = parsed
+        engine = None
+        cwd = resolve_session_cwd(body.cwd or default_config.cwd)
+        if body.session_id:
+            engine = await _get_or_create_engine(
+                body.session_id, cwd=body.cwd or None
+            )
+            cwd = engine._config.cwd
+        result = command_registry.execute(
+            name, args, CommandContext(engine=engine, cwd=cwd)
+        )
+        return {"name": name, "args": args, "result": result}
+
     @app.get("/sessions")
     async def list_sessions() -> dict[str, Any]:
-        """列出所有活跃会话 —— 返回每个会话的 ID、模型、轮次和 token 数。"""
-        result = []
+        """列出磁盘上的已保存会话，活跃引擎覆盖同 id 的实时字段。"""
+        live: dict[str, SessionInfo] = {}
         async with session_lock:
-            for _sid, engine in sessions.items():
-                result.append(_session_info(engine))
+            for sid, engine in sessions.items():
+                live[sid] = _session_info(engine)
+
+        result: list[SessionInfo] = []
+        seen: set[str] = set()
+        persisted = sorted(
+            list_session_files(),
+            key=lambda item: float(item.get("last_modified") or 0),
+            reverse=True,
+        )
+        for item in persisted:
+            sid = str(item["session_id"])
+            seen.add(sid)
+            result.append(live[sid] if sid in live else _disk_session_info(item))
+        for sid, info in live.items():
+            if sid not in seen:
+                result.append(info)
         return {"sessions": result}
+
+    @app.post("/session/{session_id}/permission")
+    async def set_session_permission(session_id: str, body: PermissionModeBody) -> dict[str, Any]:
+        """请求切换会话权限模式，下一次 turn/step 生效。"""
+        mode = normalize_permission_mode(body.mode)
+        if body.mode and mode != body.mode.strip():
+            raise HTTPException(status_code=400, detail="Unknown permission mode")
+        async with session_lock:
+            engine = sessions.get(session_id)
+        if engine is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        effective = _request_permission_mode(engine, mode)
+        pending = engine.permission_policy.pending_mode
+        return {
+            "session_id": session_id,
+            "mode": engine.permission_policy.mode.value,
+            "pending": pending.value if pending is not None else None,
+            "effective": effective,
+        }
 
     @app.delete("/session/{session_id}")
     async def close_session(session_id: str) -> dict[str, str]:

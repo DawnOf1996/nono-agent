@@ -248,6 +248,7 @@ class TestListSessionFiles:
         sessions = list_session_files(tmp_path)
         assert {s["session_id"] for s in sessions} == {"a", "b"}
         assert next(s for s in sessions if s["session_id"] == "a")["event_count"] == 2
+        assert next(s for s in sessions if s["session_id"] == "a")["turn_count"] == 0
         assert "summary" in next(s for s in sessions if s["session_id"] == "a")
         assert "cwd" in next(s for s in sessions if s["session_id"] == "a")
 

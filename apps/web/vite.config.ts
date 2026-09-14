@@ -26,6 +26,8 @@ export default defineConfig({
       "/chat": sidecar,
       "/session": sidecar,
       "/sessions": sidecar,
+      "/command": sidecar,
+      "/commands": sidecar,
       "/abort": sidecar,
       "/app": sidecar,
     },

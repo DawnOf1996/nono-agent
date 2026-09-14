@@ -2,10 +2,17 @@ import type {
   AppInfo,
   AskUserSignal,
   CatalogSnapshot,
+  FsListing,
   PermissionRequest,
+  PermissionMode,
   ProviderUpsert,
+  SessionEvent,
   SessionInfo,
+  SlashCommandInfo,
+  SlashCommandResult,
 } from "@nono/protocol";
+
+import { parseSse } from "@/api/sse";
 
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -58,6 +65,7 @@ export async function fetchSessions(): Promise<SessionInfo[]> {
 export async function createSession(input?: {
   model?: string;
   cwd?: string;
+  permission_mode?: PermissionMode;
 }): Promise<SessionInfo> {
   return readJson(
     await fetch("/session/new", {
@@ -66,7 +74,21 @@ export async function createSession(input?: {
       body: JSON.stringify({
         model: input?.model || undefined,
         cwd: input?.cwd || undefined,
+        permission_mode: input?.permission_mode || undefined,
       }),
+    }),
+  );
+}
+
+export async function setSessionPermission(
+  sessionId: string,
+  mode: PermissionMode,
+): Promise<{ effective: PermissionMode }> {
+  return readJson(
+    await fetch(`/session/${encodeURIComponent(sessionId)}/permission`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
     }),
   );
 }
@@ -115,12 +137,84 @@ export async function answerAskUser(
   );
 }
 
-export function postChat(sessionId: string, message: string, model?: string): Promise<Response> {
+export function postChat(
+  sessionId: string,
+  message: string,
+  model?: string,
+  permissionMode?: PermissionMode,
+): Promise<Response> {
   return fetch("/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ session_id: sessionId, message, model }),
+    body: JSON.stringify({
+      session_id: sessionId,
+      message,
+      model,
+      permission_mode: permissionMode,
+    }),
   });
 }
 
-export type { AppInfo, AskUserSignal, CatalogSnapshot, PermissionRequest, SessionInfo };
+export async function fetchSessionEvents(sessionId: string): Promise<SessionEvent[]> {
+  const response = await fetch(`/session/${encodeURIComponent(sessionId)}/events?follow=false`, {
+    headers: { Accept: "text/event-stream" },
+  });
+  if (!response.ok) return [];
+  const events: SessionEvent[] = [];
+  for await (const frame of parseSse(response)) {
+    if (frame.event === "done" || frame.event === "error") break;
+    if (frame.event !== "session_event" || !frame.data) continue;
+    try {
+      events.push(JSON.parse(frame.data) as SessionEvent);
+    } catch {
+      // skip malformed frames
+    }
+  }
+  return events;
+}
+
+export async function fetchDirectory(path?: string | null): Promise<FsListing> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+  return readJson(await fetch(`/app/fs${query}`));
+}
+
+export async function fetchCommands(): Promise<SlashCommandInfo[]> {
+  const data = await readJson<{ commands: SlashCommandInfo[] }>(await fetch("/commands"));
+  return data.commands;
+}
+
+export async function runSlashCommand(input: {
+  line: string;
+  session_id?: string;
+  cwd?: string;
+}): Promise<SlashCommandResult> {
+  return readJson(
+    await fetch("/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function createDirectory(parent: string, name: string): Promise<{ path: string }> {
+  return readJson(
+    await fetch("/app/fs/mkdir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parent, name }),
+    }),
+  );
+}
+
+export type {
+  AppInfo,
+  AskUserSignal,
+  CatalogSnapshot,
+  FsListing,
+  PermissionMode,
+  PermissionRequest,
+  SessionEvent,
+  SessionInfo,
+  SlashCommandInfo,
+};

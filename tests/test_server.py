@@ -40,11 +40,63 @@ class TestAuth:
             assert resp.status_code == 200
 
 
+class TestSlashCommands:
+    def test_list_includes_mcp(self):
+        with _client(api_key=None) as client:
+            data = client.get("/commands").json()
+        names = {item["name"] for item in data["commands"]}
+        assert "mcp" in names
+        assert "compact" in names
+        assert "help" in names
+
+    def test_run_mcp_without_session(self, tmp_path):
+        with _client(api_key=None) as client:
+            resp = client.post("/command", json={"line": "/mcp", "cwd": str(tmp_path)})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["name"] == "mcp"
+        assert "MCP" in body["result"]
+
+    def test_invalid_line_rejected(self):
+        with _client(api_key=None) as client:
+            resp = client.post("/command", json={"line": "/"})
+        assert resp.status_code == 400
+
+
 class TestAskUserAnswer:
     def test_no_pending_question(self):
         with _client(api_key=None) as client:
             resp = client.post("/session/x/answer", json={"answers": {}})
             assert resp.status_code == 404
+
+
+class TestPermissionMode:
+    def test_new_session_accepts_mode(self, tmp_path):
+        with _client(api_key=None) as client:
+            resp = client.post(
+                "/session/new",
+                json={"cwd": str(tmp_path), "permission_mode": "plan"},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["permission_mode"] == "plan"
+            sid = data["session_id"]
+
+            listed = client.get("/sessions").json()["sessions"]
+            match = next(item for item in listed if item["session_id"] == sid)
+            assert match["permission_mode"] == "plan"
+            assert match["summary"] == ""
+
+            switched = client.post(f"/session/{sid}/permission", json={"mode": "bypass"})
+            assert switched.status_code == 200
+            assert switched.json()["effective"] == "bypass"
+
+    def test_unknown_mode_rejected(self, tmp_path):
+        with _client(api_key=None) as client:
+            created = client.post("/session/new", json={"cwd": str(tmp_path)})
+            sid = created.json()["session_id"]
+            resp = client.post(f"/session/{sid}/permission", json={"mode": "yolo"})
+            assert resp.status_code == 400
 
 
 class TestNewSession:
@@ -56,6 +108,7 @@ class TestNewSession:
             assert data["session_id"]
             assert data["cwd"]
             assert "model" in data
+            assert data["summary"] == ""
 
     def test_json_cwd(self, tmp_path):
         with _client(api_key=None) as client:
@@ -63,6 +116,42 @@ class TestNewSession:
             assert resp.status_code == 200
             cwd = resp.json()["cwd"].replace("\\", "/").lower()
             assert tmp_path.name.lower() in cwd
+
+
+class TestListPersistedSessions:
+    def test_disk_sessions_appear_without_live_engine(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from nono_agent.adapters import server as server_module
+        from nono_agent.session import transcript as transcript_module
+        from nono_agent.session.events import EVENT_TURN_START, EVENT_USER_MESSAGE, SessionEvent
+        from nono_agent.session.header import make_header
+        from nono_agent.session.transcript import LocalFileTranscriptWriter
+
+        session_dir = tmp_path / "sessions"
+        monkeypatch.setattr(server_module, "DEFAULT_SESSION_DIR", session_dir)
+        monkeypatch.setattr(transcript_module, "DEFAULT_SESSION_DIR", session_dir)
+
+        writer = LocalFileTranscriptWriter(session_dir / "abc.jsonl")
+
+        async def write() -> None:
+            await writer.write_header(
+                make_header("abc", cwd=str(tmp_path), summary="谁是你")
+            )
+            await writer.append_event(SessionEvent.make(0, EVENT_TURN_START, turn=1))
+            await writer.append_event(
+                SessionEvent.make(0, EVENT_USER_MESSAGE, content="谁是你")
+            )
+
+        asyncio.run(write())
+
+        with _client(api_key=None) as client:
+            listed = client.get("/sessions").json()["sessions"]
+        match = next(item for item in listed if item["session_id"] == "abc")
+        assert match["summary"] == "谁是你"
+        assert match["turn_count"] == 1
+        assert match["updated_at"] > 0
+        assert tmp_path.name.lower() in match["cwd"].replace("\\", "/").lower()
 
 
 class TestSessionEventChannel:
