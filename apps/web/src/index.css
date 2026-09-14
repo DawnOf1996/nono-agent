@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Instrument Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --color-ink: #14181f;
+  --color-panel: #1c222c;
+  --color-paper: #e6e2d8;
+  --color-muted: #8b93a7;
+  --color-line: #2a3140;
+  --color-copper: #e8a87c;
+  --color-steel: #7eb8c9;
+  --color-danger: #e06c75;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--color-paper);
+  font-family: var(--font-sans);
+  letter-spacing: 0.01em;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-copper) 40%, transparent);
+}
+
+.filament {
+  transform-origin: left center;
+}
+
+@keyframes filament-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.filament-live {
+  animation: filament-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .filament-live {
+    animation: none;
+  }
+}

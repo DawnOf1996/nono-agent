@@ -47,6 +47,24 @@ class TestAskUserAnswer:
             assert resp.status_code == 404
 
 
+class TestNewSession:
+    def test_empty_post_returns_cwd(self):
+        with _client(api_key=None) as client:
+            resp = client.post("/session/new")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["session_id"]
+            assert data["cwd"]
+            assert "model" in data
+
+    def test_json_cwd(self, tmp_path):
+        with _client(api_key=None) as client:
+            resp = client.post("/session/new", json={"cwd": str(tmp_path)})
+            assert resp.status_code == 200
+            cwd = resp.json()["cwd"].replace("\\", "/").lower()
+            assert tmp_path.name.lower() in cwd
+
+
 class TestSessionEventChannel:
     """GET /session/{id}/events —— 事件流只读通道（脱敏后推送）。"""
 

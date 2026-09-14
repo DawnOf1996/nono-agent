@@ -1,0 +1,12 @@
+packages:
+  - "apps/web"
+  - "apps/desktop"
+  - "packages/*"
+
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+
+allowBuilds:
+  electron: true
+  esbuild: true

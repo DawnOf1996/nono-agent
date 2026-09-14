@@ -1,0 +1,23 @@
+[project]
+name = "nono-app-server"
+version = "0.1.0"
+description = "Desktop sidecar wrapping nono-agent FastAPI/SSE adapter"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "nono-agent",
+]
+
+[project.scripts]
+nono-app-server = "nono_app_server.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nono_app_server"]
+
+[tool.uv.sources]
+nono-agent = { path = "../../", editable = true }

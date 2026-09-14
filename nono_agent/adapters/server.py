@@ -23,6 +23,8 @@ from typing import Any
 
 from nono_agent.core.config import EngineConfig
 from nono_agent.core.engine import QueryEngine
+from nono_agent.paths import resolve_session_cwd
+from nono_agent.providers.catalog import load_catalog
 from nono_agent.session.header import VersionMismatchError
 from nono_agent.session.redact import redact_events
 from nono_agent.session.transcript import (
@@ -81,7 +83,7 @@ def create_server_app(
         session_ttl_check_interval: TTL 清理扫描间隔（秒）。
     """
     try:
-        from fastapi import FastAPI, HTTPException
+        from fastapi import FastAPI, HTTPException, Request
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse
         from pydantic import BaseModel
@@ -132,9 +134,45 @@ def create_server_app(
 
         return ask_user
 
+    def _resolve_session_config(
+        model: str | None = None,
+        cwd: str | None = None,
+        *,
+        session_id: str | None = None,
+    ) -> EngineConfig:
+        """按会话覆盖 cwd / 模型，并从 YAML 目录解析对应 Provider。"""
+        header = peek_session_header(session_id) if session_id else None
+        resolved_cwd = resolve_session_cwd(
+            cwd or (header.cwd if header and header.cwd else default_config.cwd)
+        )
+        resolved_model = model or default_config.model
+        provider = default_config.provider
+        try:
+            catalog = load_catalog(resolved_cwd)
+            provider = catalog.resolve(model_id=resolved_model)
+            resolved_model = provider.model_id
+        except Exception:
+            logger.debug(
+                "Catalog resolve skipped for model=%s cwd=%s",
+                resolved_model,
+                resolved_cwd,
+            )
+        return EngineConfig(
+            model=resolved_model,
+            cwd=resolved_cwd,
+            model_context=(
+                provider.model_context if provider is not None else default_config.model_context
+            ),
+            session_id=session_id or default_config.session_id,
+            include_partial_messages=True,
+            provider=provider,
+            log_api_requests=default_config.log_api_requests,
+        )
+
     async def _get_or_create_engine(
         session_id: str,
         model: str | None = None,
+        cwd: str | None = None,
     ) -> QueryEngine:
         """获取或创建引擎实例 —— 统一的初始化入口。"""
         async with session_lock:
@@ -142,15 +180,7 @@ def create_server_app(
                 _touch(session_id)
                 return sessions[session_id]
 
-            header = peek_session_header(session_id)
-            engine_config = EngineConfig(
-                model=model or default_config.model,
-                cwd=(header.cwd if header and header.cwd else default_config.cwd),
-                session_id=session_id,
-                include_partial_messages=True,
-                provider=default_config.provider,
-                log_api_requests=default_config.log_api_requests,
-            )
+            engine_config = _resolve_session_config(model, cwd, session_id=session_id)
             engine = QueryEngine(
                 engine_config,
                 permission_checker=permission_checker,
@@ -246,8 +276,23 @@ def create_server_app(
         """会话信息 —— 用于 API 响应的会话元数据。"""
         session_id: str          # 会话唯一标识
         model: str               # 当前使用的模型
+        cwd: str = ""            # 工具工作空间
         turn_count: int          # 已完成的对话轮次
         total_tokens: int        # 累计 token 数
+
+    class NewSessionRequest(BaseModel):
+        """创建会话 —— JSON 体可指定 model / cwd。"""
+        model: str | None = None
+        cwd: str | None = None
+
+    def _session_info(engine: QueryEngine) -> SessionInfo:
+        return SessionInfo(
+            session_id=engine._config.session_id,
+            model=engine._config.model,
+            cwd=engine._config.cwd,
+            turn_count=engine._turn_count,
+            total_tokens=engine.token_tracker.get_total_tokens(),
+        )
 
     class AbortRequest(BaseModel):
         """中止请求 —— 客户端请求取消正在进行的查询。"""
@@ -347,35 +392,29 @@ def create_server_app(
         return EventSourceResponse(event_generator())
 
     @app.post("/session/new")
-    async def new_session(
-        model: str | None = None,
-        cwd: str | None = None,
-    ) -> SessionInfo:
-        """创建新会话并返回其 ID —— 不发送消息，仅初始化引擎。"""
+    async def new_session(http_request: Request) -> SessionInfo:
+        """创建新会话并返回其 ID —— JSON 可指定 model 与工作空间 cwd。"""
+        req = NewSessionRequest()
+        content_type = http_request.headers.get("content-type", "")
+        if content_type.startswith("application/json"):
+            try:
+                raw = await http_request.json()
+            except Exception:
+                raw = None
+            if isinstance(raw, dict):
+                req = NewSessionRequest.model_validate(raw)
         session_id = str(uuid.uuid4())
-        engine = await _get_or_create_engine(session_id, model=model)
-
-        return SessionInfo(
-            session_id=session_id,
-            model=engine._config.model,
-            turn_count=0,
-            total_tokens=0,
-        )
+        engine = await _get_or_create_engine(session_id, model=req.model, cwd=req.cwd)
+        info = _session_info(engine)
+        return info.model_copy(update={"turn_count": 0, "total_tokens": 0})
 
     @app.get("/sessions")
     async def list_sessions() -> dict[str, Any]:
         """列出所有活跃会话 —— 返回每个会话的 ID、模型、轮次和 token 数。"""
         result = []
         async with session_lock:
-            for sid, engine in sessions.items():
-                result.append(
-                    SessionInfo(
-                        session_id=sid,
-                        model=engine._config.model,
-                        turn_count=engine._turn_count,
-                        total_tokens=engine.token_tracker.get_total_tokens(),
-                    )
-                )
+            for _sid, engine in sessions.items():
+                result.append(_session_info(engine))
         return {"sessions": result}
 
     @app.delete("/session/{session_id}")
@@ -404,13 +443,8 @@ def create_server_app(
             await old_engine.close()
 
         header = peek_session_header(session_id)
-        engine_config = EngineConfig(
-            model=req.model or default_config.model,
-            cwd=(header.cwd if header and header.cwd else default_config.cwd),
-            session_id=session_id,
-            include_partial_messages=True,
-            provider=default_config.provider,
-            log_api_requests=default_config.log_api_requests,
+        engine_config = _resolve_session_config(
+            req.model, header.cwd if header else None, session_id=session_id
         )
         engine = QueryEngine(engine_config, permission_checker=permission_checker)
         await engine.initialize()
@@ -421,12 +455,8 @@ def create_server_app(
         async with session_lock:
             sessions[session_id] = engine
 
-        return SessionInfo(
-            session_id=session_id,
-            model=engine._config.model,
-            turn_count=len(messages),
-            total_tokens=0,
-        )
+        info = _session_info(engine)
+        return info.model_copy(update={"turn_count": len(messages), "total_tokens": 0})
 
     @app.get("/session/{session_id}/events")
     async def session_events(

@@ -100,6 +100,8 @@ python examples/server_basic.py
 # GET  /session/<id>/events      （会话事件流，SSE，脱敏后推送）
 ```
 
+桌面产品层（React + Electron + sidecar）在 [`apps/`](apps/README.md)，不改动 `nono_agent/` 引擎包。
+
 更多示例见 `examples/`。
 
 ## 设计要点

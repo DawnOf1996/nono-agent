@@ -139,3 +139,10 @@ cython_debug/
 
 # editor lock files
 .~lock.*
+
+# Node / Electron product layer
+node_modules/
+apps/web/dist/
+apps/desktop/out/
+*.tsbuildinfo
+
