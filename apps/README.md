@@ -1,9 +1,10 @@
 # apps/
 
-产品层：桌面壳 + React 工作台 + 封装 nono-agent 的本机 sidecar。引擎代码仍在仓库根的 `nono_agent/`，这里只消费 `create_server_app()`。
+产品层：桌面壳 + React 工作台 + 本机 sidecar + 终端 CLI。引擎代码仍在仓库根的 `nono_agent/`，这里消费 `QueryEngine`。
 
 ```text
 apps/
+  cli/        终端 CLI（Typer + Rich）
   server/     Python sidecar（FastAPI + SSE）
   web/        Vite + React + shadcn 风格组件
   desktop/    Electron：加载 web，必要时 spawn server
@@ -14,7 +15,7 @@ apps/
 
 ## 开发
 
-需要：Python 3.12+、`uv`、Node 20+（pnpm 或 npm）。先有一份 `~/.nono-agent/config.yaml`（跑过一次 `python -m nono_agent.adapters.cli chat` 即可）。
+需要：Python 3.12+、`uv`、Node 20+（pnpm 或 npm）。先有一份 `~/.nono-agent/config.yaml`（跑过一次 `uv run nono chat` 即可）。
 
 ### 环境下载
 

@@ -2,8 +2,8 @@
 
 import pytest
 
-from nono_agent.adapters.testing import MockProvider
 from nono_agent.providers.base import ProviderRegistry, create_default_registry
+from tests.helpers import MockProvider
 
 
 class TestProviderRegistry:

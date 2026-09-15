@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from nono_agent.adapters import onboarding as ob
 from nono_agent.providers.catalog import (
     AgentDefaultModel,
     LlmCatalog,
@@ -13,6 +12,7 @@ from nono_agent.providers.catalog import (
     load_catalog,
     save_user_catalog,
 )
+from nono_app_cli import onboarding as ob
 
 
 class _FakeConsole:

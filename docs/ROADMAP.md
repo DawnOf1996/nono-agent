@@ -506,7 +506,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 ## 5. 完整包树与职责说明
 
 > **原则：** 目录是「引擎内核 + 扩展面」并存，**不是**推倒重来。  
-> 现有 `core/` / `pipeline/` / `recovery/` / `hooks/` / `adapters/` / `observability/` / `utils/` **原位保留**；扩展包已全部落地；`tools/builtin.py` 已拆为包，权限/prompt 已从现有文件**抽出**。
+> 现有 `core/` / `pipeline/` / `recovery/` / `hooks/` / `observability/` / `utils/` **原位保留**；扩展包已全部落地；`tools/builtin.py` 已拆为包，权限/prompt 已从现有文件**抽出**；CLI/Server 已迁 `apps/`，测试夹具在 `tests/helpers.py`。
 
 状态标记：`✅` 已有主路径 · `🔧` 已有需扩展/拆分 · `📋` 规划新建 · `P2` 后期
 
@@ -541,11 +541,6 @@ nono_agent/
 │   ├── middleware.py              # MiddlewareChain
 │   ├── stop_hooks.py
 │   └── post_sampling.py
-│
-├── adapters/                      # 🔧 交付层
-│   ├── cli.py
-│   ├── server.py
-│   └── testing.py
 │
 ├── observability/                 # 🔧 Token 跟踪 / 日志 / 指标
 │   ├── token_tracker.py
@@ -679,7 +674,8 @@ nono_agent/
 | **`pipeline/`** | API 调用前消息压缩（预算截断、滑动窗口、microcompact、autocompact、可选 collapse） | 持久化、权限决策 | 🔧 ContextCollapse 未默认启用 |
 | **`recovery/`** | API/循环错误分类与恢复动作（压缩重试、升 max_tokens、终止） | 主动压缩策略实现细节可委托 pipeline | ✅ |
 | **`hooks/`** | **引擎内** Middleware / Stop / PostSampling 链（代码注入） | 用户 `hooks.json` 的加载与沙箱执行（由扩展面适配后挂入本链） | 🔧 |
-| **`adapters/`** | CLI/Server/Testing：消费 `submit_message` 流、权限交互、AskUser 通道、Slash 入口调用 | 业务工具逻辑、Prompt 内容拼装 | 🔧 |
+| **`apps/cli`** | 终端消费 `submit_message`：Typer、Rich、引导配置 | 引擎内核 | ✅ |
+| **`apps/server`** | HTTP/SSE 与桌面 sidecar | 引擎内核 | ✅ |
 | **`observability/`** | Token、结构化日志、指标 | 业务决策 | 🔧 Metrics 无持久化后端；structlog 未绑关联键 |
 | **`utils/`** | Abort、token 估算等无业务依赖的原语 | 领域策略 | 🔧 |
 
@@ -705,7 +701,7 @@ nono_agent/
 | **`rules/`** | 常驻指令发现（含 CLAUDE.md/AGENTS.md 兼容）、层级合并、条件 globs | 写入最终 prompt 字符串（交给 `prompt/` section） | ✅ |
 | **`skills/`** | Skill 包发现/加载；**SkillTool** 供模型按需激活 | Plugin 分发格式（`plugins/` 可内嵌 skills） | ✅ |
 | **`plugins/`** | 扩展包清单、启停、失败隔离；**组合**注册 Rules/Skills/Agents/Tools/Hooks/MCP/Commands | 实现具体 Tool/Agent 逻辑 | ✅ |
-| **`commands/`** | Slash 解析与执行注册表；与自然语言分流 | Rich/HTTP 渲染（`adapters/`） | ✅ |
+| **`commands/`** | Slash 解析与执行注册表；与自然语言分流 | Rich/HTTP 渲染（`apps/cli`、`apps/server`） | ✅ |
 | **`settings/`** | default/user/project/policy/flag 合并；单一读入口 | 替代 `EngineConfig`（构造期仍用 EngineConfig；settings 可生成/覆盖其输入） | ✅ |
 | **`permissions/`** | 会话模式、PermissionRule、denial 追踪、路径沙箱、Ignore、Bash 分类 | 具体 tool.execute 业务 | ✅ |
 | **`mcp/`** | MCP 配置、进程生命周期、tools/resources 桥接到 ToolRegistry | 通用 Tool 协议定义 | 🔧 stdio 已落地；auth/SSE 待做 |
@@ -716,7 +712,7 @@ nono_agent/
 ### 5.3 包依赖方向（禁止反向）
 
 ```text
-adapters ──► core/engine ──► prompt, pipeline, recovery, providers,
+apps/{cli,server} ──► core/engine ──► prompt, pipeline, recovery, providers,
                              tools, agents, session, permissions, …
 
 plugins  ──► rules, skills, mcp, agents, commands, permissions, hooks(适配)
@@ -725,7 +721,7 @@ plugins  ──► rules, skills, mcp, agents, commands, permissions, hooks(适�
 tools/builtin ──► permissions, utils
 permissions   ──► settings（可读合并结果）
 prompt        ──► rules / memory 的「已加载视图」（只读）
-core          ↛  adapters          ✗
+core          ↛  apps              ✗
 prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，不执行）
 ```
 
@@ -735,13 +731,13 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 
 | 现有 | 目标动作 |
 |------|----------|
-| `core/` `pipeline/` `recovery/` `hooks/` `adapters/` `observability/` `utils/` | **原位保留** |
+| `core/` `pipeline/` `recovery/` `hooks/` `observability/` `utils/` | **原位保留** |
 | `providers/` `session/` | **原位扩展**（新文件，不改包名） |
 | `tools/protocol|registry|executor` | **原位保留** |
 | `tools/context.py` | **瘦身**：Checker 类型可 re-export；策略实现迁 `permissions/` |
 | `tools/builtin.py` | **拆为** `tools/builtin/`；薄 re-export 过渡后删除 |
 | `core/engine._build_system_prompt` | **抽到** `prompt/`，Engine 只调用组装器 |
-| CLI/Server 内联 permission 闭包 | **迁到** `permissions/` + adapters 注入 Policy |
+| CLI/Server 内联 permission 闭包 | **迁到** `permissions/` + 产品层注入 Policy |
 | （无） | **新建** prompt/rules/skills/plugins/commands/settings/permissions/mcp/agents/memory/checkpoint |
 
 ### 5.5 与 §1.5 分层的对应
@@ -813,7 +809,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 ```bash
 model MiniMax-M3
 base_url https://api.minimaxi.com 或 https://api.minimaxi.com/anthropic(messages协议)
-# 通过环境变量提供密钥（CLI 或配置文件的读取约定见 adapters/cli.py）
+# 通过环境变量提供密钥（CLI 读取约定见 apps/cli）
 # export NONO_API_KEY=... NONO_BASE_URL=https://api.minimaxi.com/v1 NONO_ADAPTER=openai_chat_completions NONO_MODEL=MiniMax-M3
 ```
 

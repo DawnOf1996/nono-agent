@@ -9,7 +9,6 @@
 
 import pytest
 
-from nono_agent.adapters.testing import MockTool, create_test_engine
 from nono_agent.session import LocalFileTranscriptWriter, derive_messages
 from nono_agent.session.events import (
     EVENT_ASSISTANT_MESSAGE,
@@ -25,6 +24,7 @@ from nono_agent.session.events import (
     KNOWN_EVENT_TYPES,
     SessionEvent,
 )
+from tests.helpers import MockTool, create_test_engine
 
 
 async def _collect(engine, text="hello"):

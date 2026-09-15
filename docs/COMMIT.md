@@ -58,7 +58,7 @@ BREAKING CHANGE: 消费方若按固定字段反序列化需同步升级。
 | `pipeline` | 预处理管线 |
 | `recovery` | 恢复链 |
 | `hooks` | 引擎内 hooks |
-| `adapters` / `cli` / `server` | 适配器 |
+| `cli` / `server` | 产品 CLI / Server（`apps/`） |
 | `providers` | LLM Provider |
 | `session` | MessageStore / Transcript |
 | `tools` | 工具协议与 builtin |

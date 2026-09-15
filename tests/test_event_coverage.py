@@ -6,7 +6,6 @@
 
 import pytest
 
-from nono_agent.adapters.testing import MockTool, create_test_engine
 from nono_agent.core.types import ToolResult
 from nono_agent.memory.models import MemoryRecord
 from nono_agent.observability.metrics import (
@@ -42,6 +41,7 @@ from nono_agent.session.events import (
     KNOWN_EVENT_TYPES,
 )
 from nono_agent.tools.protocol import ToolBase
+from tests.helpers import MockTool, create_test_engine
 
 
 async def _collect(engine, text="hello"):

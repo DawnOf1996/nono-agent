@@ -26,7 +26,7 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 | 子 Agent 三件套 | 可用需打磨 | AgentTool + Definition + run；§2.8 |
 | 权限模式 / Rule / denial / Hooks / Slash | 可用需打磨 | §2.6–§2.7 |
 | 会话持久化（`TranscriptWriter`） | 事件溯源 | 落盘只有 `SessionEvent`；默认本地 JSONL，另有 SQLite；请求前一致性门禁默认开启；DB/Redis 等后端见 Roadmap |
-| CLI / Server 适配器 | 可用需打磨 | Server 目前仅 SSE（WebSocket 为规划能力）；含鉴权/TTL/AskUser 回调与会话事件流通道 |
+| CLI / Server（`apps/`） | 可用需打磨 | Server 目前仅 SSE（WebSocket 为规划能力）；含鉴权/TTL/AskUser 回调与会话事件流通道 |
 | 可观测性 | 可用 | TokenTracker + structlog + Metrics（内存实现，事件流自动投影为指标）；脱敏导出与回放已具备 |
 
 ---
@@ -118,7 +118,6 @@ nono_agent/
 ├── pipeline/             # 🔧 预处理压缩（默认 4 级；ContextCollapse 可选）
 ├── recovery/             # ✅ RecoveryChain 与策略
 ├── hooks/                # 🔧 引擎内 Middleware/Stop/PostSampling
-├── adapters/             # 🔧 CLI / Server(SSE) / Testing
 ├── observability/        # 🔧 TokenTracker / logging / metrics(标签约定 + 事件投影)
 ├── utils/                # 🔧 abort / tokens
 │
@@ -142,6 +141,10 @@ nono_agent/
 ├── agents/               # ✅ AgentTool + Definition + runner
 ├── memory/               # ✅ MemoryStore / memdir（P2 演进中）
 └── checkpoint/           # ✅ 编辑快照回滚
+
+apps/                     # 产品层（消费引擎，不在 nono_agent 包内）
+├── cli/                  # ✅ Typer + Rich 终端
+└── server/               # ✅ FastAPI + SSE sidecar
 ```
 
 #### 3.1.1 各包职责一览
@@ -152,7 +155,6 @@ nono_agent/
 | `pipeline/` | 调用前消息压缩各 Stage | 持久化、权限 |
 | `recovery/` | 错误分类与恢复动作 | UI、Provider 传输细节 |
 | `hooks/` | 代码级生命周期链 | 用户 `hooks.json` 加载（适配后挂入） |
-| `adapters/` | 流式交付、交互确认、AskUser/Slash 入口 | 业务工具与 Prompt 内容 |
 | `observability/` | Token、日志、指标 | 业务决策 |
 | `utils/` | Abort、token 等无领域原语 | 领域策略 |
 | `providers/` | LLM 协议适配与路由 | 工具执行、会话存储 |
@@ -170,13 +172,15 @@ nono_agent/
 | `agents/` | 子 Agent 三件套 | Teams/Coordinator（可选 P2） |
 | `memory/` | 跨会话记忆 | 单次 transcript |
 | `checkpoint/` | 编辑回滚快照 | Git 本身 |
+| `apps/cli` | 终端 CLI：Typer / Rich / 引导配置 | 引擎内核 |
+| `apps/server` | HTTP/SSE sidecar 与桌面权限 | 引擎内核 |
 
 #### 3.1.2 依赖方向
 
 ```text
-adapters → core → prompt / pipeline / recovery / providers / tools / agents / session / permissions / …
+apps/{cli,server} → core → prompt / pipeline / recovery / providers / tools / agents / session / permissions / …
 plugins  → rules / skills / mcp / agents / commands / permissions   （只组合）
-core ↛ adapters · prompt ↛ tool 执行实现
+core ↛ apps · prompt ↛ tool 执行实现
 ```
 
 #### 3.1.3 迁移要点（已完成）
@@ -184,6 +188,7 @@ core ↛ adapters · prompt ↛ tool 执行实现
 - **保留：** 内核七件套 + `providers`/`session`/`tools` 协议层  
 - **拆分：** `tools/builtin.py` → `tools/builtin/`（已拆，保留薄 re-export）  
 - **抽出：** `_build_system_prompt` → `prompt/`；权限闭包 → `permissions/`（已抽）  
+- **迁出：** CLI / Server 适配器 → `apps/cli`、`apps/server`；测试夹具 → `tests/helpers.py`（不进引擎包）  
 - **新建：** 扩展面各包（`prompt/rules/skills/plugins/commands/settings/permissions/mcp/agents/memory/checkpoint`）已全部落地  
 
 项目配置目录（非 Python 包）：`.nono-agent/{settings,rules,agents,skills,plugins,hooks.json,mcp.json}/`。
@@ -193,9 +198,9 @@ core ↛ adapters · prompt ↛ tool 执行实现
 
 ```mermaid
 graph TB
-    subgraph Adapters
-        CLI[CLI Adapter<br/>Typer + Rich]
-        Server[Server Adapter<br/>FastAPI + SSE]
+    subgraph Apps
+        CLI[apps/cli<br/>Typer + Rich]
+        Server[apps/server<br/>FastAPI + SSE]
     end
 
     subgraph Engine

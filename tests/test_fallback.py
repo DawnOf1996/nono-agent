@@ -2,11 +2,11 @@
 
 import pytest
 
-from nono_agent.adapters.testing import MockProvider
 from nono_agent.core.config import EngineConfig
 from nono_agent.core.engine import QueryEngine
 from nono_agent.core.types import SDKResultMessage
 from nono_agent.providers.base import FallbackTriggeredError, ProviderRegistry
+from tests.helpers import MockProvider
 
 
 class _FallbackProvider(MockProvider):

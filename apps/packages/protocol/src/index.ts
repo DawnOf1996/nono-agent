@@ -1,4 +1,4 @@
-/** 与 apps/server + nono_agent.adapters.server 对齐的前端契约。 */
+/** 与 apps/server（nono_app_server.engine HTTP/SSE API）对齐的前端契约。 */
 
 export type PermissionMode = "default" | "accept_edits" | "plan" | "bypass";
 

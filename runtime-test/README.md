@@ -32,7 +32,7 @@ uv run python runtime-test/mcp_servers/username_http.py
 另开一个终端，仓库根目录：
 
 ```bash
-uv run python -m nono_agent.adapters.cli chat --cwd runtime-test
+uv run nono chat --cwd runtime-test
 ```
 
 进 REPL 后：

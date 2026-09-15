@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
     "nono-agent",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "sse-starlette>=2.0",
 ]
 
 [project.scripts]

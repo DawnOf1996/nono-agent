@@ -82,11 +82,13 @@ config = EngineConfig(
 
 ### CLI
 
+产品 CLI 在 [`apps/cli`](apps/cli)（`uv sync --extra dev` 后可在仓库根直接跑）：
+
 ```bash
-python -m nono_agent.adapters.cli chat
-python -m nono_agent.adapters.cli chat -m "你好" --model MiniMax-M3 --provider a
-python -m nono_agent.adapters.cli chat --log-api-requests   # 发 HTTP 前 dump 请求体
-python -m nono_agent.adapters.cli sessions   # 列出历史会话
+uv run nono chat
+uv run nono chat -m "你好" --model MiniMax-M3 --provider a
+uv run nono chat --log-api-requests   # 发 HTTP 前 dump 请求体
+uv run nono sessions   # 列出历史会话
 ```
 
 首次交互式运行会引导写入 `~/.nono-agent/config.yaml`（供应商 / 协议 / 模型目录）；API Key 保存在 `~/.nono-agent/credentials`，YAML 只保留自动生成的 `api_key_env` 指针。详见 [docs/USAGE.md](docs/USAGE.md)。
@@ -94,15 +96,15 @@ python -m nono_agent.adapters.cli sessions   # 列出历史会话
 ### Server（SSE）
 
 ```bash
-python examples/server_basic.py
+uv run nono-app-server
 # POST /session/new
 # POST /chat                     （SSE 流）
 # GET  /session/<id>/events      （会话事件流，SSE，脱敏后推送）
 ```
 
-桌面产品层（React + Electron + sidecar）在 [`apps/`](apps/README.md)，不改动 `nono_agent/` 引擎包。
+桌面产品层（React + Electron + sidecar）与终端 CLI 在 [`apps/`](apps/README.md)，引擎包 `nono_agent/` 不再包含 CLI/Server 适配层。
 
-更多示例见 `examples/`。
+更多示例见 `examples/`（`engine_basic.py` 库用法、`custom_provider.py` 自定义 Provider）。产品 CLI / Server 入口是 `uv run nono` 与 `uv run nono-app-server`。
 
 ## 设计要点
 

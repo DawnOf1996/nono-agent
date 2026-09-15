@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from nono_agent.adapters.testing import MockTool, create_test_engine
 from nono_agent.core.types import SDKResultMessage
+from tests.helpers import MockTool, create_test_engine
 
 
 @pytest.fixture
@@ -152,7 +152,7 @@ class TestMockProvider:
     @pytest.mark.asyncio
     async def test_default_response(self):
         """Test that default response is returned when no scripts."""
-        from nono_agent.adapters.testing import MockProvider
+        from tests.helpers import MockProvider
         provider = MockProvider()
 
         events = []
@@ -168,7 +168,7 @@ class TestMockProvider:
     @pytest.mark.asyncio
     async def test_scripted_responses(self):
         """Test that scripted responses are returned in order."""
-        from nono_agent.adapters.testing import MockProvider
+        from tests.helpers import MockProvider
         provider = MockProvider(
             responses=[
                 {"text": "First", "tool_calls": []},

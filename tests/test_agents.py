@@ -2,7 +2,6 @@
 
 import pytest
 
-from nono_agent.adapters.testing import MockProvider, MockTool
 from nono_agent.agents import (
     AgentDefinition,
     AgentRunner,
@@ -14,6 +13,7 @@ from nono_agent.core.config import EngineConfig
 from nono_agent.providers.base import ProviderRegistry
 from nono_agent.tools.context import ToolUseContext
 from nono_agent.tools.registry import ToolRegistry
+from tests.helpers import MockProvider, MockTool
 
 
 class TestAgentDefinition:

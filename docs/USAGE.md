@@ -66,25 +66,27 @@ config = EngineConfig(
 )
 ```
 
-更多示例见 `examples/cli_basic.py`、`examples/custom_provider.py`。
+更多示例见 `examples/engine_basic.py`、`examples/custom_provider.py`。
 
 ### 2.2 CLI
 
+产品入口在 `apps/cli`（`nono_app_cli`）。仓库根执行 `uv sync --extra dev` 后：
+
 ```bash
 # 交互式对话
-uv run python -m nono_agent.adapters.cli chat
+uv run nono chat
 
 # 指定工作目录（工具沙箱 / 向上查找项目 .nono-agent/config.yaml）
-uv run python -m nono_agent.adapters.cli chat --cwd D:\WorkSpace\Projects\SomeProject
+uv run nono chat --cwd D:\WorkSpace\Projects\SomeProject
 
 # 单条消息（非交互）
-uv run python -m nono_agent.adapters.cli chat -m "你好" --model MiniMax-M3
+uv run nono chat -m "你好" --model MiniMax-M3
 
 # 恢复历史会话（cwd 以该会话 .header.json 为准，不必再传 --cwd）
-uv run python -m nono_agent.adapters.cli chat --resume <session_id>
+uv run nono chat --resume <session_id>
 
 # 列出本地已保存的会话
-uv run python -m nono_agent.adapters.cli sessions
+uv run nono sessions
 ```
 
 CLI 参数：`--model` / `--provider` / `--cwd` / `--resume` / `--message|-m` / `--config|-c` / `--verbose|-v` / `--log-api-requests`。
@@ -99,13 +101,13 @@ CLI 参数：`--model` / `--provider` / `--cwd` / `--resume` / `--message|-m` / 
 
 ```bash
 # CLI 开关（不必再叠 --verbose；该 logger 会被单独调到 INFO）
-uv run python -m nono_agent.adapters.cli chat --log-api-requests
+uv run nono chat --log-api-requests
 
 # 或者把 stderr 转存为日志文件（输出量大；`2>` 中间不能有空格）
-uv run python -m nono_agent.adapters.cli chat --log-api-requests 2> api-requests.log
+uv run nono chat --log-api-requests 2> api-requests.log
 
 # 或环境变量
-NONO_LOG_API_REQUESTS=1 uv run python -m nono_agent.adapters.cli chat
+NONO_LOG_API_REQUESTS=1 uv run nono chat
 ```
 
 库用法：
@@ -130,8 +132,10 @@ config = EngineConfig(
 
 ### 2.3 Server（HTTP + SSE）
 
+产品入口在 `apps/server`（`nono_app_server`）：
+
 ```bash
-uv run python examples/server_basic.py
+uv run nono-app-server
 ```
 
 ```bash
@@ -344,7 +348,7 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
 ```bash
 # 列出本地会话（session id + 事件数 + 摘要 + cwd）
-uv run python -m nono_agent.adapters.cli sessions
+uv run nono sessions
 
 # 直接看某一轮到底发生了什么（新会话是 .jsonl.zst；旧的明文 .jsonl 用 cat）
 zstdcat ~/.nono-agent/sessions/<session_id>.jsonl.zst | jq -c '{seq, type}'
@@ -477,10 +481,10 @@ uv run mypy nono_agent/     # 类型检查（strict）
 
 ### 8.2 测试基础设施（无需真实 API）
 
-测试用 `MockProvider` / `MockTool` / `create_test_engine`，位于 `nono_agent/adapters/testing.py`：
+测试用 `MockProvider` / `MockTool` / `create_test_engine`，位于 `tests/helpers.py`（不进引擎包）：
 
 ```python
-from nono_agent.adapters.testing import create_test_engine, MockTool
+from tests.helpers import create_test_engine, MockTool
 
 engine = create_test_engine(
     responses=[{"text": "回答", "tool_calls": []}],   # 脚本化模型响应
@@ -544,7 +548,14 @@ nono_agent/
 ├── rules/ skills/ plugins/ commands/ settings/ permissions/ mcp/ agents/ memory/ checkpoint/
 ├── hooks/         引擎内 Middleware + 用户态 hooks.json
 ├── observability/ Token 跟踪/日志/指标
-└── adapters/      CLI / Server / testing
+└── utils/         Abort / token 等原语
+
+tests/
+└── helpers.py     MockProvider / MockTool / create_test_engine
+
+apps/
+├── cli/           终端 CLI（Typer + Rich）
+└── server/        FastAPI + SSE sidecar
 ```
 
 详细设计见 [NonoAgent-Architecture.md](./NonoAgent-Architecture.md)，规划与状态见 [ROADMAP.md](./ROADMAP.md)。

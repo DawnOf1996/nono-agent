@@ -1,10 +1,10 @@
-"""CLI Basic Example — Minimal CLI agent usage.
+"""Engine library example — consume QueryEngine.submit_message() as a library.
 
 Run with:
-    python examples/cli_basic.py
+    uv run python examples/engine_basic.py
 
-Or using the CLI adapter directly:
-    python -m nono_agent.adapters.cli chat --model claude-sonnet-4-20250514
+Product CLI (terminal) is separate:
+    uv run nono chat
 """
 
 import asyncio
@@ -15,21 +15,17 @@ from nono_agent import EngineConfig, QueryEngine
 async def main():
     """Simple example: send a message and print the response."""
 
-    # Configure the engine
     config = EngineConfig(
         model="claude-sonnet-4-20250514",
         cwd=".",
         verbose=False,
     )
 
-    # Use async context manager for automatic cleanup
     async with QueryEngine(config) as engine:
         print(f"Session: {engine.session_id}")
         print("-" * 50)
 
-        # Submit a message and stream the response
         async for msg in engine.submit_message("What is the meaning of life?"):
-            # msg is an SDKMessage — check its type
             if msg.type == "assistant":
                 content = msg.message.get("content", [])
                 for block in content:

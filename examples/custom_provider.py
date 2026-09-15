@@ -1,5 +1,8 @@
 """Custom Provider Example — How to implement and register your own LLM provider.
 
+Run with:
+    uv run python examples/custom_provider.py
+
 This example shows how to:
 1. Implement the LLMProvider Protocol
 2. Register it with the ProviderRegistry

@@ -7,8 +7,8 @@ import socket
 import sys
 from typing import Any
 
-from nono_agent.adapters.server import create_server_app
 from nono_app_server.config import load_engine_config, load_sidecar_settings
+from nono_app_server.engine import create_server_app
 from nono_app_server.extra_routes import mount_extra_routes
 from nono_app_server.permissions import desktop_permission_checker
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_app() -> Any:
-    """组装 FastAPI 应用：引擎 Server 适配器 + /app 产品路由。"""
+    """组装 FastAPI 应用：引擎 HTTP/SSE API + /app 产品路由。"""
     settings = load_sidecar_settings()
     config, settings = load_engine_config(settings)
     app = create_server_app(

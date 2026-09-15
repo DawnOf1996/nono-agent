@@ -343,5 +343,5 @@ HTTP 线上请求体（SDK `params`）**不**进事件流：体积大、含协�
 | `nono_agent/permissions/policy.py` | `request_mode` / `commit_pending` → `permission/onchange`、`permission/changed` | ✅ |
 | `nono_agent/memory/manager.py` | 写入/检索观察者 → `memory/write`、`memory/retrieve` | ✅ |
 | `nono_agent/observability/metrics.py` | 标签常量 + `record_event_metric()` 事件投影 | ✅ |
-| `nono_agent/adapters/server.py` | `GET /session/{id}/events` SSE 通道（脱敏 + `after_seq` + `follow`） | ✅ |
+| `apps/server/nono_app_server/engine/` | `GET /session/{id}/events` SSE 通道（脱敏 + `after_seq` + `follow`） | ✅ |
 | `nono_agent/core/config.py` | `session_invariant`、`log_assistant_chunks`、`log_api_requests` | ✅ |

@@ -87,7 +87,7 @@ def _list_entries(path: Path) -> list[dict[str, Any]]:
 
 
 def mount_extra_routes(app: FastAPI, settings: SidecarSettings, config: EngineConfig) -> None:
-    """把 /app/* 挂到 create_server_app 返回的 FastAPI 实例上。"""
+    """把 /app/* 挂到引擎 FastAPI 实例上。"""
     router = APIRouter(prefix="/app", tags=["app"])
 
     @router.get("/info")

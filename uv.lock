@@ -770,23 +770,20 @@ source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
     { name = "anthropic" },
-    { name = "fastapi" },
     { name = "httpx" },
     { name = "mcp" },
     { name = "openai" },
     { name = "pydantic" },
     { name = "pyyaml" },
-    { name = "rich" },
-    { name = "sse-starlette" },
     { name = "structlog" },
-    { name = "typer" },
-    { name = "uvicorn" },
     { name = "zstandard" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "mypy" },
+    { name = "nono-app-cli" },
+    { name = "nono-app-server" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -798,26 +795,59 @@ dev = [
 requires-dist = [
     { name = "aiofiles", specifier = ">=24.0" },
     { name = "anthropic", specifier = ">=0.39" },
-    { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=2.0,<3" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
+    { name = "nono-app-cli", marker = "extra == 'dev'", editable = "apps/cli" },
+    { name = "nono-app-server", marker = "extra == 'dev'", editable = "apps/server" },
     { name = "openai", specifier = ">=1.50" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
-    { name = "sse-starlette", specifier = ">=2.0" },
     { name = "structlog", specifier = ">=24.0" },
-    { name = "typer", specifier = ">=0.12" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "uvicorn", specifier = ">=0.32" },
     { name = "zstandard", specifier = ">=0.23" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "nono-app-cli"
+version = "0.1.0"
+source = { editable = "apps/cli" }
+dependencies = [
+    { name = "nono-agent" },
+    { name = "rich" },
+    { name = "typer" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "nono-agent", editable = "." },
+    { name = "rich", specifier = ">=13.0" },
+    { name = "typer", specifier = ">=0.12" },
+]
+
+[[package]]
+name = "nono-app-server"
+version = "0.1.0"
+source = { editable = "apps/server" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "nono-agent" },
+    { name = "sse-starlette" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "nono-agent", editable = "." },
+    { name = "sse-starlette", specifier = ">=2.0" },
+    { name = "uvicorn", specifier = ">=0.32" },
+]
 
 [[package]]
 name = "openai"

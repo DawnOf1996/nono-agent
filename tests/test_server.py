@@ -5,7 +5,7 @@ import pytest
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 
 
-from nono_agent.adapters.server import create_server_app  # noqa: E402
+from nono_app_server.engine import create_server_app  # noqa: E402
 
 
 def _client(**kwargs):
@@ -122,11 +122,11 @@ class TestListPersistedSessions:
     def test_disk_sessions_appear_without_live_engine(self, tmp_path, monkeypatch):
         import asyncio
 
-        from nono_agent.adapters import server as server_module
         from nono_agent.session import transcript as transcript_module
         from nono_agent.session.events import EVENT_TURN_START, EVENT_USER_MESSAGE, SessionEvent
         from nono_agent.session.header import make_header
         from nono_agent.session.transcript import LocalFileTranscriptWriter
+        from nono_app_server.engine import session_manager as server_module
 
         session_dir = tmp_path / "sessions"
         monkeypatch.setattr(server_module, "DEFAULT_SESSION_DIR", session_dir)
@@ -160,10 +160,10 @@ class TestSessionEventChannel:
     def _write_session(self, tmp_path, monkeypatch, events):
         import asyncio
 
-        from nono_agent.adapters import server as server_module
         from nono_agent.session import transcript as transcript_module
         from nono_agent.session.events import SessionEvent
         from nono_agent.session.transcript import LocalFileTranscriptWriter
+        from nono_app_server.engine import session_manager as server_module
 
         session_dir = tmp_path / "sessions"
         monkeypatch.setattr(server_module, "DEFAULT_SESSION_DIR", session_dir)

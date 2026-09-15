@@ -6,9 +6,10 @@ from typing import Any
 
 import pytest
 
-from nono_agent.adapters.cli import build_engine_config, format_token_summary
 from nono_agent.core.types import Usage
 from nono_agent.providers.catalog import dump_yaml
+from nono_app_cli.config import build_engine_config
+from nono_app_cli.render import format_token_summary
 
 
 def _user_yaml(**overrides: Any) -> str:
@@ -162,7 +163,7 @@ class TestBuildEngineConfig:
     def test_no_hardcoded_secret(self):
         import inspect
 
-        from nono_agent.adapters import cli as cli_module
+        from nono_app_cli import config as cli_module
 
         source = inspect.getsource(cli_module)
         assert "sk-cp-" not in source
@@ -183,8 +184,8 @@ class TestContextUsageTui:
 
     @pytest.mark.asyncio
     async def test_consume_stream_prints_context_usage_line(self):
-        from nono_agent.adapters.cli import _consume_stream
-        from nono_agent.adapters.testing import create_test_engine
+        from nono_app_cli.render import consume_stream as _consume_stream
+        from tests.helpers import create_test_engine
 
         engine = create_test_engine(
             responses=[{"text": "hi", "tool_calls": []}]
@@ -203,8 +204,8 @@ class TestContextUsageTui:
     @pytest.mark.asyncio
     async def test_consume_stream_skips_line_without_snapshot(self):
         """result.context_usage 为 None（无 usage 数据）时不渲染上下文行。"""
-        from nono_agent.adapters.cli import _consume_stream
         from nono_agent.core.types import SDKResultMessage
+        from nono_app_cli.render import consume_stream as _consume_stream
 
         class _FakeEngine:
             async def submit_message(self, text):
@@ -242,8 +243,10 @@ class TestMcpStartupFeedback:
     def test_prints_failed_servers(self):
         from types import SimpleNamespace
 
-        from nono_agent.adapters.cli import _print_mcp_startup_feedback
         from nono_agent.mcp.runtime import MCPServerStatus
+        from nono_app_cli.interactive import (
+            print_mcp_startup_feedback as _print_mcp_startup_feedback,
+        )
 
         lines: list[str] = []
 

@@ -2,10 +2,10 @@
 
 import pytest
 
-from nono_agent.adapters.testing import create_test_engine
 from nono_agent.skills import FileSystemSkillLoader, Skill, SkillTool, parse_skill_markdown
 from nono_agent.skills.loader import coerce_meta_str
 from nono_agent.tools.context import ToolUseContext
+from tests.helpers import create_test_engine
 
 
 class TestParseSkillMarkdown:

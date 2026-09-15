@@ -73,7 +73,7 @@ stage 重新估算消息部分后需加回（`AutoCompactStage._reestimate` / Sn
 `provider.model_context` → `model_context` → `DEFAULT_CONTEXT_WINDOW`（负数/0 视为未配置，
 见 `resolve_context_window()`）。
 
-**CLI/文件配置链路**（`adapters/cli.py::build_engine_config`）已接入该字段：
+**CLI/文件配置链路**（`apps/cli/nono_app_cli/config.py::build_engine_config`）已接入该字段：
 `~/.nono-agent/config.json` 或 `--config` 文件中的 `provider.model_context`（或顶层
 `model_context`），环境变量 `NONO_MODEL_CONTEXT` 优先级最高（env > provider 段 > 顶层）。
 注意模型配置走的是 `config.json` 链路；`.nono-agent/settings.json` 属于 Settings 体系

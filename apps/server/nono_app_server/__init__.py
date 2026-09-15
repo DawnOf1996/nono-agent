@@ -1,3 +1,3 @@
-"""Desktop sidecar：在 nono-agent Server 适配器上叠加产品层路由。"""
+"""Desktop sidecar：引擎 HTTP/SSE API + 产品层 /app 路由。"""
 
 __version__ = "0.1.0"

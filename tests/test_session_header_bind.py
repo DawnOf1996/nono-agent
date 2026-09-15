@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-
 from pathlib import Path
 
 import pytest
 
-from nono_agent.adapters.cli import resolve_resume_bindings
-from nono_agent.adapters.testing import create_test_engine
 from nono_agent.core.config import EngineConfig
 from nono_agent.paths import resolve_session_cwd
 from nono_agent.permissions.policy import PermissionMode
@@ -23,6 +20,8 @@ from nono_agent.session import (
 )
 from nono_agent.session.events import EVENT_USER_INPUT, SESSION_FORMAT_VERSION, SessionEvent
 from nono_agent.session.header import SESSION_SUMMARY_MAX_CHARS, SessionHeader
+from nono_app_cli.config import resolve_resume_bindings
+from tests.helpers import create_test_engine
 
 
 def _skill_md(project) -> None:

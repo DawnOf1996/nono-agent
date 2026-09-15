@@ -2,7 +2,6 @@
 
 import pytest
 
-from nono_agent.adapters.testing import MockTool, create_test_engine
 from nono_agent.session import (
     LocalFileTranscriptWriter,
     replay_sdk_messages,
@@ -16,6 +15,7 @@ from nono_agent.session.events import (
     EVENT_USER_MESSAGE,
     SessionEvent,
 )
+from tests.helpers import MockTool, create_test_engine
 
 
 def _events(*specs):

@@ -1,4 +1,4 @@
-"""测试适配器 —— Mock Provider、Fixture 回放与测试工具集。
+"""仓库测试夹具 —— Mock Provider、Fixture 回放与测试工具集（不进入引擎包）。
 
 提供无需真实 API 调用即可测试 agent 引擎的全套工具：
 - MockProvider: 返回脚本化的响应，支持多轮对话

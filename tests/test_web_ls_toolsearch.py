@@ -73,7 +73,7 @@ class TestToolSearchTool:
 
 
 def create_fake_tools():
-    from nono_agent.adapters.testing import MockTool
+    from tests.helpers import MockTool
 
     return [
         MockTool(name="read_file", response="r", concurrent_safe=True, write_side_effects=False),

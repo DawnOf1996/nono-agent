@@ -49,7 +49,7 @@ class TestRegistry:
 
 class TestCommandsWithEngine:
     def _engine(self):
-        from nono_agent.adapters.testing import create_test_engine
+        from tests.helpers import create_test_engine
 
         return create_test_engine()
 
