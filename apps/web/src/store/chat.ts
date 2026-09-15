@@ -33,6 +33,7 @@ import {
   renameWorkspace as patchWorkspace,
   runSlashCommand,
   postChat,
+  deleteProvider,
   saveDefaultModel,
   saveProvider,
   setSessionPermission,
@@ -143,6 +144,7 @@ type ChatState = {
   resolvePermission: (requestId: string, allow: boolean) => Promise<void>;
   resolveAsk: (answers: Record<string, unknown>) => Promise<void>;
   upsertProvider: (body: ProviderUpsert) => Promise<void>;
+  removeProvider: (providerId: string) => Promise<void>;
   chooseDefault: (provider: string, model: string) => Promise<void>;
 };
 
@@ -213,41 +215,53 @@ function usageFromResult(result: SdkResultMessage): TurnUsage {
   };
 }
 
+let persistDraftTask: Promise<string | null> | null = null;
+
 async function persistDraftSession(
   get: () => ChatState,
   set: (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void,
 ): Promise<string | null> {
   const existing = get().sessionId;
   if (existing) return existing;
-  const cwd = get().workspace.trim();
-  const model = get().model.trim();
-  if (!cwd) {
-    set({ newTaskOpen: true, error: "先选择工作空间目录" });
-    return null;
-  }
-  const permissionMode = get().permissionMode;
-  const workspace = await upsertWorkspace(cwd);
-  const session = await createAppSession({
-    workspace_id: workspace.id,
-    model: model || undefined,
-    permission_mode: permissionMode,
+  if (persistDraftTask) return persistDraftTask;
+  persistDraftTask = (async () => {
+    const live = get().sessionId;
+    if (live) return live;
+    const cwd = get().workspace.trim();
+    const model = get().model.trim();
+    if (!cwd) {
+      set({ newTaskOpen: true, error: "先选择工作空间目录" });
+      return null;
+    }
+    const permissionMode = get().permissionMode;
+    const workspace = await upsertWorkspace(cwd);
+    const createdMeanwhile = get().sessionId;
+    if (createdMeanwhile) return createdMeanwhile;
+    const session = await createAppSession({
+      workspace_id: workspace.id,
+      model: model || undefined,
+      permission_mode: permissionMode,
+    });
+    const nextMode = normalizePermissionMode(session.permission_mode || permissionMode);
+    saveDraftWorkspace(workspace.path);
+    saveDraftModel(session.model);
+    saveDraftPermissionMode(nextMode);
+    set((state) => ({
+      sessionId: session.engine_session_id,
+      workspace: workspace.path,
+      workspaceId: workspace.id,
+      workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
+      permissionMode: nextMode,
+      model: session.model,
+      sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
+      sessionTitles: { ...state.sessionTitles, [session.engine_session_id]: session.title || "新会话" },
+      draftWorkspaceId: null,
+    }));
+    return session.engine_session_id;
+  })().finally(() => {
+    persistDraftTask = null;
   });
-  const nextMode = normalizePermissionMode(session.permission_mode || permissionMode);
-  saveDraftWorkspace(workspace.path);
-  saveDraftModel(session.model);
-  saveDraftPermissionMode(nextMode);
-  set((state) => ({
-    sessionId: session.engine_session_id,
-    workspace: workspace.path,
-    workspaceId: workspace.id,
-    workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
-    permissionMode: nextMode,
-    model: session.model,
-    sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
-    sessionTitles: { ...state.sessionTitles, [session.engine_session_id]: session.title || "新会话" },
-    draftWorkspaceId: null,
-  }));
-  return session.engine_session_id;
+  return persistDraftTask;
 }
 
 function omitSession(state: ChatState, productId: string): Partial<ChatState> {
@@ -643,45 +657,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ newTaskOpen: true, error: "先选择工作空间目录" });
       return;
     }
-    let sessionId = get().sessionId;
-    if (!sessionId) {
-      sessionId = await persistDraftSession(get, set);
-      if (!sessionId) return;
-    }
     const userMessage: ChatMessage = { id: nextId(), role: "user", text };
     const draftId = nextId();
-    const nextTitle = titleFromText(text);
     set((state) => ({
       input: "",
       streaming: true,
       error: null,
       view: "chat",
-      sessions: state.sessions.map((item) =>
-        item.engine_session_id === sessionId && (!item.title.trim() || item.title === "新会话")
-          ? { ...item, title: nextTitle, updated_at: Date.now() / 1000 }
-          : item,
-      ),
-      sessionTitles: {
-        ...state.sessionTitles,
-        [sessionId]: state.sessionTitles[sessionId] && state.sessionTitles[sessionId] !== "新会话"
-          ? state.sessionTitles[sessionId]
-          : nextTitle,
-      },
       messages: [...state.messages, userMessage, { id: draftId, role: "assistant", text: "", streaming: true }],
     }));
-    const mapped = get().sessions.find((item) => item.engine_session_id === sessionId);
-    if (mapped) {
-      void patchAppSession(mapped.id, {
-        title: get().sessionTitles[sessionId] || nextTitle,
-        turn_count: Math.max(1, mapped.turn_count),
-      }).then((updated) => {
-        set((state) => ({
-          sessions: state.sessions.map((item) => (item.id === updated.id ? updated : item)),
-        }));
-      }).catch(() => {
-        // 列表刷新时再对齐
-      });
-    }
 
     const patchDraft = (updater: (item: ChatMessage) => ChatMessage) => {
       set((state) => {
@@ -697,6 +681,49 @@ export const useChatStore = create<ChatState>((set, get) => ({
     };
 
     try {
+      let sessionId = get().sessionId;
+      if (!sessionId) {
+        sessionId = await persistDraftSession(get, set);
+        if (!sessionId) {
+          set((state) => ({
+            streaming: false,
+            input: state.input || text,
+            messages: state.messages.filter(
+              (item) => item.id !== userMessage.id && item.id !== draftId,
+            ),
+          }));
+          return;
+        }
+      }
+      const nextTitle = titleFromText(text);
+      set((state) => ({
+        sessions: state.sessions.map((item) =>
+          item.engine_session_id === sessionId && (!item.title.trim() || item.title === "新会话")
+            ? { ...item, title: nextTitle, updated_at: Date.now() / 1000 }
+            : item,
+        ),
+        sessionTitles: {
+          ...state.sessionTitles,
+          [sessionId]:
+            state.sessionTitles[sessionId] && state.sessionTitles[sessionId] !== "新会话"
+              ? state.sessionTitles[sessionId]
+              : nextTitle,
+        },
+      }));
+      const mapped = get().sessions.find((item) => item.engine_session_id === sessionId);
+      if (mapped) {
+        void patchAppSession(mapped.id, {
+          title: get().sessionTitles[sessionId] || nextTitle,
+          turn_count: Math.max(1, mapped.turn_count),
+        }).then((updated) => {
+          set((state) => ({
+            sessions: state.sessions.map((item) => (item.id === updated.id ? updated : item)),
+          }));
+        }).catch(() => {
+          // 列表刷新时再对齐
+        });
+      }
+
       const response = await postChat(
         sessionId,
         text,
@@ -780,7 +807,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : "发送失败" });
+      set((state) => {
+        const persistFailed = !state.sessionId;
+        return {
+          error: error instanceof Error ? error.message : "发送失败",
+          ...(persistFailed
+            ? {
+                input: state.input || text,
+                messages: state.messages.filter(
+                  (item) => item.id !== userMessage.id && item.id !== draftId,
+                ),
+              }
+            : {}),
+        };
+      });
     } finally {
       set((state) => ({
         streaming: false,
@@ -824,9 +864,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   upsertProvider: async (body) => {
     const catalog = await saveProvider(body);
-    const model = body.models[0]?.id || get().model;
-    set({ catalog, model, error: null });
-    if (model) saveDraftModel(model);
+    set({ catalog, error: null });
+  },
+
+  removeProvider: async (providerId) => {
+    const catalog = await deleteProvider(providerId);
+    const nextModel = catalog.default?.model ?? get().model;
+    if (nextModel) saveDraftModel(nextModel);
+    set({ catalog, model: nextModel, error: null });
   },
 
   chooseDefault: async (provider, model) => {

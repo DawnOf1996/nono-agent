@@ -39,6 +39,7 @@ export function Composer() {
   }, [paletteOpen]);
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (event.key === "Escape" && paletteOpen) {
       event.preventDefault();
       setMenuOpen(false);
@@ -47,6 +48,7 @@ export function Composer() {
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
+      if (event.repeat || streaming) return;
       void send();
     }
   }
