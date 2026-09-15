@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
@@ -67,6 +67,11 @@ app.whenReady().then(async () => {
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
+  });
+  ipcMain.handle("open-path", async (_event, target) => {
+    if (typeof target !== "string" || !target.trim()) return { ok: false };
+    const error = await shell.openPath(target);
+    return { ok: !error, error: error || undefined };
   });
   await ensureSidecar();
   createWindow();

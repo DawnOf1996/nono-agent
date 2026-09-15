@@ -2,18 +2,24 @@ import { Composer } from "@/features/chat/Composer";
 import { MessageList } from "@/features/chat/MessageList";
 import { Trajectory } from "@/features/chat/Trajectory";
 import { sessionTitle } from "@/lib/format";
+import { workspaceLabel } from "@/lib/workspace";
 import { useChatStore } from "@/store/chat";
 
 export function ChatPane() {
-  const { sessionId, sessionTitles, view, setView } = useChatStore();
+  const { sessionId, sessionTitles, view, setView, workspace } = useChatStore();
   const title = sessionId ? sessionTitle(sessionId, sessionTitles) : "新会话";
+  const workspaceName = workspace.trim() ? workspaceLabel(workspace) : "";
 
   return (
-    <section className="flex min-w-0 flex-1 flex-col bg-bg">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
       <header className="flex min-h-[72px] items-end justify-between gap-4 px-6 pb-3 pt-3">
         <div className="min-w-0">
           <div className="truncate text-[15px] font-medium">{title}</div>
-          <div className="mt-0.5 text-[12px] text-faint">标准模式</div>
+          {workspaceName ? (
+            <div className="mt-0.5 truncate text-[12px] text-faint" title={workspace}>
+              {workspaceName}
+            </div>
+          ) : null}
         </div>
         <div className="flex gap-5 text-[13px]">
           <button

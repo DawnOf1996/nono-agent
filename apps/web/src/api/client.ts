@@ -207,6 +207,21 @@ export async function createDirectory(parent: string, name: string): Promise<{ p
   );
 }
 
+export async function openWorkspaceFolder(path: string): Promise<void> {
+  if (window.nonoDesktop?.openPath) {
+    const result = await window.nonoDesktop.openPath(path);
+    if (!result.ok) throw new Error(result.error || "无法打开文件夹");
+    return;
+  }
+  await readJson(
+    await fetch("/app/fs/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  );
+}
+
 export type {
   AppInfo,
   AskUserSignal,

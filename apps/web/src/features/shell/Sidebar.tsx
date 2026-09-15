@@ -1,11 +1,105 @@
-import { Folder, Plus, Settings } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Folder, FolderOpen, MoreHorizontal, Plus, Settings, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
+import { openWorkspaceFolder } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { WorkspacePicker } from "@/features/session/WorkspacePicker";
 import { formatRelativeTime, sessionTitle } from "@/lib/format";
 import { sameWorkspace, workspaceLabel } from "@/lib/workspace";
 import { useChatStore } from "@/store/chat";
+
+function WorkspaceRowMenu({ cwd }: { cwd: string }) {
+  const removeWorkspace = useChatStore((state) => state.removeWorkspace);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) {
+      const width = 168;
+      setPos({
+        top: rect.bottom + 4,
+        left: Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8),
+      });
+    }
+    function onPointer(event: PointerEvent) {
+      const target = event.target as Node;
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  async function openFolder() {
+    setOpen(false);
+    try {
+      await openWorkspaceFolder(cwd);
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  function remove() {
+    setOpen(false);
+    removeWorkspace(cwd);
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="flex size-6 shrink-0 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-ink"
+        title="工作区选项"
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((value) => !value);
+        }}
+      >
+        <MoreHorizontal className="size-3.5" />
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className="fixed z-50 w-[168px] rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_rgba(15,17,21,0.12)]"
+              style={{ top: pos.top, left: pos.left }}
+            >
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover hover:text-ink"
+                onClick={() => void openFolder()}
+              >
+                <FolderOpen className="size-3.5 text-muted" />
+                打开文件夹
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-danger hover:bg-danger/10"
+                onClick={remove}
+              >
+                <Trash2 className="size-3.5" />
+                删除工作区
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
 
 export function Sidebar() {
   const {
@@ -35,8 +129,6 @@ export function Sidebar() {
         : undefined;
       if (owner) {
         byPath.get(owner)?.push(session);
-      } else if (cwd) {
-        byPath.set(cwd, [...(byPath.get(cwd) ?? []), session]);
       } else {
         unbound.push(session);
       }
@@ -90,16 +182,21 @@ export function Sidebar() {
           const activeWs = sameWorkspace(cwd, workspace);
           return (
             <div key={cwd} className="mb-1">
-              <button
-                type="button"
-                className={`flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[13px] ${
+              <div
+                className={`flex items-center rounded-lg pr-0.5 ${
                   activeWs && !sessionId ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
                 }`}
-                onClick={() => setWorkspace(cwd)}
               >
-                <Folder className="size-3.5 shrink-0 text-muted" />
-                <span className="truncate">{workspaceLabel(cwd)}</span>
-              </button>
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-[13px]"
+                  onClick={() => setWorkspace(cwd)}
+                >
+                  <Folder className="size-3.5 shrink-0 text-muted" />
+                  <span className="truncate">{workspaceLabel(cwd)}</span>
+                </button>
+                <WorkspaceRowMenu cwd={cwd} />
+              </div>
               <ul className="ml-3 border-l border-line pl-2">
                 {items.map((session) => {
                   const active = session.session_id === sessionId;

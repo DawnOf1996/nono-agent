@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import string
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,10 @@ class PermissionAnswer(BaseModel):
 class MkdirBody(BaseModel):
     parent: str
     name: str
+
+
+class OpenPathBody(BaseModel):
+    path: str
 
 
 def _home() -> Path:
@@ -168,5 +174,20 @@ def mount_extra_routes(app: FastAPI, settings: SidecarSettings, config: EngineCo
         except OSError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"path": str(target), "parent": str(parent), "name": name}
+
+    @router.post("/fs/open")
+    async def open_directory(body: OpenPathBody) -> dict[str, Any]:
+        """在系统文件管理器中打开目录。"""
+        target = _resolve_dir(body.path)
+        try:
+            if os.name == "nt":
+                os.startfile(target)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(target)])
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"path": str(target), "opened": True}
 
     app.include_router(router)

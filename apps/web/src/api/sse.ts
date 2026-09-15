@@ -88,10 +88,22 @@ export function extractAssistantThinking(payload: unknown): string {
   return contentToThinking(message?.content);
 }
 
-export function extractToolNames(payload: unknown): string[] {
+export type ReplayToolCall = {
+  name: string;
+  input?: Record<string, unknown>;
+};
+
+export type ReplayStep = {
+  id: string;
+  text?: string;
+  thinking?: string;
+  tools?: ReplayToolCall[];
+};
+
+export function extractTools(payload: unknown): ReplayToolCall[] {
   if (!payload || typeof payload !== "object") return [];
   const message = (payload as { message?: { content?: unknown } }).message;
-  return toolNamesFromContent(message?.content);
+  return toolsFromContent(message?.content);
 }
 
 export function contentToText(content: unknown): string {
@@ -121,16 +133,32 @@ export function contentToThinking(content: unknown): string {
     .join("\n\n");
 }
 
-export function toolNamesFromContent(content: unknown): string[] {
+function parseToolInput(raw: unknown): Record<string, unknown> | undefined {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+export function toolsFromContent(content: unknown): ReplayToolCall[] {
   if (!Array.isArray(content)) return [];
-  return content
-    .map((block) => {
-      if (block && typeof block === "object" && (block as { type?: string }).type === "tool_use") {
-        return String((block as { name?: string }).name ?? "tool");
-      }
-      return "";
-    })
-    .filter(Boolean);
+  const tools: ReplayToolCall[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const rec = block as { type?: string; name?: string; input?: unknown };
+    if (rec.type !== "tool_use") continue;
+    tools.push({ name: String(rec.name ?? "tool"), input: parseToolInput(rec.input) });
+  }
+  return tools;
 }
 
 function isToolResultContent(content: unknown): boolean {
@@ -142,36 +170,102 @@ function isToolResultContent(content: unknown): boolean {
   );
 }
 
+function stepFromContent(id: string, content: unknown): ReplayStep | null {
+  const text = contentToText(content).trim();
+  const thinking = contentToThinking(content).trim();
+  const tools = toolsFromContent(content);
+  if (!text && !thinking && tools.length === 0) return null;
+  return {
+    id,
+    text: text || undefined,
+    thinking: thinking || undefined,
+    tools: tools.length ? tools : undefined,
+  };
+}
+
+export function foldAssistantTurn(parts: ReplayStep[]): {
+  text: string;
+  thinking?: string;
+  steps?: ReplayStep[];
+} {
+  const last = parts[parts.length - 1];
+  if (!last) return { text: "" };
+  const prior = parts.slice(0, -1);
+  const tail =
+    last.thinking || last.tools?.length
+      ? [{ id: `${last.id}-tail`, thinking: last.thinking, tools: last.tools }]
+      : [];
+  const steps = [...prior, ...tail];
+  return {
+    text: last.text ?? "",
+    steps: steps.length ? steps : undefined,
+  };
+}
+
 export function messagesFromEvents(
   events: Array<{ seq: number; type: string; data: Record<string, unknown> }>,
-): Array<{ id: string; role: "user" | "assistant"; text: string; tools?: string[]; thinking?: string }> {
+): Array<{
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  thinking?: string;
+  steps?: ReplayStep[];
+}> {
   const messages: Array<{
     id: string;
     role: "user" | "assistant";
     text: string;
-    tools?: string[];
     thinking?: string;
+    steps?: ReplayStep[];
   }> = [];
+  let pending: ReplayStep[] = [];
+
+  const flushAssistant = () => {
+    if (!pending.length) return;
+    const last = pending[pending.length - 1];
+    messages.push({
+      id: last.id,
+      role: "assistant",
+      ...foldAssistantTurn(pending),
+    });
+    pending = [];
+  };
+
   for (const event of events) {
     const content = event.data.content;
     if (event.type === "user/message") {
       if (isToolResultContent(content)) continue;
       const text = contentToText(content);
       if (!text.trim()) continue;
+      flushAssistant();
       messages.push({ id: `evt-${event.seq}`, role: "user", text });
     } else if (event.type === "assistant/message") {
-      const text = contentToText(content);
-      const thinking = contentToThinking(content);
-      const tools = toolNamesFromContent(content);
-      if (!text.trim() && tools.length === 0 && !thinking.trim()) continue;
-      messages.push({
-        id: `evt-${event.seq}`,
-        role: "assistant",
-        text,
-        tools: tools.length ? tools : undefined,
-        thinking: thinking || undefined,
-      });
+      const step = stepFromContent(`evt-${event.seq}`, content);
+      if (step) pending.push(step);
+    } else if (event.type === "turn/end") {
+      flushAssistant();
     }
   }
+  flushAssistant();
   return messages;
+}
+
+/** 从后往前切出最近 ``turns`` 轮（以 user 消息为一轮起点）。 */
+export function sliceLastUserTurns<T extends { role: string }>(
+  messages: T[],
+  turns = 3,
+): { older: T[]; recent: T[] } {
+  if (turns <= 0 || messages.length === 0) return { older: [], recent: messages };
+  let seen = 0;
+  let start = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role !== "user") continue;
+    seen += 1;
+    if (seen >= turns) {
+      start = i;
+      break;
+    }
+  }
+  if (seen < turns) return { older: [], recent: messages };
+  return { older: messages.slice(0, start), recent: messages.slice(start) };
 }

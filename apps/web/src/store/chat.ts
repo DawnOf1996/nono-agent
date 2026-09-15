@@ -35,11 +35,14 @@ import {
   extractAssistantThinking,
   extractTextDelta,
   extractThinkingDelta,
-  extractToolNames,
+  extractTools,
   isTextBlockStart,
   isThinkingBlockStart,
   messagesFromEvents,
   parseSse,
+  sliceLastUserTurns,
+  type ReplayStep,
+  type ReplayToolCall,
 } from "@/api/sse";
 import {
   loadDraftPermissionMode,
@@ -51,6 +54,7 @@ import {
   loadDraftWorkspace,
   loadWorkspaces,
   mergeWorkspaces,
+  sameWorkspace,
   saveDraftModel,
   saveDraftWorkspace,
   saveWorkspaces,
@@ -58,6 +62,8 @@ import {
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 export type MainView = "chat" | "trajectory";
+export type ChatToolCall = ReplayToolCall;
+export type ChatStep = ReplayStep;
 
 export type ChatMessage = {
   id: string;
@@ -65,7 +71,7 @@ export type ChatMessage = {
   text: string;
   thinking?: string;
   thinkingRunning?: boolean;
-  tools?: string[];
+  steps?: ChatStep[];
   streaming?: boolean;
 };
 
@@ -101,9 +107,12 @@ type ChatState = {
   view: MainView;
   usage: TurnUsage | null;
   commands: SlashCommandInfo[];
+  historyReveal: boolean;
+  historyLoading: boolean;
   setInput: (value: string) => void;
   setWorkspace: (value: string) => void;
   addWorkspace: (value: string) => void;
+  removeWorkspace: (path: string) => void;
   setPermissionMode: (mode: PermissionMode) => Promise<void>;
   setModel: (value: string) => void;
   setNewTaskOpen: (open: boolean) => void;
@@ -125,10 +134,6 @@ type ChatState = {
 
 function nextId(): string {
   return crypto.randomUUID();
-}
-
-function mergeTools(current: string[] | undefined, extra: string[]): string[] {
-  return [...new Set([...(current ?? []), ...extra])];
 }
 
 function titleFromText(text: string): string {
@@ -179,6 +184,44 @@ async function resolveSessionTitles(
   return next;
 }
 
+function isLocalDraft(session: SessionInfo): boolean {
+  return (session.turn_count ?? 0) <= 0;
+}
+
+function persistableSessions(sessions: SessionInfo[]): SessionInfo[] {
+  return sessions.filter((item) => !isLocalDraft(item));
+}
+
+function keepOpenSession(sessions: SessionInfo[], sessionId: string): SessionInfo[] {
+  return sessions.filter((item) => item.session_id === sessionId || !isLocalDraft(item));
+}
+
+function mergeLocalDraft(
+  persisted: SessionInfo[],
+  state: {
+    sessionId: string | null;
+    sessions: SessionInfo[];
+    model: string;
+    workspace: string;
+    permissionMode: PermissionMode;
+    sessionTitles: Record<string, string>;
+  },
+): SessionInfo[] {
+  const id = state.sessionId;
+  if (!id || persisted.some((item) => item.session_id === id)) return persisted;
+  const draft = state.sessions.find((item) => item.session_id === id) ?? {
+    session_id: id,
+    model: state.model,
+    cwd: state.workspace,
+    turn_count: 0,
+    total_tokens: 0,
+    permission_mode: state.permissionMode,
+    summary: state.sessionTitles[id] || "新会话",
+    updated_at: Date.now() / 1000,
+  };
+  return [draft, ...persisted];
+}
+
 function usageFromResult(result: SdkResultMessage): TurnUsage {
   return {
     inputTokens: result.usage?.input_tokens ?? 0,
@@ -213,6 +256,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   view: "chat",
   usage: null,
   commands: [],
+  historyReveal: false,
+  historyLoading: false,
 
   setInput: (value) => set({ input: value }),
   setWorkspace: (value) => {
@@ -225,6 +270,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
   addWorkspace: (value) => {
     get().setWorkspace(value);
+  },
+  removeWorkspace: (path) => {
+    const target = path.trim();
+    if (!target) return;
+    set((state) => {
+      const workspaces = state.workspaces.filter((item) => !sameWorkspace(item, target));
+      saveWorkspaces(workspaces);
+      const workspace = sameWorkspace(state.workspace, target)
+        ? (workspaces[0] ?? "")
+        : state.workspace;
+      saveDraftWorkspace(workspace);
+      return { workspaces, workspace };
+    });
   },
   setPermissionMode: async (mode) => {
     saveDraftPermissionMode(mode);
@@ -263,7 +321,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const workspaces = mergeWorkspaces([
         ...state.workspaces,
         state.workspace,
-        ...sessions.map((item) => item.cwd),
       ]);
       saveWorkspaces(workspaces);
       const live = sessions.find((item) => item.session_id === state.sessionId);
@@ -275,7 +332,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({
         healthOk: health.status === "ok",
         info,
-        sessions,
+        sessions: mergeLocalDraft(sessions, { ...state, sessionTitles }),
         permissions,
         catalog,
         model,
@@ -336,7 +393,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       workspaces,
       permissionMode: nextMode,
       model: session.model,
-      sessions: [session, ...state.sessions.filter((item) => item.session_id !== session.session_id)],
+      sessions: [
+        {
+          ...session,
+          turn_count: 0,
+          total_tokens: 0,
+          summary: "新会话",
+          updated_at: Date.now() / 1000,
+        },
+        ...persistableSessions(state.sessions),
+      ],
       sessionTitles: { ...state.sessionTitles, [session.session_id]: "新会话" },
       messages: [],
       events: [],
@@ -344,6 +410,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       error: null,
       newTaskOpen: false,
       view: "chat",
+      historyReveal: false,
+      historyLoading: false,
     };
     });
   },
@@ -354,26 +422,54 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ? normalizePermissionMode(session.permission_mode)
       : get().permissionMode;
     if (session?.permission_mode) saveDraftPermissionMode(permissionMode);
-    set({
+    set((state) => ({
       sessionId,
-      workspace: session?.cwd || get().workspace,
-      model: session?.model || get().model,
+      workspace: session?.cwd || state.workspace,
+      model: session?.model || state.model,
       permissionMode,
       error: null,
-    });
+      usage: null,
+      events: [],
+      messages: [],
+      historyReveal: false,
+      historyLoading: true,
+      view: "chat",
+      sessions: keepOpenSession(state.sessions, sessionId),
+    }));
     try {
       const events = await fetchSessionEvents(sessionId);
-      const messages = messagesFromEvents(events);
+      if (get().sessionId !== sessionId) return;
+      const all = messagesFromEvents(events);
       const title = titlesFromEvents(events);
-      set((state) => ({
+      const { older, recent } = sliceLastUserTurns(all, 3);
+      const titles = title
+        ? { ...get().sessionTitles, [sessionId]: title }
+        : get().sessionTitles;
+      set({
         events,
-        messages,
-        sessionTitles: title
-          ? { ...state.sessionTitles, [sessionId]: title }
-          : state.sessionTitles,
-      }));
+        messages: recent,
+        sessionTitles: titles,
+        historyReveal: true,
+        historyLoading: false,
+      });
+      if (!older.length) {
+        requestAnimationFrame(() => {
+          if (get().sessionId === sessionId) set({ historyReveal: false });
+        });
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+      if (get().sessionId !== sessionId) return;
+      set({ messages: all });
+      window.setTimeout(() => {
+        if (get().sessionId === sessionId) set({ historyReveal: false });
+      }, 480);
     } catch {
-      set({ events: [], messages: [] });
+      if (get().sessionId === sessionId) {
+        set({ events: [], messages: [], historyReveal: false, historyLoading: false });
+      }
     }
   },
 
@@ -430,11 +526,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     const userMessage: ChatMessage = { id: nextId(), role: "user", text };
     const draftId = nextId();
-    set((state) => ({
+    set((state) => {
+      const already = state.sessions.some((item) => item.session_id === sessionId);
+      const sessions = already
+        ? state.sessions
+        : [
+            {
+              session_id: sessionId,
+              model: state.model,
+              cwd: state.workspace,
+              turn_count: 0,
+              total_tokens: 0,
+              permission_mode: state.permissionMode,
+              summary: titleFromText(text),
+              updated_at: Date.now() / 1000,
+            },
+            ...state.sessions,
+          ];
+      return {
       input: "",
       streaming: true,
       error: null,
       view: "chat",
+      sessions,
       sessionTitles: {
         ...state.sessionTitles,
         [sessionId]: state.sessionTitles[sessionId] && state.sessionTitles[sessionId] !== "新会话"
@@ -442,7 +556,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : titleFromText(text),
       },
       messages: [...state.messages, userMessage, { id: draftId, role: "assistant", text: "", streaming: true }],
-    }));
+      };
+    });
 
     const patchDraft = (updater: (item: ChatMessage) => ChatMessage) => {
       set((state) => {
@@ -500,21 +615,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
           patchDraft((item) => ({
             ...item,
             text: textDelta ? item.text + textDelta : item.text,
-            thinkingRunning: false,
+            thinkingRunning: item.steps?.length ? item.thinkingRunning : false,
             streaming: true,
           }));
         } else if (frame.event === "assistant") {
           const full = extractAssistantText(payload);
           const thinking = extractAssistantThinking(payload);
-          const tools = extractToolNames(payload);
-          patchDraft((item) => ({
-            ...item,
-            text: full || item.text,
-            thinking: thinking || item.thinking,
-            thinkingRunning: false,
-            tools: tools.length ? mergeTools(item.tools, tools) : item.tools,
-            streaming: true,
-          }));
+          const tools = extractTools(payload);
+          patchDraft((item) => {
+            if (tools.length) {
+              const step: ChatStep = {
+                id: nextId(),
+                text: (full || item.text).trim() || undefined,
+                thinking: (thinking || item.thinking)?.trim() || undefined,
+                tools,
+              };
+              return {
+                ...item,
+                steps: [...(item.steps ?? []), step],
+                text: "",
+                thinking: undefined,
+                thinkingRunning: true,
+                streaming: true,
+              };
+            }
+            return {
+              ...item,
+              text: full || item.text,
+              thinking: thinking || item.thinking,
+              thinkingRunning: false,
+              streaming: true,
+            };
+          });
         } else if (frame.event === "result") {
           const result = payload as SdkResultMessage;
           if (result.is_error) {
@@ -536,7 +668,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const liveId = get().sessionId;
       if (liveId) {
         const events = await fetchSessionEvents(liveId).catch(() => get().events);
-        set({ events });
+        set((state) => ({
+          events,
+          messages: state.messages.some((item) => item.role === "system")
+            ? state.messages
+            : messagesFromEvents(events),
+        }));
       }
     }
   },
