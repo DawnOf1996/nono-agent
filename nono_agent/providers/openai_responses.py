@@ -92,6 +92,7 @@ class OpenAIResponsesProvider:
 
         maybe_log_api_request(self._config, protocol=self.name, params=params)
 
+        stream = await client.responses.create(**params)
         yield MessageStartEvent(message={"usage": {}})
 
         next_idx = 0
@@ -102,7 +103,7 @@ class OpenAIResponsesProvider:
         stop_reason: str | None = None
         usage: dict[str, Any] = {}
 
-        async for event in client.responses.create(**params):
+        async for event in stream:
             etype = getattr(event, "type", "")
 
             if etype == "response.output_item.added":

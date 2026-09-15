@@ -1,5 +1,7 @@
 """Tests for the Responses provider and shared utils."""
 
+import pytest
+
 from nono_agent.core.config import ProviderConfig
 from nono_agent.core.types import AssistantMessage, UserMessage
 from nono_agent.providers._openai_responses_utils import (
@@ -63,7 +65,55 @@ class TestResponsesTool:
         }
 
 
+class _EmptyStream:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+class _FakeResponses:
+    def __init__(self) -> None:
+        self.last_params: dict | None = None
+        self.create_calls = 0
+
+    async def create(self, **params):
+        self.create_calls += 1
+        self.last_params = params
+        return _EmptyStream()
+
+
+class _FakeResponsesClient:
+    def __init__(self) -> None:
+        self.responses = _FakeResponses()
+
+
 class TestOpenAIResponsesProvider:
+    @pytest.mark.asyncio
+    async def test_awaits_create_before_iterating(self):
+        """stream=True 时 create() 返回协程，必须 await 后再 async for。"""
+        provider = OpenAIResponsesProvider(
+            ProviderConfig(model_id="gpt-4o", adapter="openai_responses", api_key="sk")
+        )
+        client = _FakeResponsesClient()
+        provider._client = client
+
+        events = [
+            event
+            async for event in provider.stream(
+                messages=[],
+                system_prompt="",
+                tools=[],
+                model="gpt-4o",
+            )
+        ]
+
+        assert client.responses.create_calls == 1
+        assert client.responses.last_params is not None
+        assert client.responses.last_params["stream"] is True
+        assert events
+
     def test_registered(self):
         registry = create_default_registry()
         assert "openai_responses" in registry._adapter_map
