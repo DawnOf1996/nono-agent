@@ -18,6 +18,7 @@ import {
   answerAskUser,
   answerPermission,
   createAppSession,
+  deleteAppSession,
   deleteWorkspace,
   fetchAppInfo,
   fetchCatalog,
@@ -27,7 +28,9 @@ import {
   fetchSessionEvents,
   fetchSessionList,
   fetchWorkspaces,
+  forkAppSession,
   patchAppSession,
+  renameWorkspace as patchWorkspace,
   runSlashCommand,
   postChat,
   saveDefaultModel,
@@ -100,6 +103,7 @@ type ChatState = {
   input: string;
   workspace: string;
   workspaceId: string | null;
+  draftWorkspaceId: string | null;
   workspaces: Workspace[];
   permissionMode: PermissionMode;
   model: string;
@@ -117,6 +121,7 @@ type ChatState = {
   setInput: (value: string) => void;
   setWorkspace: (value: string) => void;
   addWorkspace: (value: string) => Promise<void>;
+  renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
   removeWorkspace: (workspaceId: string) => Promise<void>;
   setPermissionMode: (mode: PermissionMode) => Promise<void>;
   setModel: (value: string) => void;
@@ -128,6 +133,10 @@ type ChatState = {
   refreshPermissions: () => Promise<void>;
   newSession: (opts?: { model?: string; cwd?: string }) => Promise<void>;
   openSession: (sessionId: string) => Promise<void>;
+  renameSession: (sessionId: string, title: string) => Promise<void>;
+  forkSession: (sessionId: string) => Promise<void>;
+  archiveSession: (sessionId: string) => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<void>;
   send: () => Promise<void>;
   runCommand: (line: string) => Promise<void>;
   abort: () => Promise<void>;
@@ -204,6 +213,59 @@ function usageFromResult(result: SdkResultMessage): TurnUsage {
   };
 }
 
+async function persistDraftSession(
+  get: () => ChatState,
+  set: (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void,
+): Promise<string | null> {
+  const existing = get().sessionId;
+  if (existing) return existing;
+  const cwd = get().workspace.trim();
+  const model = get().model.trim();
+  if (!cwd) {
+    set({ newTaskOpen: true, error: "先选择工作空间目录" });
+    return null;
+  }
+  const permissionMode = get().permissionMode;
+  const workspace = await upsertWorkspace(cwd);
+  const session = await createAppSession({
+    workspace_id: workspace.id,
+    model: model || undefined,
+    permission_mode: permissionMode,
+  });
+  const nextMode = normalizePermissionMode(session.permission_mode || permissionMode);
+  saveDraftWorkspace(workspace.path);
+  saveDraftModel(session.model);
+  saveDraftPermissionMode(nextMode);
+  set((state) => ({
+    sessionId: session.engine_session_id,
+    workspace: workspace.path,
+    workspaceId: workspace.id,
+    workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
+    permissionMode: nextMode,
+    model: session.model,
+    sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
+    sessionTitles: { ...state.sessionTitles, [session.engine_session_id]: session.title || "新会话" },
+    draftWorkspaceId: null,
+  }));
+  return session.engine_session_id;
+}
+
+function omitSession(state: ChatState, productId: string): Partial<ChatState> {
+  const removed = state.sessions.find((item) => item.id === productId);
+  const sessions = state.sessions.filter((item) => item.id !== productId);
+  const gone = Boolean(removed && removed.engine_session_id === state.sessionId);
+  const sessionTitles = { ...state.sessionTitles };
+  if (removed) delete sessionTitles[removed.engine_session_id];
+  return {
+    sessions,
+    sessionTitles,
+    sessionId: gone ? null : state.sessionId,
+    messages: gone ? [] : state.messages,
+    events: gone ? [] : state.events,
+    usage: gone ? null : state.usage,
+  };
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   healthOk: false,
   info: null,
@@ -216,6 +278,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   input: "",
   workspace: loadDraftWorkspace(),
   workspaceId: null,
+  draftWorkspaceId: null,
   workspaces: [],
   permissionMode: loadDraftPermissionMode(),
   model: loadDraftModel(),
@@ -234,19 +297,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setInput: (value) => set({ input: value }),
   setWorkspace: (value) => {
     saveDraftWorkspace(value);
-    set((state) => ({
-      workspace: value,
-      workspaceId: workspaceByPath(state.workspaces, value)?.id ?? null,
-    }));
+    set((state) => {
+      const workspaceId = workspaceByPath(state.workspaces, value)?.id ?? null;
+      const leavingDraft = Boolean(state.draftWorkspaceId && state.draftWorkspaceId !== workspaceId);
+      return {
+        workspace: value,
+        workspaceId,
+        ...(leavingDraft
+          ? { draftWorkspaceId: null, sessionId: null, input: "", messages: [], events: [], usage: null }
+          : {}),
+      };
+    });
   },
   addWorkspace: async (value) => {
     const path = value.trim();
     if (!path) return;
     const workspace = await upsertWorkspace(path);
     saveDraftWorkspace(workspace.path);
+    set((state) => {
+      const leavingDraft = Boolean(state.draftWorkspaceId && state.draftWorkspaceId !== workspace.id);
+      return {
+        workspace: workspace.path,
+        workspaceId: workspace.id,
+        workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
+        draftWorkspaceId: leavingDraft ? null : state.draftWorkspaceId,
+        input: leavingDraft ? "" : state.input,
+        messages: leavingDraft ? [] : state.messages,
+        events: leavingDraft ? [] : state.events,
+        error: null,
+      };
+    });
+  },
+  renameWorkspace: async (workspaceId, name) => {
+    const target = workspaceId.trim();
+    const nextName = name.trim();
+    if (!target || !nextName) return;
+    const workspace = await patchWorkspace(target, nextName);
     set((state) => ({
-      workspace: workspace.path,
-      workspaceId: workspace.id,
       workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
       error: null,
     }));
@@ -271,6 +358,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sessions,
         workspace,
         workspaceId: nextId,
+        draftWorkspaceId: state.draftWorkspaceId === target ? null : state.draftWorkspaceId,
         sessionId: sessionGone ? null : state.sessionId,
         messages: sessionGone ? [] : state.messages,
         events: sessionGone ? [] : state.events,
@@ -381,24 +469,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     const permissionMode = get().permissionMode;
     const workspace = await upsertWorkspace(cwd);
-    const session = await createAppSession({
-      workspace_id: workspace.id,
-      model: model || undefined,
-      permission_mode: permissionMode,
-    });
-    const nextMode = normalizePermissionMode(session.permission_mode || permissionMode);
+    if (model) saveDraftModel(model);
     saveDraftWorkspace(workspace.path);
-    saveDraftModel(session.model);
-    saveDraftPermissionMode(nextMode);
+    saveDraftPermissionMode(permissionMode);
     set((state) => ({
-      sessionId: session.engine_session_id,
+      sessionId: null,
       workspace: workspace.path,
       workspaceId: workspace.id,
       workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
-      permissionMode: nextMode,
-      model: session.model,
-      sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
-      sessionTitles: { ...state.sessionTitles, [session.engine_session_id]: session.title || "新会话" },
+      draftWorkspaceId: workspace.id,
+      permissionMode,
+      model: model || state.model,
+      input: "",
       messages: [],
       events: [],
       usage: null,
@@ -420,8 +502,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sessionId,
       workspace: session?.cwd || state.workspace,
       workspaceId: session?.workspace_id || state.workspaceId,
+      draftWorkspaceId: null,
       model: session?.model || state.model,
       permissionMode,
+      input: state.draftWorkspaceId ? "" : state.input,
       error: null,
       usage: null,
       events: [],
@@ -477,6 +561,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  renameSession: async (sessionId, title) => {
+    const nextTitle = title.trim();
+    if (!sessionId || !nextTitle) return;
+    const updated = await patchAppSession(sessionId, { title: nextTitle });
+    set((state) => ({
+      sessions: state.sessions.map((item) => (item.id === updated.id ? updated : item)),
+      sessionTitles: { ...state.sessionTitles, [updated.engine_session_id]: nextTitle },
+      error: null,
+    }));
+  },
+
+  forkSession: async (sessionId) => {
+    if (!sessionId.trim()) return;
+    const forked = await forkAppSession(sessionId);
+    set((state) => ({
+      sessions: [forked, ...state.sessions.filter((item) => item.id !== forked.id)],
+      sessionTitles: {
+        ...state.sessionTitles,
+        [forked.engine_session_id]: forked.title || "新会话",
+      },
+      error: null,
+    }));
+    await get().openSession(forked.engine_session_id);
+  },
+
+  archiveSession: async (sessionId) => {
+    if (!sessionId.trim()) return;
+    await patchAppSession(sessionId, { archived: true });
+    set((state) => omitSession(state, sessionId));
+  },
+
+  deleteSession: async (sessionId) => {
+    if (!sessionId.trim()) return;
+    await deleteAppSession(sessionId);
+    set((state) => omitSession(state, sessionId));
+  },
+
   runCommand: async (line) => {
     const raw = line.trim();
     const commandLine = raw.startsWith("/") ? raw : `/${raw}`;
@@ -524,8 +645,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     let sessionId = get().sessionId;
     if (!sessionId) {
-      await get().newSession();
-      sessionId = get().sessionId;
+      sessionId = await persistDraftSession(get, set);
       if (!sessionId) return;
     }
     const userMessage: ChatMessage = { id: nextId(), role: "user", text };

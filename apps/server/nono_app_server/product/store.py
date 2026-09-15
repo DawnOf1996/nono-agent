@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT NOT NULL DEFAULT '',
     permission_mode TEXT NOT NULL DEFAULT 'default',
     turn_count INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
@@ -82,7 +83,17 @@ class AppStore:
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        if "archived" not in columns:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -117,6 +128,7 @@ class AppStore:
             "model": row["model"],
             "permission_mode": row["permission_mode"],
             "turn_count": int(row["turn_count"]),
+            "archived": bool(row["archived"]) if "archived" in row.keys() else False,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -146,8 +158,8 @@ class AppStore:
             ).fetchone()
             if existing is not None:
                 conn.execute(
-                    "UPDATE workspaces SET path = ?, name = ?, updated_at = ? WHERE id = ?",
-                    (path, name, now, existing["id"]),
+                    "UPDATE workspaces SET path = ?, updated_at = ? WHERE id = ?",
+                    (path, now, existing["id"]),
                 )
                 row = conn.execute(
                     "SELECT * FROM workspaces WHERE id = ?", (existing["id"],)
@@ -166,6 +178,21 @@ class AppStore:
             ).fetchone()
             return self._workspace_dict(row)
 
+    def update_workspace(self, workspace_id: str, *, name: str) -> dict[str, Any] | None:
+        current = self.get_workspace(workspace_id)
+        if current is None:
+            return None
+        next_name = name.strip()
+        if not next_name:
+            return current
+        now = _now()
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?",
+                (next_name, now, workspace_id),
+            )
+        return self.get_workspace(workspace_id)
+
     def delete_workspace(self, workspace_id: str) -> bool:
         with self._tx() as conn:
             cursor = conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
@@ -176,10 +203,11 @@ class AppStore:
             SELECT s.*, w.path AS cwd
             FROM sessions s
             JOIN workspaces w ON w.id = s.workspace_id
+            WHERE s.archived = 0
         """
         params: tuple[str, ...] = ()
         if workspace_id:
-            sql += " WHERE s.workspace_id = ?"
+            sql += " AND s.workspace_id = ?"
             params = (workspace_id,)
         sql += " ORDER BY s.updated_at DESC"
         with self._tx() as conn:
@@ -266,6 +294,7 @@ class AppStore:
         model: str | None = None,
         permission_mode: str | None = None,
         turn_count: int | None = None,
+        archived: bool | None = None,
     ) -> dict[str, Any] | None:
         current = self.get_session(session_id)
         if current is None:
@@ -274,15 +303,17 @@ class AppStore:
         next_model = current["model"] if model is None else model
         next_mode = current["permission_mode"] if permission_mode is None else permission_mode
         next_turns = current["turn_count"] if turn_count is None else turn_count
+        next_archived = int(current["archived"]) if archived is None else int(archived)
         now = _now()
         with self._tx() as conn:
             conn.execute(
                 """
                 UPDATE sessions
-                SET title = ?, model = ?, permission_mode = ?, turn_count = ?, updated_at = ?
+                SET title = ?, model = ?, permission_mode = ?, turn_count = ?,
+                    archived = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (next_title, next_model, next_mode, next_turns, now, session_id),
+                (next_title, next_model, next_mode, next_turns, next_archived, now, session_id),
             )
         return self.get_session(session_id)
 

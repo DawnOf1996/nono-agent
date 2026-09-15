@@ -19,6 +19,10 @@ class WorkspaceBody(BaseModel):
     path: str
 
 
+class WorkspacePatchBody(BaseModel):
+    name: str
+
+
 @router.get("/workspaces")
 async def list_workspaces(store: AppStore = Depends(get_store)) -> dict[str, Any]:
     return {"workspaces": store.list_workspaces()}
@@ -32,6 +36,21 @@ async def upsert_workspace(
     if not path:
         raise HTTPException(status_code=400, detail="path is required")
     return store.upsert_workspace(path)
+
+
+@router.patch("/workspaces/{workspace_id}")
+async def patch_workspace(
+    workspace_id: str,
+    body: WorkspacePatchBody,
+    store: AppStore = Depends(get_store),
+) -> dict[str, Any]:
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    updated = store.update_workspace(workspace_id, name=name)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return updated
 
 
 @router.delete("/workspaces/{workspace_id}")

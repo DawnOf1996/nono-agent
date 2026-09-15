@@ -8,7 +8,16 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from nono_agent.session.fork import fork_transcript
 from nono_agent.session.header import normalize_permission_mode
+from nono_agent.session.transcript import (
+    DEFAULT_SESSION_DIR,
+    HEADER_SUFFIX,
+    JSONL_SUFFIX,
+    JSONL_ZSTD_SUFFIX,
+    LocalFileTranscriptWriter,
+    existing_transcript_path,
+)
 from nono_app_server.engine.deps import get_session_manager
 from nono_app_server.engine.session_manager import SessionManager
 from nono_app_server.engine.views import request_permission_mode, session_info
@@ -30,6 +39,34 @@ class PatchSessionBody(BaseModel):
     model: str | None = None
     permission_mode: str | None = None
     turn_count: int | None = None
+    archived: bool | None = None
+
+
+def _purge_session_files(engine_session_id: str) -> None:
+    directory = DEFAULT_SESSION_DIR
+    candidates = [
+        existing_transcript_path(directory, engine_session_id),
+        directory / f"{engine_session_id}{HEADER_SUFFIX}",
+        directory / f"{engine_session_id}{JSONL_SUFFIX}",
+        directory / f"{engine_session_id}{JSONL_ZSTD_SUFFIX}",
+    ]
+    seen: set[Any] = set()
+    for path in candidates:
+        if path is None or path in seen:
+            continue
+        seen.add(path)
+        if path.is_file():
+            path.unlink()
+
+
+async def _close_engine(manager: SessionManager, engine_session_id: str) -> None:
+    async with manager.lock:
+        engine = manager.sessions.pop(engine_session_id, None)
+    if engine is not None:
+        try:
+            await engine.close()
+        except Exception:
+            pass
 
 
 def _enrich(row: dict[str, Any], manager: SessionManager) -> dict[str, Any]:
@@ -113,9 +150,49 @@ async def patch_app_session(
         model=body.model,
         permission_mode=mode,
         turn_count=body.turn_count,
+        archived=body.archived,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    if body.archived:
+        await _close_engine(manager, row["engine_session_id"])
+    return _enrich(row, manager)
+
+
+@router.post("/sessions/{session_id}/fork")
+async def fork_app_session(
+    session_id: str,
+    store: AppStore = Depends(get_store),
+    manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    source = store.get_session(session_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    new_engine_id = str(uuid.uuid4())
+    live = manager.sessions.get(source["engine_session_id"])
+    writer = live.transcript_writer if live is not None else manager.events_writer(
+        source["engine_session_id"]
+    )
+    if live is not None and writer is not None:
+        events = await writer.read_events()
+        await live.fork_session(events[-1].seq if events else 0, new_engine_id)
+    elif writer is not None:
+        events = await writer.read_events()
+        destination = LocalFileTranscriptWriter(
+            DEFAULT_SESSION_DIR / f"{new_engine_id}{JSONL_ZSTD_SUFFIX}"
+        )
+        await fork_transcript(
+            writer, destination, events[-1].seq if events else 0, new_engine_id
+        )
+    title = (source["title"] or "").strip()
+    row = store.create_session(
+        workspace_id=source["workspace_id"],
+        engine_session_id=new_engine_id,
+        title=f"{title} 副本" if title else "新会话",
+        model=source["model"],
+        permission_mode=source["permission_mode"],
+        turn_count=source["turn_count"],
+    )
     return _enrich(row, manager)
 
 
@@ -129,8 +206,6 @@ async def delete_app_session(
     if row is None:
         raise HTTPException(status_code=404, detail="Session not found")
     engine_id = row["engine_session_id"]
-    async with manager.lock:
-        engine = manager.sessions.pop(engine_id, None)
-    if engine is not None:
-        await engine.close()
+    await _close_engine(manager, engine_id)
+    _purge_session_files(engine_id)
     return {"status": "deleted", "id": session_id}

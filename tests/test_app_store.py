@@ -47,6 +47,16 @@ class TestAppStore:
         assert first["id"] == second["id"]
         assert len(store.list_workspaces()) == 1
 
+    def test_rename_workspace_survives_upsert(self, tmp_path: Path):
+        store = AppStore(tmp_path / "app.db")
+        created = store.upsert_workspace(str(tmp_path / "proj"))
+        renamed = store.update_workspace(created["id"], name="前端")
+        assert renamed is not None
+        assert renamed["name"] == "前端"
+        again = store.upsert_workspace(str(tmp_path / "proj"))
+        assert again["id"] == created["id"]
+        assert again["name"] == "前端"
+
     def test_session_maps_to_engine_id(self, tmp_path: Path):
         store = AppStore(tmp_path / "app.db")
         workspace = store.upsert_workspace(str(tmp_path))
@@ -99,6 +109,13 @@ class TestProductMappingApi:
             assert listed[0]["id"] == workspace["id"]
             again = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
             assert again["id"] == workspace["id"]
+            patched = client.patch(
+                f"/app/workspaces/{workspace['id']}",
+                json={"name": "我的项目"},
+            )
+            assert patched.status_code == 200
+            assert patched.json()["name"] == "我的项目"
+            assert client.post("/app/workspaces", json={"path": str(tmp_path)}).json()["name"] == "我的项目"
             deleted = client.delete(f"/app/workspaces/{workspace['id']}")
             assert deleted.status_code == 200
             assert client.get("/app/workspaces").json()["workspaces"] == []
@@ -136,3 +153,31 @@ class TestProductMappingApi:
             assert patched.json()["turn_count"] == 1
             assert client.delete(f"/app/sessions/{row['id']}").status_code == 200
             assert client.get("/app/sessions").json()["sessions"] == []
+
+    def test_archive_hides_session_from_list(self, tmp_path: Path):
+        with _client(tmp_path) as client:
+            workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
+            row = client.post(
+                "/app/sessions", json={"workspace_id": workspace["id"], "title": "旧对话"}
+            ).json()
+            archived = client.patch(
+                f"/app/sessions/{row['id']}",
+                json={"archived": True},
+            )
+            assert archived.status_code == 200
+            assert client.get("/app/sessions").json()["sessions"] == []
+
+    def test_fork_session_adds_copy(self, tmp_path: Path):
+        with _client(tmp_path) as client:
+            workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
+            row = client.post(
+                "/app/sessions", json={"workspace_id": workspace["id"], "title": "原会话"}
+            ).json()
+            forked = client.post(f"/app/sessions/{row['id']}/fork")
+            assert forked.status_code == 200
+            copy = forked.json()
+            assert copy["id"] != row["id"]
+            assert copy["engine_session_id"] != row["engine_session_id"]
+            assert copy["title"] == "原会话 副本"
+            listed = client.get("/app/sessions").json()["sessions"]
+            assert {item["id"] for item in listed} == {row["id"], copy["id"]}

@@ -74,6 +74,16 @@ export async function upsertWorkspace(path: string): Promise<Workspace> {
   );
 }
 
+export async function renameWorkspace(workspaceId: string, name: string): Promise<Workspace> {
+  return readJson(
+    await fetch(`/app/workspaces/${encodeURIComponent(workspaceId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  );
+}
+
 export async function deleteWorkspace(workspaceId: string): Promise<void> {
   await readJson(await fetch(`/app/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE" }));
 }
@@ -106,6 +116,7 @@ export async function patchAppSession(
     model?: string;
     permission_mode?: PermissionMode;
     turn_count?: number;
+    archived?: boolean;
   },
 ): Promise<SessionListItem> {
   return readJson(
@@ -114,6 +125,18 @@ export async function patchAppSession(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  );
+}
+
+export async function forkAppSession(sessionId: string): Promise<SessionListItem> {
+  return readJson(
+    await fetch(`/app/sessions/${encodeURIComponent(sessionId)}/fork`, { method: "POST" }),
+  );
+}
+
+export async function deleteAppSession(sessionId: string): Promise<void> {
+  await readJson(
+    await fetch(`/app/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
   );
 }
 

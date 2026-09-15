@@ -1,6 +1,7 @@
-import { Folder, FolderOpen, MoreHorizontal, Plus, Settings, Trash2 } from "lucide-react";
+import { Archive, Folder, FolderOpen, GitFork, MoreHorizontal, Pencil, Plus, Settings, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { SessionListItem, Workspace } from "@nono/protocol";
 
 import { openWorkspaceFolder } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,13 @@ import { formatRelativeTime, sessionTitle } from "@/lib/format";
 import { sameWorkspace, workspaceLabel } from "@/lib/workspace";
 import { useChatStore } from "@/store/chat";
 
-function WorkspaceRowMenu({ workspace }: { workspace: { id: string; path: string } }) {
+function WorkspaceRowMenu({
+  workspace,
+  onRename,
+}: {
+  workspace: { id: string; path: string };
+  onRename: () => void;
+}) {
   const removeWorkspace = useChatStore((state) => state.removeWorkspace);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
@@ -41,6 +48,11 @@ function WorkspaceRowMenu({ workspace }: { workspace: { id: string; path: string
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  function rename() {
+    setOpen(false);
+    onRename();
+  }
 
   async function openFolder() {
     setOpen(false);
@@ -80,6 +92,14 @@ function WorkspaceRowMenu({ workspace }: { workspace: { id: string; path: string
               <button
                 type="button"
                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover hover:text-ink"
+                onClick={rename}
+              >
+                <Pencil className="size-3.5 text-muted" />
+                重命名
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover hover:text-ink"
                 onClick={() => void openFolder()}
               >
                 <FolderOpen className="size-3.5 text-muted" />
@@ -101,18 +121,351 @@ function WorkspaceRowMenu({ workspace }: { workspace: { id: string; path: string
   );
 }
 
+function SessionRowMenu({
+  sessionId,
+  onRename,
+  onOpenChange,
+}: {
+  sessionId: string;
+  onRename: () => void;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const forkSession = useChatStore((state) => state.forkSession);
+  const archiveSession = useChatStore((state) => state.archiveSession);
+  const deleteSession = useChatStore((state) => state.deleteSession);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  function toggle(next: boolean) {
+    setOpen(next);
+    onOpenChange?.(next);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) {
+      const width = 168;
+      setPos({
+        top: rect.bottom + 4,
+        left: Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8),
+      });
+    }
+    function onPointer(event: PointerEvent) {
+      const target = event.target as Node;
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      toggle(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") toggle(false);
+    }
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="flex size-6 shrink-0 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-ink"
+        title="会话选项"
+        onClick={(event) => {
+          event.stopPropagation();
+          toggle(!open);
+        }}
+      >
+        <MoreHorizontal className="size-3.5" />
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className="fixed z-50 w-[168px] rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_rgba(15,17,21,0.12)]"
+              style={{ top: pos.top, left: pos.left }}
+            >
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover hover:text-ink"
+                onClick={() => {
+                  toggle(false);
+                  onRename();
+                }}
+              >
+                <Pencil className="size-3.5 text-muted" />
+                重命名
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover hover:text-ink"
+                onClick={() => {
+                  toggle(false);
+                  void forkSession(sessionId);
+                }}
+              >
+                <GitFork className="size-3.5 text-muted" />
+                叉分
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover hover:text-ink"
+                onClick={() => {
+                  toggle(false);
+                  void archiveSession(sessionId);
+                }}
+              >
+                <Archive className="size-3.5 text-muted" />
+                归档
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-danger hover:bg-danger/10"
+                onClick={() => {
+                  toggle(false);
+                  void deleteSession(sessionId);
+                }}
+              >
+                <Trash2 className="size-3.5" />
+                删除
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+function SessionRow({ session }: { session: SessionListItem }) {
+  const sessionId = useChatStore((state) => state.sessionId);
+  const sessionTitles = useChatStore((state) => state.sessionTitles);
+  const openSession = useChatStore((state) => state.openSession);
+  const renameSession = useChatStore((state) => state.renameSession);
+  const selected = session.engine_session_id === sessionId;
+  const title = sessionTitle(session.engine_session_id, sessionTitles, session.title);
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(title);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const skipCommit = useRef(false);
+
+  useEffect(() => {
+    if (!renaming) setDraft(title);
+  }, [renaming, title]);
+
+  useEffect(() => {
+    if (!renaming) return;
+    const node = inputRef.current;
+    if (!node) return;
+    node.focus();
+    node.select();
+  }, [renaming]);
+
+  async function commitRename() {
+    if (skipCommit.current) {
+      skipCommit.current = false;
+      setRenaming(false);
+      return;
+    }
+    const name = draft.trim();
+    setRenaming(false);
+    if (!name || name === title) return;
+    await renameSession(session.id, name);
+  }
+
+  return (
+    <li className="group">
+      <div
+        className={`flex items-center rounded-lg ${
+          selected ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
+        }`}
+      >
+        {renaming ? (
+          <input
+            ref={inputRef}
+            value={draft}
+            className="min-w-0 flex-1 rounded-md bg-bg px-2 py-1 text-[13px] text-ink outline-none ring-1 ring-line-strong"
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={() => void commitRename()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void commitRename();
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                skipCommit.current = true;
+                setDraft(title);
+                setRenaming(false);
+              }
+            }}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ) : (
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center px-2 py-1.5 text-left text-[13px]"
+            onClick={() => void openSession(session.engine_session_id)}
+          >
+            <span className="truncate">{title}</span>
+          </button>
+        )}
+        <div className="flex shrink-0 items-center pr-0.5">
+          <span className={`px-1 text-[11px] text-faint ${menuOpen ? "hidden" : "group-hover:hidden"}`}>
+            {formatRelativeTime(session.updated_at)}
+          </span>
+          <span className={menuOpen ? "flex" : "hidden group-hover:flex"}>
+            <SessionRowMenu
+              sessionId={session.id}
+              onRename={() => {
+                setDraft(title);
+                setRenaming(true);
+              }}
+              onOpenChange={setMenuOpen}
+            />
+          </span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function WorkspaceRow({
+  workspace,
+  sessions,
+  active,
+}: {
+  workspace: Workspace;
+  sessions: SessionListItem[];
+  active: boolean;
+}) {
+  const setWorkspace = useChatStore((state) => state.setWorkspace);
+  const newSession = useChatStore((state) => state.newSession);
+  const renameWorkspace = useChatStore((state) => state.renameWorkspace);
+  const sessionId = useChatStore((state) => state.sessionId);
+  const draftWorkspaceId = useChatStore((state) => state.draftWorkspaceId);
+  const showDraft = draftWorkspaceId === workspace.id;
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(workspace.name || workspaceLabel(workspace.path));
+  const inputRef = useRef<HTMLInputElement>(null);
+  const skipCommit = useRef(false);
+
+  useEffect(() => {
+    if (!renaming) {
+      setDraft(workspace.name || workspaceLabel(workspace.path));
+    }
+  }, [renaming, workspace.name, workspace.path]);
+
+  useEffect(() => {
+    if (!renaming) return;
+    const node = inputRef.current;
+    if (!node) return;
+    node.focus();
+    node.select();
+  }, [renaming]);
+
+  function startRename() {
+    setDraft(workspace.name || workspaceLabel(workspace.path));
+    setRenaming(true);
+  }
+
+  async function commitRename() {
+    if (skipCommit.current) {
+      skipCommit.current = false;
+      setRenaming(false);
+      return;
+    }
+    const name = draft.trim();
+    setRenaming(false);
+    if (!name || name === (workspace.name || workspaceLabel(workspace.path))) return;
+    await renameWorkspace(workspace.id, name);
+  }
+
+  return (
+    <div className="mb-1">
+      <div
+        className={`flex items-center rounded-lg pr-0.5 ${
+          active && !sessionId && !showDraft ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
+        }`}
+      >
+        {renaming ? (
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-0.5">
+            <Folder className="size-3.5 shrink-0 text-muted" />
+            <input
+              ref={inputRef}
+              value={draft}
+              className="min-w-0 flex-1 rounded-md bg-bg px-1.5 py-1 text-[13px] text-ink outline-none ring-1 ring-line-strong"
+              onChange={(event) => setDraft(event.target.value)}
+              onBlur={() => void commitRename()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void commitRename();
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  skipCommit.current = true;
+                  setDraft(workspace.name || workspaceLabel(workspace.path));
+                  setRenaming(false);
+                }
+              }}
+              onClick={(event) => event.stopPropagation()}
+            />
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-[13px]"
+            onClick={() => setWorkspace(workspace.path)}
+          >
+            <Folder className="size-3.5 shrink-0 text-muted" />
+            <span className="truncate">{workspace.name || workspaceLabel(workspace.path)}</span>
+          </button>
+        )}
+        <WorkspaceRowMenu workspace={workspace} onRename={startRename} />
+        <button
+          type="button"
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-ink"
+          title="新会话"
+          onClick={(event) => {
+            event.stopPropagation();
+            void newSession({ cwd: workspace.path });
+          }}
+        >
+          <Plus className="size-3.5" />
+        </button>
+      </div>
+      <ul className="ml-3 border-l border-line pl-2">
+        {showDraft ? (
+          <li>
+            <div className="flex w-full items-center justify-between gap-2 rounded-lg bg-active px-2 py-1.5 text-left text-[13px] text-ink">
+              <span className="truncate">新会话</span>
+              <span className="shrink-0 text-[11px] text-faint">刚刚</span>
+            </div>
+          </li>
+        ) : null}
+        {sessions.map((session) => (
+          <SessionRow key={session.id} session={session} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function Sidebar() {
   const {
     sessions,
-    sessionId,
-    sessionTitles,
     healthOk,
     workspace,
     workspaces,
-    setWorkspace,
     setSettingsOpen,
     newSession,
-    openSession,
   } = useChatStore();
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -174,70 +527,21 @@ export function Sidebar() {
           </button>
         </div>
 
-        {workspaces.map((item) => {
-          const items = groups.byId.get(item.id) ?? [];
-          const activeWs = sameWorkspace(item.path, workspace);
-          return (
-            <div key={item.id} className="mb-1">
-              <div
-                className={`flex items-center rounded-lg pr-0.5 ${
-                  activeWs && !sessionId ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
-                }`}
-              >
-                <button
-                  type="button"
-                  className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-[13px]"
-                  onClick={() => setWorkspace(item.path)}
-                >
-                  <Folder className="size-3.5 shrink-0 text-muted" />
-                  <span className="truncate">{item.name || workspaceLabel(item.path)}</span>
-                </button>
-                <WorkspaceRowMenu workspace={item} />
-              </div>
-              <ul className="ml-3 border-l border-line pl-2">
-                {items.map((session) => {
-                  const active = session.engine_session_id === sessionId;
-                  return (
-                    <li key={session.id}>
-                      <button
-                        type="button"
-                        className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] ${
-                          active ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
-                        }`}
-                        onClick={() => void openSession(session.engine_session_id)}
-                      >
-                        <span className="truncate">
-                          {sessionTitle(session.engine_session_id, sessionTitles, session.title)}
-                        </span>
-                        <span className="shrink-0 text-[11px] text-faint">{formatRelativeTime(session.updated_at)}</span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          );
-        })}
+        {workspaces.map((item) => (
+          <WorkspaceRow
+            key={item.id}
+            workspace={item}
+            sessions={groups.byId.get(item.id) ?? []}
+            active={sameWorkspace(item.path, workspace)}
+          />
+        ))}
 
         {groups.unbound.length ? (
           <div className="mb-1">
             <div className="px-2 py-1.5 text-[12px] text-faint">未绑定目录</div>
             <ul className="ml-3 border-l border-line pl-2">
               {groups.unbound.map((session) => (
-                <li key={session.id}>
-                  <button
-                    type="button"
-                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] ${
-                      session.engine_session_id === sessionId ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
-                    }`}
-                    onClick={() => void openSession(session.engine_session_id)}
-                  >
-                    <span className="truncate">
-                      {sessionTitle(session.engine_session_id, sessionTitles, session.title)}
-                    </span>
-                    <span className="shrink-0 text-[11px] text-faint">{formatRelativeTime(session.updated_at)}</span>
-                  </button>
-                </li>
+                <SessionRow key={session.id} session={session} />
               ))}
             </ul>
           </div>
