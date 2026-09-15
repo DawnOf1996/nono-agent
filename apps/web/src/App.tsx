@@ -5,13 +5,14 @@ import { PermissionDialog } from "@/features/permissions/PermissionDialog";
 import { NewTaskDialog } from "@/features/session/NewTaskDialog";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
 import { Sidebar } from "@/features/shell/Sidebar";
-import { useChatStore } from "@/store/chat";
+import { anyStreaming, useChatStore } from "@/store/chat";
 
 export function App() {
   const refresh = useChatStore((state) => state.refresh);
   const refreshHealth = useChatStore((state) => state.refreshHealth);
   const refreshPermissions = useChatStore((state) => state.refreshPermissions);
-  const streaming = useChatStore((state) => state.streaming);
+  // 任意会话在跑就继续轮询：后台会话的授权请求也要被收上来。
+  const streaming = useChatStore(anyStreaming);
 
   useEffect(() => {
     void refresh();

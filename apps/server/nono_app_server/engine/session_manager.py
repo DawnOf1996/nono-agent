@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 from nono_agent.core.config import EngineConfig
@@ -49,11 +50,15 @@ class SessionManager:
         default_config: EngineConfig,
         permission_checker: PermissionChecker | None,
         *,
+        permission_checker_factory: Callable[[str], PermissionChecker] | None = None,
+        permission_canceller: Callable[[str], Any] | None = None,
         session_ttl: float | None = None,
         session_ttl_check_interval: float = 60.0,
     ) -> None:
         self.default_config = default_config
         self.permission_checker = permission_checker
+        self.permission_checker_factory = permission_checker_factory
+        self.permission_canceller = permission_canceller
         self.session_ttl = session_ttl
         self.session_ttl_check_interval = session_ttl_check_interval
         self.sessions: dict[str, QueryEngine] = {}
@@ -66,6 +71,17 @@ class SessionManager:
 
     def touch(self, session_id: str) -> None:
         self.last_activity[session_id] = time.monotonic()
+
+    def checker_for(self, session_id: str) -> PermissionChecker | None:
+        """按会话取权限检查器 —— 挂起某个会话不会波及其他会话。"""
+        if self.permission_checker_factory is not None:
+            return self.permission_checker_factory(session_id)
+        return self.permission_checker
+
+    def cancel_permissions(self, session_id: str) -> None:
+        """放掉该会话挂起中的授权请求（中止 / 关闭会话时调用）。"""
+        if self.permission_canceller is not None:
+            self.permission_canceller(session_id)
 
     def make_ask_user(self, session_id: str) -> Any:
         """构建该会话的 AskUser 回调 —— 发出 SSE 事件并等待答案。"""
@@ -156,7 +172,7 @@ class SessionManager:
             engine_config = self.resolve_session_config(model, cwd, session_id=session_id)
             engine = QueryEngine(
                 engine_config,
-                permission_checker=self.permission_checker,
+                permission_checker=self.checker_for(session_id),
                 tool_registry=build_session_tool_registry(),
                 ask_user=self.make_ask_user(session_id),
             )
@@ -217,7 +233,7 @@ class SessionManager:
         )
         engine = QueryEngine(
             engine_config,
-            permission_checker=self.permission_checker,
+            permission_checker=self.checker_for(session_id),
             tool_registry=build_session_tool_registry(),
             ask_user=self.make_ask_user(session_id),
         )

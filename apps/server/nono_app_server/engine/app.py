@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -31,6 +32,8 @@ def create_server_app(
     port: int = 8000,
     cors_origins: list[str] | None = None,
     permission_checker: PermissionChecker | None = deny_all_permission_checker,
+    permission_checker_factory: Callable[[str], PermissionChecker] | None = None,
+    permission_canceller: Callable[[str], Any] | None = None,
     api_key: str | None = None,
     session_ttl: float | None = None,
     session_ttl_check_interval: float = 60.0,
@@ -44,6 +47,8 @@ def create_server_app(
         cors_origins: 允许的 CORS 来源列表
         permission_checker: 权限检查器，默认拒绝所有写操作。
             传入 None 表示不检查（宽松模式），或传入自定义函数。
+        permission_checker_factory: 按 session_id 生成权限检查器；设置后优先于
+            ``permission_checker``，用于让每个会话各自挂起等待授权。
         api_key: 可选鉴权密钥。设置后除 /health 外均需
             ``Authorization: Bearer <key>`` 或 ``X-API-Key: <key>``。
         session_ttl: 会话空闲超时（秒）。超过后后台任务清理并关闭会话。
@@ -55,6 +60,8 @@ def create_server_app(
     manager = SessionManager(
         config or EngineConfig(),
         permission_checker,
+        permission_checker_factory=permission_checker_factory,
+        permission_canceller=permission_canceller,
         session_ttl=session_ttl,
         session_ttl_check_interval=session_ttl_check_interval,
     )

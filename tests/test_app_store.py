@@ -70,13 +70,20 @@ class TestAppStore:
         assert row["workspace_id"] == workspace["id"]
         assert store.get_session_by_engine_id("engine-1")["id"] == row["id"]
 
-    def test_delete_workspace_cascades_sessions(self, tmp_path: Path):
+    def test_delete_workspace_moves_sessions_to_ungrouped(self, tmp_path: Path):
         store = AppStore(tmp_path / "app.db")
         workspace = store.upsert_workspace(str(tmp_path))
-        store.create_session(workspace_id=workspace["id"], engine_session_id="e1")
+        row = store.create_session(workspace_id=workspace["id"], engine_session_id="e1")
         assert store.delete_workspace(workspace["id"])
-        assert store.list_sessions() == []
         assert store.list_workspaces() == []
+        sessions = store.list_sessions()
+        assert len(sessions) == 1
+        assert sessions[0]["id"] == row["id"]
+        assert sessions[0]["engine_session_id"] == "e1"
+        assert sessions[0]["cwd"] == workspace["path"]
+        assert sessions[0]["workspace_id"] != workspace["id"]
+        with pytest.raises(ValueError, match="ungrouped"):
+            store.delete_workspace(sessions[0]["workspace_id"])
 
     def test_import_engine_index_once(self, tmp_path: Path):
         store = AppStore(tmp_path / "app.db")
@@ -119,6 +126,23 @@ class TestProductMappingApi:
             deleted = client.delete(f"/app/workspaces/{workspace['id']}")
             assert deleted.status_code == 200
             assert client.get("/app/workspaces").json()["workspaces"] == []
+
+    def test_delete_workspace_keeps_sessions_ungrouped(self, tmp_path: Path):
+        with _client(tmp_path) as client:
+            workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
+            row = client.post(
+                "/app/sessions",
+                json={"workspace_id": workspace["id"], "title": "还在"},
+            ).json()
+            deleted = client.delete(f"/app/workspaces/{workspace['id']}")
+            assert deleted.status_code == 200
+            assert client.get("/app/workspaces").json()["workspaces"] == []
+            listed = client.get("/app/sessions").json()["sessions"]
+            assert len(listed) == 1
+            assert listed[0]["id"] == row["id"]
+            assert listed[0]["title"] == "还在"
+            assert listed[0]["cwd"] == row["cwd"]
+            assert listed[0]["workspace_id"] != workspace["id"]
 
     def test_create_session_list_is_sqlite_not_engine_disk(self, tmp_path: Path):
         with _client(tmp_path) as client:

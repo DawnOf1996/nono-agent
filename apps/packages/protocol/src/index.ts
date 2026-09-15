@@ -110,6 +110,8 @@ export type ProviderUpsert = {
 
 export type PermissionRequest = {
   request_id: string;
+  /** 发起该请求的引擎会话；空串表示无会话上下文。 */
+  session_id: string;
   tool_name: string;
   input_params: Record<string, unknown>;
   created_at: number;

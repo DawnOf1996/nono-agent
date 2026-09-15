@@ -100,5 +100,6 @@ async def abort_session(
         engine = manager.sessions.get(request.session_id)
     if engine is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    manager.cancel_permissions(request.session_id)
     engine.abort(request.reason)
     return {"status": "aborted", "session_id": request.session_id}

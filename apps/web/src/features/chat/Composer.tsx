@@ -30,6 +30,7 @@ export function Composer() {
     attachments,
     addAttachments,
     removeAttachment,
+    setError,
   } = useChatStore();
   const [menuOpen, setMenuOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -55,9 +56,7 @@ export function Composer() {
     try {
       addAttachments(await encodeImages(files));
     } catch (err) {
-      useChatStore.setState({
-        error: err instanceof Error ? err.message : "添加图片失败",
-      });
+      setError(err instanceof Error ? err.message : "添加图片失败");
     }
   }
 

@@ -1,4 +1,4 @@
-import { Archive, Folder, FolderOpen, GitFork, MoreHorizontal, Pencil, Plus, Settings, Trash2 } from "lucide-react";
+import { Archive, ChevronRight, Folder, FolderOpen, GitFork, Loader2, MoreHorizontal, Pencil, Plus, Settings, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { SessionListItem, Workspace } from "@nono/protocol";
@@ -8,7 +8,30 @@ import { Button } from "@/components/ui/button";
 import { WorkspacePicker } from "@/features/session/WorkspacePicker";
 import { formatRelativeTime, sessionTitle } from "@/lib/format";
 import { sameWorkspace, workspaceLabel } from "@/lib/workspace";
-import { useChatStore } from "@/store/chat";
+import { sessionRun, useChatStore } from "@/store/chat";
+
+const COLLAPSED_KEY = "nono.sidebar.collapsedWorkspaces";
+const UNGROUPED_ID = "__ungrouped__";
+
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((item): item is string => typeof item === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsed(ids: Set<string>) {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...ids]));
+  } catch {
+    // private mode / blocked storage
+  }
+}
 
 function WorkspaceRowMenu({
   workspace,
@@ -247,6 +270,13 @@ function SessionRow({ session }: { session: SessionListItem }) {
   const sessionTitles = useChatStore((state) => state.sessionTitles);
   const openSession = useChatStore((state) => state.openSession);
   const renameSession = useChatStore((state) => state.renameSession);
+  // 每条会话读自己的运行态：后台会话在跑也会转圈。
+  const running = useChatStore(
+    (state) => sessionRun(state, session.engine_session_id).streaming,
+  );
+  const waiting = useChatStore((state) =>
+    state.permissions.some((item) => item.session_id === session.engine_session_id),
+  );
   const selected = session.engine_session_id === sessionId;
   const title = sessionTitle(session.engine_session_id, sessionTitles, session.title);
   const [renaming, setRenaming] = useState(false);
@@ -317,19 +347,31 @@ function SessionRow({ session }: { session: SessionListItem }) {
           </button>
         )}
         <div className="flex shrink-0 items-center pr-0.5">
-          <span className={`px-1 text-[11px] text-faint ${menuOpen ? "hidden" : "group-hover:hidden"}`}>
-            {formatRelativeTime(session.updated_at)}
-          </span>
-          <span className={menuOpen ? "flex" : "hidden group-hover:flex"}>
-            <SessionRowMenu
-              sessionId={session.id}
-              onRename={() => {
-                setDraft(title);
-                setRenaming(true);
-              }}
-              onOpenChange={setMenuOpen}
-            />
-          </span>
+          {waiting ? (
+            <span className="flex size-6 items-center justify-center" title="等待你确认授权">
+              <ShieldAlert className="size-3.5 text-danger" />
+            </span>
+          ) : running ? (
+            <span className="flex size-6 items-center justify-center" title="生成中">
+              <Loader2 className="size-3.5 animate-spin text-accent" />
+            </span>
+          ) : (
+            <>
+              <span className={`px-1 text-[11px] text-faint ${menuOpen ? "hidden" : "group-hover:hidden"}`}>
+                {formatRelativeTime(session.updated_at)}
+              </span>
+              <span className={menuOpen ? "flex" : "hidden group-hover:flex"}>
+                <SessionRowMenu
+                  sessionId={session.id}
+                  onRename={() => {
+                    setDraft(title);
+                    setRenaming(true);
+                  }}
+                  onOpenChange={setMenuOpen}
+                />
+              </span>
+            </>
+          )}
         </div>
       </div>
     </li>
@@ -340,12 +382,17 @@ function WorkspaceRow({
   workspace,
   sessions,
   active,
+  collapsed,
+  onToggle,
+  onExpand,
 }: {
   workspace: Workspace;
   sessions: SessionListItem[];
   active: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
+  onExpand: () => void;
 }) {
-  const setWorkspace = useChatStore((state) => state.setWorkspace);
   const newSession = useChatStore((state) => state.newSession);
   const renameWorkspace = useChatStore((state) => state.renameWorkspace);
   const sessionId = useChatStore((state) => state.sessionId);
@@ -355,6 +402,7 @@ function WorkspaceRow({
   const [draft, setDraft] = useState(workspace.name || workspaceLabel(workspace.path));
   const inputRef = useRef<HTMLInputElement>(null);
   const skipCommit = useRef(false);
+  const expanded = !collapsed || showDraft;
 
   useEffect(() => {
     if (!renaming) {
@@ -421,10 +469,19 @@ function WorkspaceRow({
         ) : (
           <button
             type="button"
-            className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-[13px]"
-            onClick={() => setWorkspace(workspace.path)}
+            className="flex min-w-0 flex-1 items-center gap-1 px-2 py-1.5 text-left text-[13px]"
+            title={expanded ? "折起分组" : "展开分组"}
+            aria-expanded={expanded}
+            onClick={onToggle}
           >
-            <Folder className="size-3.5 shrink-0 text-muted" />
+            <ChevronRight
+              className={`size-3 shrink-0 text-faint transition-transform ${expanded ? "rotate-90" : ""}`}
+            />
+            {expanded ? (
+              <FolderOpen className="size-3.5 shrink-0 text-muted" />
+            ) : (
+              <Folder className="size-3.5 shrink-0 text-muted" />
+            )}
             <span className="truncate">{workspace.name || workspaceLabel(workspace.path)}</span>
           </button>
         )}
@@ -435,25 +492,28 @@ function WorkspaceRow({
           title="新会话"
           onClick={(event) => {
             event.stopPropagation();
+            onExpand();
             void newSession({ cwd: workspace.path });
           }}
         >
           <Plus className="size-3.5" />
         </button>
       </div>
-      <ul className="ml-3 border-l border-line pl-2">
-        {showDraft ? (
-          <li>
-            <div className="flex w-full items-center justify-between gap-2 rounded-lg bg-active px-2 py-1.5 text-left text-[13px] text-ink">
-              <span className="truncate">新会话</span>
-              <span className="shrink-0 text-[11px] text-faint">刚刚</span>
-            </div>
-          </li>
-        ) : null}
-        {sessions.map((session) => (
-          <SessionRow key={session.id} session={session} />
-        ))}
-      </ul>
+      {expanded ? (
+        <ul className="ml-3 border-l border-line pl-2">
+          {showDraft ? (
+            <li>
+              <div className="flex w-full items-center justify-between gap-2 rounded-lg bg-active px-2 py-1.5 text-left text-[13px] text-ink">
+                <span className="truncate">新会话</span>
+                <span className="shrink-0 text-[11px] text-faint">刚刚</span>
+              </div>
+            </li>
+          ) : null}
+          {sessions.map((session) => (
+            <SessionRow key={session.id} session={session} />
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }
@@ -468,6 +528,7 @@ export function Sidebar() {
     newSession,
   } = useChatStore();
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
 
   const groups = useMemo(() => {
     const byId = new Map<string, typeof sessions>();
@@ -484,6 +545,28 @@ export function Sidebar() {
     }
     return { byId, unbound };
   }, [sessions, workspaces]);
+
+  function toggleCollapsed(id: string) {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      saveCollapsed(next);
+      return next;
+    });
+  }
+
+  function expandGroup(id: string) {
+    setCollapsed((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      saveCollapsed(next);
+      return next;
+    });
+  }
+
+  const ungroupedOpen = !collapsed.has(UNGROUPED_ID);
 
   return (
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-line bg-sidebar">
@@ -502,7 +585,8 @@ export function Sidebar() {
           variant="outline"
           className="h-9 w-full justify-start gap-2 rounded-full border-line-strong bg-bg"
           onClick={() => {
-            if (!workspace.trim()) {
+            const listed = workspaces.some((item) => sameWorkspace(item.path, workspace));
+            if (!workspace.trim() || !listed) {
               setPickerOpen(true);
               return;
             }
@@ -533,17 +617,38 @@ export function Sidebar() {
             workspace={item}
             sessions={groups.byId.get(item.id) ?? []}
             active={sameWorkspace(item.path, workspace)}
+            collapsed={collapsed.has(item.id)}
+            onToggle={() => toggleCollapsed(item.id)}
+            onExpand={() => expandGroup(item.id)}
           />
         ))}
 
         {groups.unbound.length ? (
           <div className="mb-1">
-            <div className="px-2 py-1.5 text-[12px] text-faint">未绑定目录</div>
-            <ul className="ml-3 border-l border-line pl-2">
-              {groups.unbound.map((session) => (
-                <SessionRow key={session.id} session={session} />
-              ))}
-            </ul>
+            <button
+              type="button"
+              className="flex w-full items-center gap-1 rounded-lg px-2 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover"
+              title={ungroupedOpen ? "折起分组" : "展开分组"}
+              aria-expanded={ungroupedOpen}
+              onClick={() => toggleCollapsed(UNGROUPED_ID)}
+            >
+              <ChevronRight
+                className={`size-3 shrink-0 text-faint transition-transform ${ungroupedOpen ? "rotate-90" : ""}`}
+              />
+              {ungroupedOpen ? (
+                <FolderOpen className="size-3.5 shrink-0 text-muted" />
+              ) : (
+                <Folder className="size-3.5 shrink-0 text-muted" />
+              )}
+              <span className="truncate">未分组</span>
+            </button>
+            {ungroupedOpen ? (
+              <ul className="ml-3 border-l border-line pl-2">
+                {groups.unbound.map((session) => (
+                  <SessionRow key={session.id} session={session} />
+                ))}
+              </ul>
+            ) : null}
           </div>
         ) : null}
 

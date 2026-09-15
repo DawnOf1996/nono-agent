@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     permission_mode TEXT NOT NULL DEFAULT 'default',
     turn_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    cwd TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
@@ -46,6 +47,26 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace
     ON sessions(workspace_id, updated_at DESC);
+"""
+
+UNGROUPED_PATH_KEY = "__nono_ungrouped__"
+UNGROUPED_NAME = "未分组"
+
+_SESSION_SELECT = """
+SELECT
+    s.id,
+    s.engine_session_id,
+    s.workspace_id,
+    s.title,
+    s.model,
+    s.permission_mode,
+    s.turn_count,
+    s.archived,
+    s.created_at,
+    s.updated_at,
+    COALESCE(NULLIF(s.cwd, ''), w.path) AS cwd
+FROM sessions s
+JOIN workspaces w ON w.id = s.workspace_id
 """
 
 
@@ -94,6 +115,20 @@ class AppStore:
             self._conn.execute(
                 "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
             )
+        if "cwd" not in columns:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN cwd TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.execute(
+                """
+                UPDATE sessions
+                SET cwd = COALESCE(
+                    (SELECT path FROM workspaces WHERE id = sessions.workspace_id),
+                    ''
+                )
+                WHERE cwd = ''
+                """
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -136,7 +171,12 @@ class AppStore:
     def list_workspaces(self) -> list[dict[str, Any]]:
         with self._tx() as conn:
             rows = conn.execute(
-                "SELECT * FROM workspaces ORDER BY updated_at DESC"
+                """
+                SELECT * FROM workspaces
+                WHERE path_key != ?
+                ORDER BY updated_at DESC
+                """,
+                (UNGROUPED_PATH_KEY,),
             ).fetchall()
         return [self._workspace_dict(row) for row in rows]
 
@@ -193,18 +233,44 @@ class AppStore:
             )
         return self.get_workspace(workspace_id)
 
+    def _ensure_ungrouped_id(self, conn: sqlite3.Connection) -> str:
+        row = conn.execute(
+            "SELECT id FROM workspaces WHERE path_key = ?",
+            (UNGROUPED_PATH_KEY,),
+        ).fetchone()
+        if row is not None:
+            return str(row["id"])
+        workspace_id = str(uuid.uuid4())
+        now = _now()
+        conn.execute(
+            """
+            INSERT INTO workspaces (id, path, path_key, name, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (workspace_id, "", UNGROUPED_PATH_KEY, UNGROUPED_NAME, now, now),
+        )
+        return workspace_id
+
     def delete_workspace(self, workspace_id: str) -> bool:
         with self._tx() as conn:
+            current = conn.execute(
+                "SELECT path_key FROM workspaces WHERE id = ?",
+                (workspace_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            if current["path_key"] == UNGROUPED_PATH_KEY:
+                raise ValueError("ungrouped workspace cannot be deleted")
+            ungrouped_id = self._ensure_ungrouped_id(conn)
+            conn.execute(
+                "UPDATE sessions SET workspace_id = ? WHERE workspace_id = ?",
+                (ungrouped_id, workspace_id),
+            )
             cursor = conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
             return cursor.rowcount > 0
 
     def list_sessions(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
-        sql = """
-            SELECT s.*, w.path AS cwd
-            FROM sessions s
-            JOIN workspaces w ON w.id = s.workspace_id
-            WHERE s.archived = 0
-        """
+        sql = _SESSION_SELECT + " WHERE s.archived = 0"
         params: tuple[str, ...] = ()
         if workspace_id:
             sql += " AND s.workspace_id = ?"
@@ -217,12 +283,7 @@ class AppStore:
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self._tx() as conn:
             row = conn.execute(
-                """
-                SELECT s.*, w.path AS cwd
-                FROM sessions s
-                JOIN workspaces w ON w.id = s.workspace_id
-                WHERE s.id = ?
-                """,
+                _SESSION_SELECT + " WHERE s.id = ?",
                 (session_id,),
             ).fetchone()
         return self._session_dict(row) if row else None
@@ -230,12 +291,7 @@ class AppStore:
     def get_session_by_engine_id(self, engine_session_id: str) -> dict[str, Any] | None:
         with self._tx() as conn:
             row = conn.execute(
-                """
-                SELECT s.*, w.path AS cwd
-                FROM sessions s
-                JOIN workspaces w ON w.id = s.workspace_id
-                WHERE s.engine_session_id = ?
-                """,
+                _SESSION_SELECT + " WHERE s.engine_session_id = ?",
                 (engine_session_id,),
             ).fetchone()
         return self._session_dict(row) if row else None
@@ -249,6 +305,7 @@ class AppStore:
         model: str = "",
         permission_mode: str = "default",
         turn_count: int = 0,
+        cwd: str | None = None,
         session_id: str | None = None,
         created_at: float | None = None,
         updated_at: float | None = None,
@@ -259,16 +316,20 @@ class AppStore:
         stamp_updated = updated_at if updated_at is not None else now
         with self._tx() as conn:
             workspace = conn.execute(
-                "SELECT id FROM workspaces WHERE id = ?", (workspace_id,)
+                "SELECT id, path, path_key FROM workspaces WHERE id = ?",
+                (workspace_id,),
             ).fetchone()
             if workspace is None:
                 raise KeyError(f"workspace not found: {workspace_id}")
+            session_cwd = (cwd or "").strip() or str(workspace["path"] or "")
+            if workspace["path_key"] == UNGROUPED_PATH_KEY and not session_cwd:
+                raise ValueError("cannot create session in ungrouped workspace")
             conn.execute(
                 """
                 INSERT INTO sessions (
                     id, engine_session_id, workspace_id, title, model,
-                    permission_mode, turn_count, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    permission_mode, turn_count, cwd, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     product_id,
@@ -278,6 +339,7 @@ class AppStore:
                     model,
                     permission_mode,
                     turn_count,
+                    session_cwd,
                     stamp_created,
                     stamp_updated,
                 ),

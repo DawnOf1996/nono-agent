@@ -7,8 +7,6 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from nono_app_server.engine.deps import get_session_manager
-from nono_app_server.engine.session_manager import SessionManager
 from nono_app_server.product.deps import get_store
 from nono_app_server.product.store import AppStore
 
@@ -57,18 +55,11 @@ async def patch_workspace(
 async def delete_workspace(
     workspace_id: str,
     store: AppStore = Depends(get_store),
-    manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, str]:
-    engine_ids = store.engine_ids_for_workspace(workspace_id)
-    if not store.delete_workspace(workspace_id):
+    try:
+        deleted = store.delete_workspace(workspace_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail="Workspace not found")
-    async with manager.lock:
-        engines = [manager.sessions.pop(sid, None) for sid in engine_ids]
-    for engine in engines:
-        if engine is None:
-            continue
-        try:
-            await engine.close()
-        except Exception:
-            pass
     return {"status": "deleted", "id": workspace_id}

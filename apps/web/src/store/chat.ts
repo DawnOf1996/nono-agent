@@ -61,8 +61,6 @@ import {
 import {
   loadDraftModel,
   loadDraftWorkspace,
-  loadWorkspaces,
-  mergeWorkspaces,
   sameWorkspace,
   saveDraftModel,
   saveDraftWorkspace,
@@ -99,6 +97,29 @@ export type TurnUsage = {
   contextWindow: number | null;
 };
 
+/** 单个会话的运行态。多会话并发时各自独立，互不覆盖。 */
+export type SessionRun = {
+  messages: ChatMessage[];
+  events: SessionEvent[];
+  streaming: boolean;
+  usage: TurnUsage | null;
+  error: string | null;
+  ask: AskUserSignal | null;
+  historyReveal: boolean;
+  historyLoading: boolean;
+};
+
+const EMPTY_RUN: SessionRun = {
+  messages: [],
+  events: [],
+  streaming: false,
+  usage: null,
+  error: null,
+  ask: null,
+  historyReveal: false,
+  historyLoading: false,
+};
+
 type ChatState = {
   healthOk: boolean;
   info: AppInfo | null;
@@ -116,6 +137,10 @@ type ChatState = {
   workspaces: Workspace[];
   permissionMode: PermissionMode;
   model: string;
+  /** 各会话的运行态；顶层 messages/streaming/... 是当前会话的镜像。 */
+  runs: Record<string, SessionRun>;
+  /** 尚未落库的新会话所用的运行态键。 */
+  draftRunKey: string;
   streaming: boolean;
   error: string | null;
   ask: AskUserSignal | null;
@@ -128,6 +153,7 @@ type ChatState = {
   historyReveal: boolean;
   historyLoading: boolean;
   setInput: (value: string) => void;
+  setError: (message: string | null) => void;
   addAttachments: (items: PendingImage[]) => void;
   removeAttachment: (id: string) => void;
   setWorkspace: (value: string) => void;
@@ -192,26 +218,17 @@ function workspaceByPath(workspaces: Workspace[], path: string): Workspace | und
   return workspaces.find((item) => sameWorkspace(item.path, path));
 }
 
+function listedWorkspace(workspaces: Workspace[], workspaceId?: string | null): Workspace | undefined {
+  if (!workspaceId) return undefined;
+  return workspaces.find((item) => item.id === workspaceId);
+}
+
 function mergeWorkspaceList(current: Workspace[], incoming: Workspace[]): Workspace[] {
   const byId = new Map<string, Workspace>();
   for (const item of [...current, ...incoming]) {
     byId.set(item.id, item);
   }
   return [...byId.values()].sort((a, b) => b.updated_at - a.updated_at);
-}
-
-async function migrateLocalWorkspaces(existing: Workspace[]): Promise<Workspace[]> {
-  const local = mergeWorkspaces([loadDraftWorkspace(), ...loadWorkspaces()]);
-  let next = existing;
-  for (const path of local) {
-    if (workspaceByPath(next, path)) continue;
-    try {
-      next = mergeWorkspaceList(next, [await upsertWorkspace(path)]);
-    } catch {
-      // sidecar 未就绪时仍用服务端已有列表
-    }
-  }
-  return next;
 }
 
 function usageFromResult(result: SdkResultMessage): TurnUsage {
@@ -225,11 +242,47 @@ function usageFromResult(result: SdkResultMessage): TurnUsage {
   };
 }
 
+function newDraftKey(): string {
+  return `draft:${nextId()}`;
+}
+
+/** 当前会话对应的运行态键；未落库的新会话用 draftRunKey。 */
+function activeKey(state: ChatState): string {
+  return state.sessionId ?? state.draftRunKey;
+}
+
+function runAt(state: ChatState, key: string): SessionRun {
+  return state.runs[key] ?? EMPTY_RUN;
+}
+
+/** 写某个会话的运行态；若它正是当前会话，同步顶层镜像字段。 */
+function patchRun(
+  state: ChatState,
+  key: string,
+  patch: Partial<SessionRun>,
+): Partial<ChatState> {
+  const next: SessionRun = { ...runAt(state, key), ...patch };
+  const runs = { ...state.runs, [key]: next };
+  return activeKey(state) === key ? { runs, ...next } : { runs };
+}
+
+/** 取某个会话的运行态，供侧栏等按会话读取状态。 */
+export function sessionRun(state: ChatState, sessionId: string | null): SessionRun {
+  if (!sessionId) return EMPTY_RUN;
+  return state.runs[sessionId] ?? EMPTY_RUN;
+}
+
+/** 是否还有任意会话在流式输出 —— 决定是否继续轮询权限请求。 */
+export function anyStreaming(state: ChatState): boolean {
+  return Object.values(state.runs).some((run) => run.streaming);
+}
+
 let persistDraftTask: Promise<string | null> | null = null;
 
 async function persistDraftSession(
   get: () => ChatState,
   set: (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void,
+  draftKey: string,
 ): Promise<string | null> {
   const existing = get().sessionId;
   if (existing) return existing;
@@ -239,12 +292,19 @@ async function persistDraftSession(
     if (live) return live;
     const cwd = get().workspace.trim();
     const model = get().model.trim();
+    const fail = (message: string) => {
+      set((state) => ({ newTaskOpen: true, ...patchRun(state, draftKey, { error: message }) }));
+    };
     if (!cwd) {
-      set({ newTaskOpen: true, error: "先选择工作空间目录" });
+      fail("先选择工作空间目录");
       return null;
     }
     const permissionMode = get().permissionMode;
-    const workspace = await upsertWorkspace(cwd);
+    const workspace = listedWorkspace(get().workspaces, get().workspaceId) ?? workspaceByPath(get().workspaces, cwd);
+    if (!workspace) {
+      fail("先选择工作空间目录");
+      return null;
+    }
     const createdMeanwhile = get().sessionId;
     if (createdMeanwhile) return createdMeanwhile;
     const session = await createAppSession({
@@ -256,17 +316,34 @@ async function persistDraftSession(
     saveDraftWorkspace(workspace.path);
     saveDraftModel(session.model);
     saveDraftPermissionMode(nextMode);
-    set((state) => ({
-      sessionId: session.engine_session_id,
-      workspace: workspace.path,
-      workspaceId: workspace.id,
-      workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
-      permissionMode: nextMode,
-      model: session.model,
-      sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
-      sessionTitles: { ...state.sessionTitles, [session.engine_session_id]: session.title || "新会话" },
-      draftWorkspaceId: null,
-    }));
+    set((state) => {
+      const key = session.engine_session_id;
+      const runs = { ...state.runs };
+      const draftRun = runs[draftKey];
+      if (draftRun) {
+        delete runs[draftKey];
+        runs[key] = draftRun;
+      }
+      // 用户可能已切到别的会话：那就只搬运运行态，不抢走当前视图。
+      const stillOnDraft = state.sessionId === null && state.draftRunKey === draftKey;
+      return {
+        runs,
+        sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
+        sessionTitles: { ...state.sessionTitles, [key]: session.title || "新会话" },
+        workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
+        ...(stillOnDraft
+          ? {
+              sessionId: key,
+              workspace: workspace.path,
+              workspaceId: workspace.id,
+              permissionMode: nextMode,
+              model: session.model,
+              draftWorkspaceId: null,
+              ...(runs[key] ?? EMPTY_RUN),
+            }
+          : {}),
+      };
+    });
     return session.engine_session_id;
   })().finally(() => {
     persistDraftTask = null;
@@ -279,14 +356,16 @@ function omitSession(state: ChatState, productId: string): Partial<ChatState> {
   const sessions = state.sessions.filter((item) => item.id !== productId);
   const gone = Boolean(removed && removed.engine_session_id === state.sessionId);
   const sessionTitles = { ...state.sessionTitles };
-  if (removed) delete sessionTitles[removed.engine_session_id];
+  const runs = { ...state.runs };
+  if (removed) {
+    delete sessionTitles[removed.engine_session_id];
+    delete runs[removed.engine_session_id];
+  }
   return {
     sessions,
     sessionTitles,
-    sessionId: gone ? null : state.sessionId,
-    messages: gone ? [] : state.messages,
-    events: gone ? [] : state.events,
-    usage: gone ? null : state.usage,
+    runs,
+    ...(gone ? { sessionId: null, draftRunKey: newDraftKey(), ...EMPTY_RUN } : {}),
   };
 }
 
@@ -307,6 +386,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   workspaces: [],
   permissionMode: loadDraftPermissionMode(),
   model: loadDraftModel(),
+  runs: {},
+  draftRunKey: newDraftKey(),
   streaming: false,
   error: null,
   ask: null,
@@ -320,16 +401,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
   historyLoading: false,
 
   setInput: (value) => set({ input: value }),
+  setError: (message) =>
+    set((state) => patchRun(state, activeKey(state), { error: message })),
   addAttachments: (items) => {
     if (!items.length) return;
     set((state) => {
       const room = MAX_PENDING_IMAGES - state.attachments.length;
       if (room <= 0) {
-        return { error: `最多添加 ${MAX_PENDING_IMAGES} 张图片` };
+        return patchRun(state, activeKey(state), {
+          error: `最多添加 ${MAX_PENDING_IMAGES} 张图片`,
+        });
       }
       return {
         attachments: [...state.attachments, ...items.slice(0, room)],
-        error: items.length > room ? `最多添加 ${MAX_PENDING_IMAGES} 张图片` : null,
+        ...patchRun(state, activeKey(state), {
+          error: items.length > room ? `最多添加 ${MAX_PENDING_IMAGES} 张图片` : null,
+        }),
       };
     });
   },
@@ -346,7 +433,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         workspace: value,
         workspaceId,
         ...(leavingDraft
-          ? { draftWorkspaceId: null, sessionId: null, input: "", attachments: [], messages: [], events: [], usage: null }
+          ? {
+              draftWorkspaceId: null,
+              sessionId: null,
+              draftRunKey: newDraftKey(),
+              input: "",
+              attachments: [],
+              ...EMPTY_RUN,
+            }
           : {}),
       };
     });
@@ -365,9 +459,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         draftWorkspaceId: leavingDraft ? null : state.draftWorkspaceId,
         input: leavingDraft ? "" : state.input,
         attachments: leavingDraft ? [] : state.attachments,
-        messages: leavingDraft ? [] : state.messages,
-        events: leavingDraft ? [] : state.events,
-        error: null,
+        ...(leavingDraft
+          ? { draftRunKey: newDraftKey(), ...EMPTY_RUN }
+          : patchRun(state, activeKey(state), { error: null })),
       };
     });
   },
@@ -378,33 +472,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const workspace = await patchWorkspace(target, nextName);
     set((state) => ({
       workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
-      error: null,
+      ...patchRun(state, activeKey(state), { error: null }),
     }));
   },
   removeWorkspace: async (workspaceId) => {
     const target = workspaceId.trim();
     if (!target) return;
     await deleteWorkspace(target);
+    let workspaces = get().workspaces.filter((item) => item.id !== target);
+    let sessions = get().sessions;
+    try {
+      [workspaces, sessions] = await Promise.all([fetchWorkspaces(), fetchSessionList()]);
+    } catch {
+      // sidecar 已删除工作区时，本地仍保留会话，稍后刷新
+    }
     set((state) => {
-      const workspaces = state.workspaces.filter((item) => item.id !== target);
-      const sessions = state.sessions.filter((item) => item.workspace_id !== target);
       const selectedGone = state.workspaceId === target;
-      const next = selectedGone ? workspaces[0] : undefined;
-      const workspace = selectedGone ? (next?.path ?? "") : state.workspace;
-      const nextId = selectedGone ? (next?.id ?? null) : state.workspaceId;
-      saveDraftWorkspace(workspace);
-      const sessionGone = state.sessions.some(
-        (item) => item.workspace_id === target && item.engine_session_id === state.sessionId,
+      const live = sessions.find((item) => item.engine_session_id === state.sessionId);
+      const listedLive = Boolean(
+        live && workspaces.some((item) => item.id === live.workspace_id),
       );
+      const next = selectedGone && !live ? workspaces[0] : undefined;
+      const workspace = selectedGone ? (live?.cwd ?? next?.path ?? "") : state.workspace;
+      const nextId = selectedGone
+        ? (listedLive ? live?.workspace_id ?? null : (next?.id ?? null))
+        : state.workspaceId;
+      if (selectedGone) saveDraftWorkspace(listedLive ? workspace : (next?.path ?? ""));
       return {
         workspaces,
         sessions,
         workspace,
         workspaceId: nextId,
         draftWorkspaceId: state.draftWorkspaceId === target ? null : state.draftWorkspaceId,
-        sessionId: sessionGone ? null : state.sessionId,
-        messages: sessionGone ? [] : state.messages,
-        events: sessionGone ? [] : state.events,
       };
     });
   },
@@ -467,13 +566,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let model = state.model;
       if (!model && catalog?.default?.model) model = catalog.default.model;
       if (!model && info?.model) model = info.model;
-      const workspaces = await migrateLocalWorkspaces(workspacesRaw);
-      const selected =
-        (state.workspaceId ? workspaces.find((item) => item.id === state.workspaceId) : undefined) ??
-        workspaceByPath(workspaces, state.workspace) ??
-        workspaces[0];
-      if (selected) saveDraftWorkspace(selected.path);
+      const workspaces = workspacesRaw;
       const live = sessions.find((item) => item.engine_session_id === state.sessionId);
+      const selected =
+        listedWorkspace(workspaces, live?.workspace_id) ??
+        listedWorkspace(workspaces, state.workspaceId) ??
+        (live ? undefined : workspaceByPath(workspaces, state.workspace) ?? workspaces[0]);
+      if (selected) saveDraftWorkspace(selected.path);
       const permissionMode = live?.permission_mode
         ? normalizePermissionMode(live.permission_mode)
         : state.permissionMode;
@@ -487,7 +586,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         catalog,
         model,
         workspaces,
-        workspace: selected?.path ?? state.workspace,
+        workspace: selected?.path ?? live?.cwd ?? state.workspace,
         workspaceId: selected?.id ?? null,
         permissionMode,
         sessionTitles,
@@ -495,10 +594,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
       if (model) saveDraftModel(model);
     } catch (error) {
-      set({
+      set((state) => ({
         healthOk: false,
-        error: error instanceof Error ? error.message : "无法连接 sidecar",
-      });
+        ...patchRun(state, activeKey(state), {
+          error: error instanceof Error ? error.message : "无法连接 sidecar",
+        }),
+      }));
     }
   },
 
@@ -527,12 +628,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
     const permissionMode = get().permissionMode;
-    const workspace = await upsertWorkspace(cwd);
+    const workspace = opts?.cwd
+      ? await upsertWorkspace(cwd)
+      : listedWorkspace(get().workspaces, get().workspaceId) ?? workspaceByPath(get().workspaces, cwd);
+    if (!workspace) {
+      set((state) => ({
+        newTaskOpen: true,
+        ...patchRun(state, activeKey(state), { error: "先选择工作空间目录" }),
+      }));
+      return;
+    }
     if (model) saveDraftModel(model);
     saveDraftWorkspace(workspace.path);
     saveDraftPermissionMode(permissionMode);
     set((state) => ({
       sessionId: null,
+      // 新的草稿键：旧草稿若仍在流式输出，会继续写自己的运行态。
+      draftRunKey: newDraftKey(),
       workspace: workspace.path,
       workspaceId: workspace.id,
       workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
@@ -541,14 +653,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       model: model || state.model,
       input: "",
       attachments: [],
-      messages: [],
-      events: [],
-      usage: null,
-      error: null,
       newTaskOpen: false,
       view: "chat",
-      historyReveal: false,
-      historyLoading: false,
+      ...EMPTY_RUN,
     }));
   },
 
@@ -558,39 +665,45 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ? normalizePermissionMode(session.permission_mode)
       : get().permissionMode;
     if (session?.permission_mode) saveDraftPermissionMode(permissionMode);
-    set((state) => ({
-      sessionId,
-      workspace: session?.cwd || state.workspace,
-      workspaceId: session?.workspace_id || state.workspaceId,
-      draftWorkspaceId: null,
-      model: session?.model || state.model,
-      permissionMode,
-      input: state.draftWorkspaceId ? "" : state.input,
-      attachments: state.draftWorkspaceId ? [] : state.attachments,
-      error: null,
-      usage: null,
-      events: [],
-      messages: [],
-      historyReveal: false,
-      historyLoading: true,
-      view: "chat",
-    }));
+    const live = Boolean(get().runs[sessionId]?.streaming);
+    set((state) => {
+      const previous = state.runs[sessionId];
+      // 正在流式输出的会话：保住现场，不清空也不重拉历史。
+      const run: SessionRun = live
+        ? (previous as SessionRun)
+        : { ...EMPTY_RUN, usage: previous?.usage ?? null, historyLoading: true };
+      return {
+        sessionId,
+        workspace: session?.cwd || state.workspace,
+        workspaceId: session?.workspace_id || state.workspaceId,
+        draftWorkspaceId: null,
+        model: session?.model || state.model,
+        permissionMode,
+        input: state.draftWorkspaceId ? "" : state.input,
+        attachments: state.draftWorkspaceId ? [] : state.attachments,
+        view: "chat",
+        runs: { ...state.runs, [sessionId]: run },
+        ...run,
+      };
+    });
+    if (live) return;
+
+    // 历史只写进该会话的运行态；期间它若开始新一轮输出就让位给流式内容。
+    const writeHistory = (patch: Partial<SessionRun>) =>
+      set((state) =>
+        runAt(state, sessionId).streaming ? {} : patchRun(state, sessionId, patch),
+      );
     try {
       const events = await fetchSessionEvents(sessionId);
-      if (get().sessionId !== sessionId) return;
       const all = messagesFromEvents(events);
       const title = titlesFromEvents(events);
       const { older, recent } = sliceLastUserTurns(all, 3);
-      const titles = title
-        ? { ...get().sessionTitles, [sessionId]: title }
-        : get().sessionTitles;
-      set({
-        events,
-        messages: recent,
-        sessionTitles: titles,
-        historyReveal: true,
-        historyLoading: false,
-      });
+      if (title) {
+        set((state) => ({
+          sessionTitles: { ...state.sessionTitles, [sessionId]: title },
+        }));
+      }
+      writeHistory({ events, messages: recent, historyReveal: true, historyLoading: false });
       if (title) {
         const mapped = get().sessions.find((item) => item.engine_session_id === sessionId);
         if (mapped && (!mapped.title.trim() || mapped.title === "新会话")) {
@@ -602,23 +715,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
       if (!older.length) {
-        requestAnimationFrame(() => {
-          if (get().sessionId === sessionId) set({ historyReveal: false });
-        });
+        requestAnimationFrame(() => writeHistory({ historyReveal: false }));
         return;
       }
       await new Promise<void>((resolve) => {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       });
-      if (get().sessionId !== sessionId) return;
-      set({ messages: all });
-      window.setTimeout(() => {
-        if (get().sessionId === sessionId) set({ historyReveal: false });
-      }, 480);
+      writeHistory({ messages: all });
+      window.setTimeout(() => writeHistory({ historyReveal: false }), 480);
     } catch {
-      if (get().sessionId === sessionId) {
-        set({ events: [], messages: [], historyReveal: false, historyLoading: false });
-      }
+      writeHistory({ events: [], messages: [], historyReveal: false, historyLoading: false });
     }
   },
 
@@ -629,7 +735,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       sessions: state.sessions.map((item) => (item.id === updated.id ? updated : item)),
       sessionTitles: { ...state.sessionTitles, [updated.engine_session_id]: nextTitle },
-      error: null,
+      ...patchRun(state, activeKey(state), { error: null }),
     }));
   },
 
@@ -642,7 +748,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ...state.sessionTitles,
         [forked.engine_session_id]: forked.title || "新会话",
       },
-      error: null,
+      ...patchRun(state, activeKey(state), { error: null }),
     }));
     await get().openSession(forked.engine_session_id);
   },
@@ -662,12 +768,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
   runCommand: async (line) => {
     const raw = line.trim();
     const commandLine = raw.startsWith("/") ? raw : `/${raw}`;
-    if (!commandLine.slice(1).trim() || get().streaming) return;
+    const runKey = activeKey(get());
+    if (!commandLine.slice(1).trim() || runAt(get(), runKey).streaming) return;
     if (!get().workspace.trim() && !get().sessionId) {
-      set({ newTaskOpen: true, error: "先选择工作空间目录" });
+      set((state) => ({
+        newTaskOpen: true,
+        ...patchRun(state, runKey, { error: "先选择工作空间目录" }),
+      }));
       return;
     }
-    set({ input: "", error: null, view: "chat" });
+    set((state) => ({
+      input: "",
+      view: "chat",
+      ...patchRun(state, runKey, { error: null }),
+    }));
     try {
       const out = await runSlashCommand({
         line: commandLine,
@@ -675,35 +789,46 @@ export const useChatStore = create<ChatState>((set, get) => ({
         cwd: get().workspace || undefined,
       });
       if (out.name === "clear") {
-        set({ messages: [], events: [], usage: null });
+        set((state) => patchRun(state, runKey, { messages: [], events: [], usage: null }));
         return;
       }
-      set((state) => ({
-        messages: [
-          ...state.messages,
-          {
-            id: nextId(),
-            role: "system",
-            text: `/${out.name}${out.args.length ? ` ${out.args.join(" ")}` : ""}\n${out.result}`,
-          },
-        ],
-      }));
+      set((state) =>
+        patchRun(state, runKey, {
+          messages: [
+            ...runAt(state, runKey).messages,
+            {
+              id: nextId(),
+              role: "system",
+              text: `/${out.name}${out.args.length ? ` ${out.args.join(" ")}` : ""}\n${out.result}`,
+            },
+          ],
+        }),
+      );
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : "指令执行失败" });
+      set((state) =>
+        patchRun(state, runKey, {
+          error: error instanceof Error ? error.message : "指令执行失败",
+        }),
+      );
     }
   },
 
   send: async () => {
     const text = get().input.trim();
     const pending = get().attachments;
-    if (get().streaming) return;
+    // 每条会话各自判断是否在流式输出：别的会话在跑不挡当前会话发送。
+    let runKey = activeKey(get());
+    if (runAt(get(), runKey).streaming) return;
     if (text.startsWith("/")) {
       await get().runCommand(text);
       return;
     }
     if (!text && !pending.length) return;
     if (!get().workspace.trim()) {
-      set({ newTaskOpen: true, error: "先选择工作空间目录" });
+      set((state) => ({
+        newTaskOpen: true,
+        ...patchRun(state, runKey, { error: "先选择工作空间目录" }),
+      }));
       return;
     }
     const images = pending.map((item) => ({ src: item.preview }));
@@ -717,60 +842,78 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       input: "",
       attachments: [],
-      streaming: true,
-      error: null,
       view: "chat",
-      messages: [...state.messages, userMessage, { id: draftId, role: "assistant", text: "", streaming: true }],
+      ...patchRun(state, runKey, {
+        streaming: true,
+        error: null,
+        usage: null,
+        messages: [
+          ...runAt(state, runKey).messages,
+          userMessage,
+          { id: draftId, role: "assistant", text: "", streaming: true },
+        ],
+      }),
     }));
 
     const patchDraft = (updater: (item: ChatMessage) => ChatMessage) => {
       set((state) => {
         let found = false;
-        const messages = state.messages.map((item) => {
+        const messages = runAt(state, runKey).messages.map((item) => {
           if (item.id !== draftId) return item;
           found = true;
           return updater(item);
         });
-        if (found) return { messages };
-        return { messages: [...messages, updater({ id: draftId, role: "assistant", text: "", streaming: true })] };
+        return patchRun(state, runKey, {
+          messages: found
+            ? messages
+            : [...messages, updater({ id: draftId, role: "assistant", text: "", streaming: true })],
+        });
       });
     };
 
+    const dropDraft = (state: ChatState, message: string | null): Partial<ChatState> => ({
+      input: state.input || text,
+      attachments: state.attachments.length ? state.attachments : pending,
+      ...patchRun(state, runKey, {
+        error: message,
+        messages: runAt(state, runKey).messages.filter(
+          (item) => item.id !== userMessage.id && item.id !== draftId,
+        ),
+      }),
+    });
+
+    let sessionId = get().sessionId;
     try {
-      let sessionId = get().sessionId;
       if (!sessionId) {
-        sessionId = await persistDraftSession(get, set);
+        const draftKey = runKey;
+        sessionId = await persistDraftSession(get, set, draftKey);
         if (!sessionId) {
-          set((state) => ({
-            streaming: false,
-            input: state.input || text,
-            attachments: state.attachments.length ? state.attachments : pending,
-            messages: state.messages.filter(
-              (item) => item.id !== userMessage.id && item.id !== draftId,
-            ),
-          }));
+          set((state) => dropDraft(state, null));
           return;
         }
+        // 运行态已随会话落库搬到真实 session id 上。
+        runKey = sessionId;
       }
+      const engineSessionId = sessionId;
       const nextTitle = titleFromText(text, pending.length > 0);
       set((state) => ({
         sessions: state.sessions.map((item) =>
-          item.engine_session_id === sessionId && (!item.title.trim() || item.title === "新会话")
+          item.engine_session_id === engineSessionId && (!item.title.trim() || item.title === "新会话")
             ? { ...item, title: nextTitle, updated_at: Date.now() / 1000 }
             : item,
         ),
         sessionTitles: {
           ...state.sessionTitles,
-          [sessionId]:
-            state.sessionTitles[sessionId] && state.sessionTitles[sessionId] !== "新会话"
-              ? state.sessionTitles[sessionId]
+          [engineSessionId]:
+            state.sessionTitles[engineSessionId] && state.sessionTitles[engineSessionId] !== "新会话"
+              ? state.sessionTitles[engineSessionId]
               : nextTitle,
         },
       }));
-      const mapped = get().sessions.find((item) => item.engine_session_id === sessionId);
+      const mapped = get().sessions.find((item) => item.engine_session_id === engineSessionId);
       if (mapped) {
         void patchAppSession(mapped.id, {
-          title: get().sessionTitles[sessionId] || nextTitle,
+          title: get().sessionTitles[engineSessionId] || nextTitle,
           turn_count: Math.max(1, mapped.turn_count),
           model: get().model || undefined,
         }).then((updated) => {
@@ -783,7 +926,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       const response = await postChat(
-        sessionId,
+        engineSessionId,
         text,
         get().model || undefined,
         get().permissionMode,
@@ -799,7 +942,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           throw new Error(payload.error || "stream error");
         }
         if (frame.event === "ask_user") {
-          set({ ask: JSON.parse(frame.data) as AskUserSignal });
+          const signal = JSON.parse(frame.data) as AskUserSignal;
+          set((state) => patchRun(state, runKey, { ask: signal }));
           continue;
         }
         if (!frame.data) continue;
@@ -859,48 +1003,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
           });
         } else if (frame.event === "result") {
           const result = payload as SdkResultMessage;
-          if (result.is_error) {
-            set({ error: result.errors?.join("\n") || result.result || "本轮失败" });
-          }
-          set({ usage: usageFromResult(result) });
+          set((state) =>
+            patchRun(state, runKey, {
+              usage: usageFromResult(result),
+              ...(result.is_error
+                ? { error: result.errors?.join("\n") || result.result || "本轮失败" }
+                : {}),
+            }),
+          );
           if (result.duration_ms) {
             patchDraft((item) => ({ ...item, durationMs: result.duration_ms }));
           }
         }
       }
     } catch (error) {
-      set((state) => {
-        const persistFailed = !state.sessionId;
-        return {
-          error: error instanceof Error ? error.message : "发送失败",
-          ...(persistFailed
-            ? {
-                input: state.input || text,
-                attachments: state.attachments.length ? state.attachments : pending,
-                messages: state.messages.filter(
-                  (item) => item.id !== userMessage.id && item.id !== draftId,
-                ),
-              }
-            : {}),
-        };
-      });
+      const message = error instanceof Error ? error.message : "发送失败";
+      set((state) =>
+        sessionId ? patchRun(state, runKey, { error: message }) : dropDraft(state, message),
+      );
     } finally {
-      set((state) => ({
-        streaming: false,
-        messages: state.messages.map((item) =>
-          item.id === draftId ? { ...item, streaming: false, thinkingRunning: false } : item,
-        ),
-      }));
+      set((state) =>
+        patchRun(state, runKey, {
+          streaming: false,
+          ask: null,
+          messages: runAt(state, runKey).messages.map((item) =>
+            item.id === draftId ? { ...item, streaming: false, thinkingRunning: false } : item,
+          ),
+        }),
+      );
       await get().refresh();
-      const liveId = get().sessionId;
-      if (liveId) {
-        const events = await fetchSessionEvents(liveId).catch(() => get().events);
-        set((state) => ({
-          events,
-          messages: state.messages.some((item) => item.role === "system")
-            ? state.messages
-            : messagesFromEvents(events),
-        }));
+      if (sessionId) {
+        const events = await fetchSessionEvents(sessionId).catch(() => null);
+        if (events) {
+          set((state) => {
+            const run = runAt(state, runKey);
+            // 该会话已开始下一轮：别用历史覆盖正在写入的内容。
+            if (run.streaming) return {};
+            return patchRun(state, runKey, {
+              events,
+              messages: run.messages.some((item) => item.role === "system")
+                ? run.messages
+                : messagesFromEvents(events),
+            });
+          });
+        }
       }
     }
   },
@@ -922,19 +1068,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const sessionId = get().sessionId;
     if (!sessionId) return;
     await answerAskUser(sessionId, answers);
-    set({ ask: null });
+    set((state) => patchRun(state, sessionId, { ask: null }));
   },
 
   upsertProvider: async (body) => {
     const catalog = await saveProvider(body);
-    set({ catalog, error: null });
+    set((state) => ({ catalog, ...patchRun(state, activeKey(state), { error: null }) }));
   },
 
   removeProvider: async (providerId) => {
     const catalog = await deleteProvider(providerId);
     const nextModel = catalog.default?.model ?? get().model;
     if (nextModel) saveDraftModel(nextModel);
-    set({ catalog, model: nextModel, error: null });
+    set((state) => ({
+      catalog,
+      model: nextModel,
+      ...patchRun(state, activeKey(state), { error: null }),
+    }));
   },
 
   chooseDefault: async (provider, model) => {

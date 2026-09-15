@@ -22,6 +22,7 @@ from nono_app_server.engine.deps import get_session_manager
 from nono_app_server.engine.session_manager import SessionManager
 from nono_app_server.engine.views import request_permission_mode, session_info
 from nono_app_server.product.deps import get_store
+from nono_app_server.product.permissions import cancel_session_permissions
 from nono_app_server.product.store import AppStore
 
 router = APIRouter()
@@ -60,6 +61,7 @@ def _purge_session_files(engine_session_id: str) -> None:
 
 
 async def _close_engine(manager: SessionManager, engine_session_id: str) -> None:
+    cancel_session_permissions(engine_session_id)
     async with manager.lock:
         engine = manager.sessions.pop(engine_session_id, None)
     if engine is not None:
@@ -101,6 +103,8 @@ async def create_app_session(
     workspace = store.get_workspace(body.workspace_id)
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    if not str(workspace.get("path") or "").strip():
+        raise HTTPException(status_code=400, detail="workspace has no path")
     mode = None
     if body.permission_mode:
         mode = normalize_permission_mode(body.permission_mode)
@@ -120,9 +124,12 @@ async def create_app_session(
             title=(body.title or "").strip(),
             model=info.model,
             permission_mode=info.permission_mode,
+            cwd=workspace["path"],
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _enrich(row, manager)
 
 
@@ -196,6 +203,7 @@ async def fork_app_session(
         model=source["model"],
         permission_mode=source["permission_mode"],
         turn_count=source["turn_count"],
+        cwd=source["cwd"],
     )
     return _enrich(row, manager)
 
