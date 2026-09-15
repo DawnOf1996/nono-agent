@@ -219,8 +219,26 @@ export function messagesFromEvents(
     steps?: ReplayStep[];
   }> = [];
   let pending: ReplayStep[] = [];
+  let pendingThinking = "";
+
+  const takeChunkThinking = (raw: Record<string, unknown>): string => {
+    const chunk = raw.chunk;
+    if (!chunk || typeof chunk !== "object") return "";
+    return extractThinkingDelta({ event: chunk });
+  };
 
   const flushAssistant = () => {
+    if (!pending.length && !pendingThinking.trim()) {
+      pendingThinking = "";
+      return;
+    }
+    if (!pending.length && pendingThinking.trim()) {
+      pending.push({ id: `think-${messages.length}`, thinking: pendingThinking.trim() });
+    } else if (pending.length && pendingThinking.trim()) {
+      const last = pending[pending.length - 1];
+      if (!last.thinking?.trim()) last.thinking = pendingThinking.trim();
+    }
+    pendingThinking = "";
     if (!pending.length) return;
     const last = pending[pending.length - 1];
     messages.push({
@@ -233,6 +251,10 @@ export function messagesFromEvents(
 
   for (const event of events) {
     const content = event.data.content;
+    if (event.type === "assistant/chunk") {
+      pendingThinking += takeChunkThinking(event.data);
+      continue;
+    }
     if (event.type === "user/message") {
       if (isToolResultContent(content)) continue;
       const text = contentToText(content);
@@ -241,7 +263,13 @@ export function messagesFromEvents(
       messages.push({ id: `evt-${event.seq}`, role: "user", text });
     } else if (event.type === "assistant/message") {
       const step = stepFromContent(`evt-${event.seq}`, content);
-      if (step) pending.push(step);
+      if (step) {
+        if (!step.thinking?.trim() && pendingThinking.trim()) {
+          step.thinking = pendingThinking.trim();
+        }
+        pendingThinking = "";
+        pending.push(step);
+      }
     } else if (event.type === "turn/end") {
       flushAssistant();
     }

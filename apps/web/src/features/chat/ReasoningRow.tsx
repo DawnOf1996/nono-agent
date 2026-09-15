@@ -77,8 +77,12 @@ function RowToggle({
   );
 }
 
-function ThinkingWrap({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+function ThinkingWrap({ text, startOpen = false }: { text: string; startOpen?: boolean }) {
+  const [open, setOpen] = useState(startOpen);
+
+  useEffect(() => {
+    if (startOpen) setOpen(true);
+  }, [startOpen]);
 
   if (!text.trim()) return null;
 
@@ -120,10 +124,10 @@ function ToolRunRow({ tool }: { tool: ChatToolCall }) {
   );
 }
 
-function StepBody({ step }: { step: ChatStep }) {
+function StepBody({ step, reveal }: { step: ChatStep; reveal: boolean }) {
   return (
     <div className="space-y-2">
-      {step.thinking ? <ThinkingWrap text={step.thinking} /> : null}
+      {step.thinking ? <ThinkingWrap text={step.thinking} startOpen={reveal} /> : null}
       {step.text ? <MarkdownText text={step.text} tone="muted" /> : null}
       {step.tools?.map((tool, index) => (
         <ToolRunRow key={`${tool.name}-${index}`} tool={tool} />
@@ -148,7 +152,7 @@ export function ReasoningRow({
   const hasBody = Boolean(thinking?.trim() || liveText?.trim() || hasSteps);
 
   useEffect(() => {
-    setExpanded(running);
+    if (running) setExpanded(true);
   }, [running]);
 
   if (!hasBody && !running) return null;
@@ -166,9 +170,9 @@ export function ReasoningRow({
       {expanded ? (
         <div className="mt-2 space-y-3 pl-[22px]">
           {steps?.map((step) => (
-            <StepBody key={step.id} step={step} />
+            <StepBody key={step.id} step={step} reveal={expanded || running} />
           ))}
-          {thinking?.trim() ? <ThinkingWrap text={thinking} /> : null}
+          {thinking?.trim() ? <ThinkingWrap text={thinking} startOpen={expanded || running} /> : null}
           {liveText?.trim() ? <MarkdownText text={liveText} tone="muted" /> : null}
           {running && !hasBody ? <div className="text-faint">…</div> : null}
         </div>
