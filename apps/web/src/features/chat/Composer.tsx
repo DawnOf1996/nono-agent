@@ -91,7 +91,8 @@ export function Composer() {
               <Select
                 className="h-8 w-40 border-0 bg-transparent text-[12px] text-muted"
                 value={model}
-                onChange={(event) => setModel(event.target.value)}
+                disabled={streaming}
+                onChange={(event) => void setModel(event.target.value)}
               >
                 {!model ? <option value="">选择模型</option> : null}
                 {(catalog?.providers ?? []).map((provider) => (

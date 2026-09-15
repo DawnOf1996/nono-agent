@@ -52,7 +52,7 @@ export function NewTaskDialog() {
 
         <div className="mt-4">
           <FieldLabel htmlFor="model">模型</FieldLabel>
-          <Select id="model" value={model} onChange={(event) => setModel(event.target.value)}>
+          <Select id="model" value={model} onChange={(event) => void setModel(event.target.value)}>
             {!model ? <option value="">选择模型</option> : null}
             {(catalog?.providers ?? []).map((provider) => (
               <optgroup key={provider.id} label={provider.display_name}>

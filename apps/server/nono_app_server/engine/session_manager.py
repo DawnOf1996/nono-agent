@@ -113,6 +113,21 @@ class SessionManager:
             log_api_requests=self.default_config.log_api_requests,
         )
 
+    def apply_model(self, engine: QueryEngine, model: str | None) -> str:
+        """把模型切换应用到已有引擎，返回生效的模型 ID。"""
+        requested = (model or "").strip()
+        if not requested or requested == engine._config.effective_model:
+            return engine._config.effective_model
+        next_config = self.resolve_session_config(
+            requested, engine._config.cwd, session_id=engine._config.session_id
+        )
+        engine.apply_model_config(
+            model=next_config.model,
+            provider=next_config.provider,
+            model_context=next_config.model_context,
+        )
+        return engine._config.effective_model
+
     async def get_or_create(
         self,
         session_id: str,
@@ -122,8 +137,11 @@ class SessionManager:
         """获取或创建引擎实例 —— 统一的初始化入口。"""
         async with self.lock:
             if session_id in self.sessions:
+                engine = self.sessions[session_id]
                 self.touch(session_id)
-                return self.sessions[session_id]
+                if model:
+                    self.apply_model(engine, model)
+                return engine
 
             engine_config = self.resolve_session_config(model, cwd, session_id=session_id)
             engine = QueryEngine(

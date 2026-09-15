@@ -169,7 +169,7 @@ export function SettingsPanel() {
                 setModelView("editor");
               }}
               onChooseDefault={(providerId, modelId) => {
-                setModel(modelId);
+                void setModel(modelId);
                 void chooseDefault(providerId, modelId);
               }}
               onAddPreset={() => setModelView("presets")}

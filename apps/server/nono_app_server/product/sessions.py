@@ -134,20 +134,24 @@ async def patch_app_session(
     manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     mode = body.permission_mode
+    model = body.model
+    mapped = store.get_session(session_id)
+    engine = (
+        manager.sessions.get(mapped["engine_session_id"]) if mapped is not None else None
+    )
     if mode:
         normalized = normalize_permission_mode(mode)
         if mode.strip() and normalized != mode.strip():
             raise HTTPException(status_code=400, detail="Unknown permission mode")
         mode = normalized
-        mapped = store.get_session(session_id)
-        if mapped is not None:
-            engine = manager.sessions.get(mapped["engine_session_id"])
-            if engine is not None:
-                request_permission_mode(engine, mode)
+        if engine is not None:
+            request_permission_mode(engine, mode)
+    if model is not None and engine is not None:
+        model = manager.apply_model(engine, model)
     row = store.update_session(
         session_id,
         title=body.title,
-        model=body.model,
+        model=model,
         permission_mode=mode,
         turn_count=body.turn_count,
         archived=body.archived,

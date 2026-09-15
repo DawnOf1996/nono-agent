@@ -181,3 +181,89 @@ class TestProductMappingApi:
             assert copy["title"] == "原会话 副本"
             listed = client.get("/app/sessions").json()["sessions"]
             assert {item["id"] for item in listed} == {row["id"], copy["id"]}
+
+    def test_patch_model_updates_live_engine(self, tmp_path: Path):
+        with _client(tmp_path) as client:
+            workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
+            row = client.post(
+                "/app/sessions",
+                json={"workspace_id": workspace["id"], "model": "alpha"},
+            ).json()
+            assert row["model"] == "alpha"
+            patched = client.patch(
+                f"/app/sessions/{row['id']}",
+                json={"model": "beta"},
+            )
+            assert patched.status_code == 200
+            assert patched.json()["model"] == "beta"
+            listed = client.get("/app/sessions").json()["sessions"]
+            assert listed[0]["model"] == "beta"
+
+
+class TestSessionModelSwitch:
+    @pytest.mark.asyncio
+    async def test_get_or_create_applies_model_to_existing_engine(self, tmp_path: Path):
+        from nono_app_server.engine.session_manager import SessionManager
+
+        manager = SessionManager(EngineConfig(cwd=str(tmp_path), model="alpha"), None)
+        first = await manager.get_or_create("sid", model="alpha", cwd=str(tmp_path))
+        try:
+            second = await manager.get_or_create("sid", model="beta")
+            assert second is first
+            assert second._config.model == "beta"
+            assert second._config.effective_model == "beta"
+        finally:
+            await first.close()
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_switches_provider(self, tmp_path: Path):
+        from nono_agent.providers.catalog import (
+            AgentDefaultModel,
+            LlmCatalog,
+            LlmProviderSection,
+            ModelEntry,
+            NamedProvider,
+            save_credential,
+            save_user_catalog,
+        )
+        from nono_app_server.engine.session_manager import SessionManager
+
+        save_user_catalog(
+            LlmCatalog(
+                agent_default_model=AgentDefaultModel(provider="minimax", model="MiniMax-M3"),
+                llm_provider=LlmProviderSection(
+                    providers={
+                        "minimax": NamedProvider(
+                            display_name="MiniMax",
+                            api_key_env="MINIMAX_API_KEY",
+                            api="openai_chat_completions",
+                            base_url="https://api.minimax.chat/v1",
+                            models=[ModelEntry(id="MiniMax-M3")],
+                        ),
+                        "deepseek": NamedProvider(
+                            display_name="DeepSeek",
+                            api_key_env="DEEPSEEK_API_KEY",
+                            api="openai_responses",
+                            base_url="https://api.deepseek.com",
+                            models=[ModelEntry(id="DeepSeek-V4-Pro")],
+                        ),
+                    }
+                ),
+            )
+        )
+        save_credential("MINIMAX_API_KEY", "sk-mm")
+        save_credential("DEEPSEEK_API_KEY", "sk-ds")
+        manager = SessionManager(EngineConfig(cwd=str(tmp_path)), None)
+        engine = await manager.get_or_create("sid", model="MiniMax-M3", cwd=str(tmp_path))
+        try:
+            assert engine._config.effective_model == "MiniMax-M3"
+            assert engine._config.provider is not None
+            assert engine._config.provider.base_url == "https://api.minimax.chat/v1"
+            await manager.get_or_create("sid", model="DeepSeek-V4-Pro")
+            assert engine._config.effective_model == "DeepSeek-V4-Pro"
+            assert engine._config.provider is not None
+            assert engine._config.provider.base_url == "https://api.deepseek.com"
+            assert engine._config.provider.adapter == "openai_responses"
+        finally:
+            await engine.close()
+

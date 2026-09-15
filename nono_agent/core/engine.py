@@ -26,7 +26,7 @@ import uuid
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
-from nono_agent.core.config import EngineConfig, QueryConfig, RuntimeGates
+from nono_agent.core.config import EngineConfig, ProviderConfig, QueryConfig, RuntimeGates
 from nono_agent.core.loop import agentic_loop
 from nono_agent.core.state import (
     AutoCompactTracking,
@@ -310,6 +310,22 @@ class QueryEngine:
         while self._observer_disposers:
             self._observer_disposers.pop()()
         logger.info("QueryEngine closed (session=%s)", self._session_id)
+
+    def apply_model_config(
+        self,
+        *,
+        model: str,
+        provider: ProviderConfig | None = None,
+        model_context: int | None = None,
+    ) -> None:
+        """切换后续轮次使用的模型，不重建会话。"""
+        self._config = self._config.model_copy(
+            update={
+                "model": model,
+                "provider": provider,
+                "model_context": model_context,
+            }
+        )
 
     async def __aenter__(self) -> QueryEngine:
         """async with 入口 —— 初始化并返回引擎实例。"""

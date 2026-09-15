@@ -125,7 +125,7 @@ type ChatState = {
   renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
   removeWorkspace: (workspaceId: string) => Promise<void>;
   setPermissionMode: (mode: PermissionMode) => Promise<void>;
-  setModel: (value: string) => void;
+  setModel: (value: string) => Promise<void>;
   setNewTaskOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
   setView: (view: MainView) => void;
@@ -399,9 +399,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 会话尚未在 sidecar 里时，等发送/新建时再带上
     }
   },
-  setModel: (value) => {
-    saveDraftModel(value);
-    set({ model: value });
+  setModel: async (value) => {
+    const next = value.trim();
+    saveDraftModel(next);
+    set({ model: next });
+    const sessionId = get().sessionId;
+    if (!sessionId || !next) return;
+    const mapped = get().sessions.find((item) => item.engine_session_id === sessionId);
+    if (!mapped) return;
+    try {
+      const updated = await patchAppSession(mapped.id, { model: next });
+      set((state) => ({
+        sessions: state.sessions.map((item) =>
+          item.id === updated.id ? { ...updated, model: updated.model || next } : item,
+        ),
+        model: next,
+      }));
+    } catch {
+      // 会话尚未在 sidecar 里时，等发送时再带上
+    }
   },
   setNewTaskOpen: (open) => set({ newTaskOpen: open }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
@@ -715,6 +731,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         void patchAppSession(mapped.id, {
           title: get().sessionTitles[sessionId] || nextTitle,
           turn_count: Math.max(1, mapped.turn_count),
+          model: get().model || undefined,
         }).then((updated) => {
           set((state) => ({
             sessions: state.sessions.map((item) => (item.id === updated.id ? updated : item)),

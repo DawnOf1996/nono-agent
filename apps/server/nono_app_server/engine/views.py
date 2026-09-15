@@ -48,7 +48,7 @@ def session_updated_at(engine: QueryEngine) -> float:
 def session_info(engine: QueryEngine) -> SessionInfo:
     return SessionInfo(
         session_id=engine._config.session_id,
-        model=engine._config.model,
+        model=engine._config.effective_model,
         cwd=engine._config.cwd,
         turn_count=engine._turn_count,
         total_tokens=engine.token_tracker.get_total_tokens(),
