@@ -86,6 +86,10 @@ class SQLiteTranscriptWriter:
             restrict_permissions(self._db_path)
         return self._conn
 
+    def _has_backing_store(self) -> bool:
+        """尚未 write/append 时不要创建空库文件。"""
+        return self._conn is not None or self._db_path.is_file()
+
     # ------------------------------------------------------------------
     # 事件追加 / 读取
     # ------------------------------------------------------------------
@@ -121,6 +125,8 @@ class SQLiteTranscriptWriter:
 
     async def read_events(self) -> list[SessionEvent]:
         """读取全部事件（按 seq 升序），跳过 data 列损坏的行。"""
+        if not self._has_backing_store():
+            return []
         check_format_version(await self.read_header())
         conn = self._connection()
         with self._lock:
@@ -132,6 +138,8 @@ class SQLiteTranscriptWriter:
 
     async def read_events_from(self, start_seq: int) -> list[SessionEvent]:
         """读取 ``seq >= start_seq`` 的事件。"""
+        if not self._has_backing_store():
+            return []
         check_format_version(await self.read_header())
         conn = self._connection()
         with self._lock:
@@ -162,6 +170,8 @@ class SQLiteTranscriptWriter:
 
     async def read_header(self) -> SessionHeader | None:
         """读取会话元信息。"""
+        if not self._has_backing_store():
+            return None
         conn = self._connection()
         columns = ", ".join(HEADER_FIELDS)
         with self._lock:

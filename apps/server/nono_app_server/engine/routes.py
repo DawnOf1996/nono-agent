@@ -167,7 +167,10 @@ def register_engine_routes(
 
     @app.get("/sessions")
     async def list_sessions() -> dict[str, Any]:
-        """列出磁盘上的已保存会话，活跃引擎覆盖同 id 的实时字段。"""
+        """列出磁盘上的已保存会话，活跃引擎覆盖同 id 的实时字段。
+
+        尚未发送内容的临时会话只活在进程里，不出现在列表中。
+        """
         live: dict[str, SessionInfo] = {}
         async with manager.lock:
             for sid, engine in manager.sessions.items():
@@ -185,8 +188,12 @@ def register_engine_routes(
             seen.add(sid)
             result.append(live[sid] if sid in live else disk_session_info(item))
         for sid, info in live.items():
-            if sid not in seen:
-                result.append(info)
+            if sid in seen:
+                continue
+            engine = manager.sessions.get(sid)
+            if engine is None or not engine.is_persisted:
+                continue
+            result.append(info)
         return {"sessions": result}
 
     @app.post("/session/{session_id}/permission")

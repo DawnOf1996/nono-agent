@@ -83,13 +83,13 @@ class TestPermissionMode:
             sid = data["session_id"]
 
             listed = client.get("/sessions").json()["sessions"]
-            match = next(item for item in listed if item["session_id"] == sid)
-            assert match["permission_mode"] == "plan"
-            assert match["summary"] == ""
+            assert sid not in {item["session_id"] for item in listed}
 
             switched = client.post(f"/session/{sid}/permission", json={"mode": "bypass"})
             assert switched.status_code == 200
             assert switched.json()["effective"] == "bypass"
+            still = client.get("/sessions").json()["sessions"]
+            assert sid not in {item["session_id"] for item in still}
 
     def test_unknown_mode_rejected(self, tmp_path):
         with _client(api_key=None) as client:
@@ -109,6 +109,8 @@ class TestNewSession:
             assert data["cwd"]
             assert "model" in data
             assert data["summary"] == ""
+            listed = client.get("/sessions").json()["sessions"]
+            assert data["session_id"] not in {item["session_id"] for item in listed}
 
     def test_json_cwd(self, tmp_path):
         with _client(api_key=None) as client:
@@ -116,6 +118,19 @@ class TestNewSession:
             assert resp.status_code == 200
             cwd = resp.json()["cwd"].replace("\\", "/").lower()
             assert tmp_path.name.lower() in cwd
+
+    def test_empty_session_does_not_write_files(self, tmp_path):
+        session_dir = tmp_path / ".nono-agent" / "sessions"
+        with _client(api_key=None) as client:
+            resp = client.post("/session/new", json={"cwd": str(tmp_path)})
+            assert resp.status_code == 200
+            sid = resp.json()["session_id"]
+            listed = client.get("/sessions").json()["sessions"]
+            assert sid not in {item["session_id"] for item in listed}
+        if session_dir.exists():
+            assert list(session_dir.glob("*.header.json")) == []
+            assert list(session_dir.glob("*.jsonl")) == []
+            assert list(session_dir.glob("*.jsonl.zst")) == []
 
 
 class TestListPersistedSessions:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
@@ -169,6 +170,62 @@ class TestEngineBindsHeader:
         await engine2.close()
 
 
+class TestEphemeralNewSession:
+    @pytest.mark.asyncio
+    async def test_initialize_does_not_write_until_first_message(self, tmp_path):
+        writer = LocalFileTranscriptWriter(tmp_path / "sid.jsonl")
+        engine = create_test_engine(
+            responses=[{"text": "ok", "tool_calls": []}],
+            transcript_writer=writer,
+            config_overrides={"cwd": str(tmp_path), "session_id": "sid"},
+        )
+        async with engine:
+            assert engine.is_persisted is False
+            assert await writer.read_header() is None
+            assert not writer.header_file.exists()
+            assert not writer.session_file.exists()
+            await _collect(engine, "hello there")
+            assert engine.is_persisted is True
+            header = await writer.read_header()
+            assert header is not None
+            assert header.summary == "hello there"
+            assert writer.header_file.exists()
+        assert writer.session_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_close_without_message_leaves_no_files(self, tmp_path):
+        writer = LocalFileTranscriptWriter(tmp_path / "sid.jsonl")
+        engine = create_test_engine(
+            responses=[],
+            transcript_writer=writer,
+            config_overrides={"cwd": str(tmp_path), "session_id": "sid"},
+        )
+        async with engine:
+            engine.permission_policy.set_mode(PermissionMode.PLAN)
+            if engine._header_persist_tasks:
+                await asyncio.gather(*engine._header_persist_tasks, return_exceptions=True)
+        assert await writer.read_header() is None
+        assert not writer.header_file.exists()
+        assert not writer.session_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_permission_request_on_empty_session_stays_in_memory(self, tmp_path):
+        writer = LocalFileTranscriptWriter(tmp_path / "sid.jsonl")
+        engine = create_test_engine(
+            responses=[],
+            transcript_writer=writer,
+            config_overrides={"cwd": str(tmp_path), "session_id": "sid"},
+        )
+        async with engine:
+            engine.permission_policy.request_mode(PermissionMode.PLAN)
+            if engine._header_persist_tasks:
+                await asyncio.gather(*engine._header_persist_tasks, return_exceptions=True)
+            assert await writer.read_header() is None
+            assert await writer.read_events() == []
+            assert engine._session_header is not None
+            assert engine._session_header.permission_mode == "plan"
+
+
 class TestSqliteHeaderMigration:
     @pytest.mark.asyncio
     async def test_adds_summary_column_on_legacy_db(self, tmp_path):
@@ -257,6 +314,7 @@ class TestPermissionModeInHeader:
             config_overrides={"cwd": str(tmp_path), "session_id": "sid"},
         )
         async with engine1:
+            await _collect(engine1, "hello")
             engine1.permission_policy.set_mode(PermissionMode.PLAN)
         header = await writer.read_header()
         assert header is not None
@@ -272,9 +330,7 @@ class TestPermissionModeInHeader:
 
     @pytest.mark.asyncio
     async def test_request_mode_writes_header_before_next_turn(self, tmp_path):
-        """onchange 就把目标模式写入 header，即使还没跑下一 turn。"""
-        import asyncio
-
+        """已落盘会话：onchange 就把目标模式写入 header，即使还没跑下一 turn。"""
         writer = LocalFileTranscriptWriter(tmp_path / "sid.jsonl")
         engine1 = create_test_engine(
             responses=[{"text": "ok", "tool_calls": []}],
@@ -282,6 +338,7 @@ class TestPermissionModeInHeader:
             config_overrides={"cwd": str(tmp_path), "session_id": "sid"},
         )
         async with engine1:
+            await _collect(engine1, "hello")
             engine1.permission_policy.request_mode(PermissionMode.PLAN)
             assert engine1.permission_policy.mode is PermissionMode.DEFAULT
             if engine1._header_persist_tasks:

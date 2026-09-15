@@ -230,6 +230,8 @@ class QueryEngine:
         # 会话信息
         self._session_id = config.session_id
         self._turn_count = 0
+        # 新会话只在内存里，直到首条用户消息（或接续已有 header）才写盘
+        self._persisted = False
 
         if config.log_api_requests or (
             config.provider is not None and config.provider.log_api_requests
@@ -247,6 +249,7 @@ class QueryEngine:
 
         自动调用（通过 async with 或 submit_message 内部），
         幂等设计，多次调用无副作用。
+        新会话此时不写磁盘；首条用户消息才会创建 header 与事件流。
         """
         if self._initialized:
             return
@@ -255,20 +258,20 @@ class QueryEngine:
         writer = self._transcript_writer or self._create_default_writer()
         self._transcript_writer = writer
 
-        # 新会话首次初始化写入 SessionHeader（承载格式版本门）
+        # 新会话只把 SessionHeader 放在内存；首条用户消息 flush 时才写盘。
+        # 接续已有会话则以磁盘 header 为准（cwd / agent / permission）。
         existing = await writer.read_header()
         if existing is None:
-            header = make_header(
+            self._session_header = make_header(
                 self._session_id,
                 cwd=self._config.cwd,
                 agent_preset_id=self._config.agent_id,
                 permission_mode=self._permission_policy.mode.value,
             )
-            await writer.write_header(header)
-            self._session_header = header
+            self._persisted = False
         else:
-            # 接续已有会话：以 header 约束为准（cwd / agent / permission），再加载工作区扩展
             await self._bind_existing_header(writer)
+            self._persisted = True
 
         # 事件流就是会话本身：指向一条已有事件流意味着接着这条对话往下走。
         # 不重建就会一边追加事件、一边用空上下文请求模型，日志与状态从第一轮起就分叉。
@@ -284,14 +287,26 @@ class QueryEngine:
         logger.info("QueryEngine initialized (session=%s)", self._session_id)
 
     async def close(self) -> None:
-        """清理资源 —— 排空待写事件、flush 事件流并注销事件观察者。"""
+        """清理资源 —— 排空待写事件、flush 事件流并注销事件观察者。
+
+        从未落盘且没有用户回合的临时会话直接丢弃，不写 header / 事件流。
+        """
         await self._close_mcp()
-        await self._persist_permission_mode()
-        if self._header_persist_tasks:
-            await asyncio.gather(*self._header_persist_tasks, return_exceptions=True)
-        if self._transcript_writer is not None:
-            await self._flush_events()
-            await self._transcript_writer.flush()
+        ephemeral = not self._persisted and self._turn_count == 0
+        if ephemeral:
+            tasks = list(self._header_persist_tasks)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._pending_events.clear()
+        else:
+            await self._persist_permission_mode()
+            if self._header_persist_tasks:
+                await asyncio.gather(*self._header_persist_tasks, return_exceptions=True)
+            if self._transcript_writer is not None:
+                await self._flush_events()
+                await self._transcript_writer.flush()
         while self._observer_disposers:
             self._observer_disposers.pop()()
         logger.info("QueryEngine closed (session=%s)", self._session_id)
@@ -796,6 +811,11 @@ class QueryEngine:
         return self._transcript_writer
 
     @property
+    def is_persisted(self) -> bool:
+        """是否已把本会话写入事件流（header + 至少一次 append）。"""
+        return self._persisted
+
+    @property
     def mcp_runtime(self) -> Any:
         return self._mcp_runtime
 
@@ -867,13 +887,17 @@ class QueryEngine:
 
         整批交给 ``append_events``，JSONL 后端可以把多行打进同一 zstd 帧。
         失败时把本批放回队列头部，避免 await 期间新入队的事件被丢掉或重排。
+        新会话第一次 flush 时才写入 SessionHeader。
         """
         if self._transcript_writer is None or not self._pending_events:
             return
+        if not self._persisted:
+            await self._write_header_to_disk()
         batch = self._pending_events
         self._pending_events = []
         try:
             await self._transcript_writer.append_events(batch)
+            self._persisted = True
         except BaseException:
             self._pending_events = list(batch) + self._pending_events
             raise
@@ -1023,6 +1047,7 @@ class QueryEngine:
             existing = await writer.read_header()
             if existing is not None:
                 await self._bind_existing_header(writer)
+                self._persisted = True
             self._load_workspace_extensions()
             if self._auto_load_mcp:
                 await self._load_mcp()
@@ -1134,10 +1159,11 @@ class QueryEngine:
     def _on_permission_mode_request(
         self, from_mode: PermissionMode, to_mode: PermissionMode
     ) -> None:
-        """用户请求切换权限：立刻写 ``permission/onchange`` 并把目标模式写入 header。
+        """用户请求切换权限：入队 ``permission/onchange``，已落盘会话立刻写 header。
 
         运行时 ``policy.mode`` 仍保持旧值，直到下一次 turn/step 的 ``commit_pending``。
-        Header 先写成目标值，这样中途退出再 resume 也不会丢切换。
+        已保存的会话把 header 先写成目标值，中途退出再 resume 也不会丢切换；
+        尚未落盘的临时会话只更新内存，等首条用户消息一并写入。
         """
         self._stage_event(
             EVENT_PERMISSION_ONCHANGE,
@@ -1180,20 +1206,39 @@ class QueryEngine:
         task.add_done_callback(self._header_persist_tasks.discard)
 
     async def _flush_permission_onchange(self, mode: str) -> None:
-        """把 ``permission/onchange`` 落盘，并先把目标模式写入 header。"""
-        await self._flush_events()
+        """已落盘时把 ``permission/onchange`` 写入事件流，并更新 header。"""
+        if self._persisted:
+            await self._flush_events()
         await self._persist_permission_mode(mode)
+
+    async def _write_header_to_disk(self) -> None:
+        """把内存中的 SessionHeader 写入事件流后端。"""
+        writer = self._transcript_writer
+        if writer is None:
+            return
+        header = self._session_header
+        if header is None:
+            pending = self._permission_policy.pending_mode
+            header = make_header(
+                self._session_id,
+                cwd=self._config.cwd,
+                agent_preset_id=self._config.agent_id,
+                permission_mode=(pending or self._permission_policy.mode).value,
+            )
+            self._session_header = header
+        await writer.write_header(header)
 
     async def _persist_permission_mode(self, mode: str | None = None) -> None:
         """把当前（或挂起、或指定）权限模式写入 SessionHeader。
 
         未指定 ``mode`` 时优先写 ``pending_mode``，避免 ``/permission`` 后直接
         退出、尚未跑下一 turn 时把 header 写回旧的运行时模式。
+        临时会话只改内存，等首次用户消息一起落盘。
         """
         writer = self._transcript_writer
-        if writer is None:
-            return
-        header = self._session_header or await writer.read_header()
+        header = self._session_header
+        if header is None and writer is not None:
+            header = await writer.read_header()
         if header is None:
             return
         if mode is not None:
@@ -1209,6 +1254,8 @@ class QueryEngine:
             return
         header.permission_mode = next_mode
         self._session_header = header
+        if not self._persisted or writer is None:
+            return
         await writer.write_header(header)
 
     def _load_workspace_extensions(self) -> None:
@@ -1269,7 +1316,7 @@ class QueryEngine:
     async def _ensure_session_summary(self, user_input: str) -> None:
         """若 header 尚无摘要，写入用户第一句话的前 20 字（只写一次）。"""
         writer = self._transcript_writer
-        if writer is None:
+        if writer is None or not self._persisted:
             return
         header = self._session_header or await writer.read_header()
         if header is None:
