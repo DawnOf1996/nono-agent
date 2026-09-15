@@ -12,7 +12,8 @@ from nono_agent.commands.builtin import create_builtin_commands
 from nono_agent.core.config import EngineConfig
 from nono_agent.session.transcript import DEFAULT_SESSION_DIR
 from nono_agent.tools.context import PermissionChecker
-from nono_app_server.engine.routes import register_engine_routes
+from nono_app_server.engine.auth import install_api_key_auth
+from nono_app_server.engine.routers import register_engine_routes
 from nono_app_server.engine.session_manager import (
     SessionManager,
     deny_all_permission_checker,
@@ -48,9 +49,8 @@ def create_server_app(
         session_ttl: 会话空闲超时（秒）。超过后后台任务清理并关闭会话。
         session_ttl_check_interval: TTL 清理扫描间隔（秒）。
     """
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse
 
     manager = SessionManager(
         config or EngineConfig(),
@@ -89,16 +89,7 @@ def create_server_app(
         lifespan=lifespan,
     )
 
-    @app.middleware("http")
-    async def auth_middleware(request: Request, call_next: Any) -> Any:
-        if api_key is not None and request.url.path != "/health":
-            auth = request.headers.get("authorization", "")
-            token = (
-                auth[7:] if auth.startswith("Bearer ") else request.headers.get("x-api-key", "")
-            )
-            if token != api_key:
-                return JSONResponse({"detail": "Invalid or missing API key"}, status_code=401)
-        return await call_next(request)
+    install_api_key_auth(app, api_key)
 
     if cors_origins:
         app.add_middleware(
@@ -110,7 +101,6 @@ def create_server_app(
         )
 
     register_engine_routes(app, manager, command_registry)
-    app.state.engine_sessions = manager
     _ = (host, port)
     return app
 

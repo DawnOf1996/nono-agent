@@ -9,7 +9,7 @@ from nono_agent.core.engine import QueryEngine
 from nono_agent.permissions.policy import PermissionMode
 from nono_agent.session.header import normalize_permission_mode
 from nono_agent.session.transcript import peek_session_header
-from nono_app_server.engine.models import SessionInfo
+from nono_app_server.engine.schemas import SessionInfo
 
 
 def effective_permission_mode(engine: QueryEngine) -> str:

@@ -1,10 +1,11 @@
-"""用户级模型目录的读写 —— 不把密钥返回给前端。"""
+"""用户级模型目录：读写服务 + /app/catalog 路由。不把密钥返回给前端。"""
 
 from __future__ import annotations
 
 from typing import Any
 
 import yaml
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from nono_agent.providers.base import CANONICAL_ADAPTERS
@@ -20,6 +21,10 @@ from nono_agent.providers.catalog import (
     save_credential,
     save_user_catalog,
 )
+from nono_app_server.config import SidecarSettings
+from nono_app_server.product.deps import get_sidecar
+
+router = APIRouter()
 
 
 class ProviderUpsert(BaseModel):
@@ -125,3 +130,34 @@ def set_default_model(body: DefaultModelBody) -> LlmCatalog:
     )
     save_user_catalog(catalog)
     return catalog
+
+
+@router.get("/catalog")
+async def get_catalog(
+    settings: SidecarSettings = Depends(get_sidecar),
+) -> dict[str, Any]:
+    return public_catalog(settings.cwd)
+
+
+@router.post("/catalog/providers")
+async def save_provider(
+    body: ProviderUpsert,
+    settings: SidecarSettings = Depends(get_sidecar),
+) -> dict[str, Any]:
+    try:
+        upsert_provider(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return public_catalog(settings.cwd)
+
+
+@router.post("/catalog/default")
+async def save_default(
+    body: DefaultModelBody,
+    settings: SidecarSettings = Depends(get_sidecar),
+) -> dict[str, Any]:
+    try:
+        set_default_model(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return public_catalog(settings.cwd)

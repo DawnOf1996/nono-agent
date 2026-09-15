@@ -24,6 +24,27 @@ export type SessionInfo = {
   updated_at?: number;
 };
 
+export type Workspace = {
+  id: string;
+  path: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+};
+
+export type SessionListItem = {
+  id: string;
+  engine_session_id: string;
+  workspace_id: string;
+  cwd: string;
+  title: string;
+  model: string;
+  permission_mode?: PermissionMode;
+  turn_count: number;
+  created_at: number;
+  updated_at: number;
+};
+
 export type AppInfo = {
   name: string;
   version: string;

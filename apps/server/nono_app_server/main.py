@@ -1,34 +1,17 @@
-"""产品 sidecar 入口 —— 本机绑定 + 桌面权限回调 + 额外路由。"""
+"""产品 sidecar 进程入口 —— 本机绑定 + uvicorn。"""
 
 from __future__ import annotations
 
 import logging
 import socket
 import sys
-from typing import Any
 
+from nono_app_server.app import create_app
 from nono_app_server.config import load_engine_config, load_sidecar_settings
-from nono_app_server.engine import create_server_app
-from nono_app_server.extra_routes import mount_extra_routes
-from nono_app_server.permissions import desktop_permission_checker
 
 logger = logging.getLogger(__name__)
 
-
-def create_app() -> Any:
-    """组装 FastAPI 应用：引擎 HTTP/SSE API + /app 产品路由。"""
-    settings = load_sidecar_settings()
-    config, settings = load_engine_config(settings)
-    app = create_server_app(
-        config,
-        host=settings.host,
-        port=settings.port,
-        cors_origins=settings.cors_origins,
-        permission_checker=desktop_permission_checker,
-    )
-    mount_extra_routes(app, settings, config)
-    app.state.sidecar = settings
-    return app
+__all__ = ["create_app", "main"]
 
 
 def main() -> None:
@@ -57,7 +40,7 @@ def main() -> None:
             )
             sys.exit(1)
     uvicorn.run(
-        "nono_app_server.main:create_app",
+        "nono_app_server.app:create_app",
         factory=True,
         host=settings.host,
         port=settings.port,

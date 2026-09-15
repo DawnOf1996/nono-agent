@@ -7,8 +7,9 @@ import type {
   ProviderUpsert,
   SdkResultMessage,
   SessionEvent,
-  SessionInfo,
+  SessionListItem,
   SlashCommandInfo,
+  Workspace,
 } from "@nono/protocol";
 import { create } from "zustand";
 
@@ -16,19 +17,23 @@ import {
   abortSession,
   answerAskUser,
   answerPermission,
-  createSession,
+  createAppSession,
+  deleteWorkspace,
   fetchAppInfo,
   fetchCatalog,
   fetchCommands,
   fetchHealth,
   fetchPermissions,
   fetchSessionEvents,
+  fetchSessionList,
+  fetchWorkspaces,
+  patchAppSession,
   runSlashCommand,
-  fetchSessions,
   postChat,
   saveDefaultModel,
   saveProvider,
   setSessionPermission,
+  upsertWorkspace,
 } from "@/api/client";
 import {
   extractAssistantText,
@@ -57,7 +62,6 @@ import {
   sameWorkspace,
   saveDraftModel,
   saveDraftWorkspace,
-  saveWorkspaces,
 } from "@/lib/workspace";
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
@@ -88,14 +92,15 @@ type ChatState = {
   healthOk: boolean;
   info: AppInfo | null;
   catalog: CatalogSnapshot | null;
-  sessions: SessionInfo[];
+  sessions: SessionListItem[];
   sessionId: string | null;
   sessionTitles: Record<string, string>;
   events: SessionEvent[];
   messages: ChatMessage[];
   input: string;
   workspace: string;
-  workspaces: string[];
+  workspaceId: string | null;
+  workspaces: Workspace[];
   permissionMode: PermissionMode;
   model: string;
   streaming: boolean;
@@ -111,8 +116,8 @@ type ChatState = {
   historyLoading: boolean;
   setInput: (value: string) => void;
   setWorkspace: (value: string) => void;
-  addWorkspace: (value: string) => void;
-  removeWorkspace: (path: string) => void;
+  addWorkspace: (value: string) => Promise<void>;
+  removeWorkspace: (workspaceId: string) => Promise<void>;
   setPermissionMode: (mode: PermissionMode) => Promise<void>;
   setModel: (value: string) => void;
   setNewTaskOpen: (open: boolean) => void;
@@ -147,79 +152,45 @@ function titlesFromEvents(events: SessionEvent[]): string | null {
 }
 
 function titlesFromSessions(
-  sessions: SessionInfo[],
+  sessions: SessionListItem[],
   current: Record<string, string>,
 ): Record<string, string> {
   const next = { ...current };
   for (const item of sessions) {
-    const summary = item.summary?.trim();
-    if (!summary) continue;
-    if (!next[item.session_id] || next[item.session_id] === "新会话") {
-      next[item.session_id] = summary;
+    const title = item.title.trim();
+    if (!title) continue;
+    const key = item.engine_session_id;
+    if (!next[key] || next[key] === "新会话") {
+      next[key] = title;
     }
   }
   return next;
 }
 
-async function resolveSessionTitles(
-  sessions: SessionInfo[],
-  current: Record<string, string>,
-): Promise<Record<string, string>> {
-  const next = titlesFromSessions(sessions, current);
-  const missing = sessions.filter((item) => {
-    if (item.turn_count <= 0) return false;
-    const title = next[item.session_id];
-    return !title || title === "新会话";
-  });
-  if (!missing.length) return next;
-  const found = await Promise.all(
-    missing.map(async (item) => {
-      const events = await fetchSessionEvents(item.session_id);
-      return [item.session_id, titlesFromEvents(events)] as const;
-    }),
-  );
-  for (const [id, title] of found) {
-    if (title) next[id] = title;
+function workspaceByPath(workspaces: Workspace[], path: string): Workspace | undefined {
+  return workspaces.find((item) => sameWorkspace(item.path, path));
+}
+
+function mergeWorkspaceList(current: Workspace[], incoming: Workspace[]): Workspace[] {
+  const byId = new Map<string, Workspace>();
+  for (const item of [...current, ...incoming]) {
+    byId.set(item.id, item);
+  }
+  return [...byId.values()].sort((a, b) => b.updated_at - a.updated_at);
+}
+
+async function migrateLocalWorkspaces(existing: Workspace[]): Promise<Workspace[]> {
+  const local = mergeWorkspaces([loadDraftWorkspace(), ...loadWorkspaces()]);
+  let next = existing;
+  for (const path of local) {
+    if (workspaceByPath(next, path)) continue;
+    try {
+      next = mergeWorkspaceList(next, [await upsertWorkspace(path)]);
+    } catch {
+      // sidecar 未就绪时仍用服务端已有列表
+    }
   }
   return next;
-}
-
-function isLocalDraft(session: SessionInfo): boolean {
-  return (session.turn_count ?? 0) <= 0;
-}
-
-function persistableSessions(sessions: SessionInfo[]): SessionInfo[] {
-  return sessions.filter((item) => !isLocalDraft(item));
-}
-
-function keepOpenSession(sessions: SessionInfo[], sessionId: string): SessionInfo[] {
-  return sessions.filter((item) => item.session_id === sessionId || !isLocalDraft(item));
-}
-
-function mergeLocalDraft(
-  persisted: SessionInfo[],
-  state: {
-    sessionId: string | null;
-    sessions: SessionInfo[];
-    model: string;
-    workspace: string;
-    permissionMode: PermissionMode;
-    sessionTitles: Record<string, string>;
-  },
-): SessionInfo[] {
-  const id = state.sessionId;
-  if (!id || persisted.some((item) => item.session_id === id)) return persisted;
-  const draft = state.sessions.find((item) => item.session_id === id) ?? {
-    session_id: id,
-    model: state.model,
-    cwd: state.workspace,
-    turn_count: 0,
-    total_tokens: 0,
-    permission_mode: state.permissionMode,
-    summary: state.sessionTitles[id] || "新会话",
-    updated_at: Date.now() / 1000,
-  };
-  return [draft, ...persisted];
 }
 
 function usageFromResult(result: SdkResultMessage): TurnUsage {
@@ -244,7 +215,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   input: "",
   workspace: loadDraftWorkspace(),
-  workspaces: mergeWorkspaces([loadDraftWorkspace(), ...loadWorkspaces()]),
+  workspaceId: null,
+  workspaces: [],
   permissionMode: loadDraftPermissionMode(),
   model: loadDraftModel(),
   streaming: false,
@@ -262,26 +234,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setInput: (value) => set({ input: value }),
   setWorkspace: (value) => {
     saveDraftWorkspace(value);
-    set((state) => {
-      const workspaces = mergeWorkspaces([value, ...state.workspaces]);
-      saveWorkspaces(workspaces);
-      return { workspace: value, workspaces };
-    });
+    set((state) => ({
+      workspace: value,
+      workspaceId: workspaceByPath(state.workspaces, value)?.id ?? null,
+    }));
   },
-  addWorkspace: (value) => {
-    get().setWorkspace(value);
+  addWorkspace: async (value) => {
+    const path = value.trim();
+    if (!path) return;
+    const workspace = await upsertWorkspace(path);
+    saveDraftWorkspace(workspace.path);
+    set((state) => ({
+      workspace: workspace.path,
+      workspaceId: workspace.id,
+      workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
+      error: null,
+    }));
   },
-  removeWorkspace: (path) => {
-    const target = path.trim();
+  removeWorkspace: async (workspaceId) => {
+    const target = workspaceId.trim();
     if (!target) return;
+    await deleteWorkspace(target);
     set((state) => {
-      const workspaces = state.workspaces.filter((item) => !sameWorkspace(item, target));
-      saveWorkspaces(workspaces);
-      const workspace = sameWorkspace(state.workspace, target)
-        ? (workspaces[0] ?? "")
-        : state.workspace;
+      const workspaces = state.workspaces.filter((item) => item.id !== target);
+      const sessions = state.sessions.filter((item) => item.workspace_id !== target);
+      const selectedGone = state.workspaceId === target;
+      const next = selectedGone ? workspaces[0] : undefined;
+      const workspace = selectedGone ? (next?.path ?? "") : state.workspace;
+      const nextId = selectedGone ? (next?.id ?? null) : state.workspaceId;
       saveDraftWorkspace(workspace);
-      return { workspaces, workspace };
+      const sessionGone = state.sessions.some(
+        (item) => item.workspace_id === target && item.engine_session_id === state.sessionId,
+      );
+      return {
+        workspaces,
+        sessions,
+        workspace,
+        workspaceId: nextId,
+        sessionId: sessionGone ? null : state.sessionId,
+        messages: sessionGone ? [] : state.messages,
+        events: sessionGone ? [] : state.events,
+      };
     });
   },
   setPermissionMode: async (mode) => {
@@ -291,7 +284,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!sessionId) return;
     try {
       const result = await setSessionPermission(sessionId, mode);
-      set({ permissionMode: normalizePermissionMode(result.effective) });
+      const effective = normalizePermissionMode(result.effective);
+      set({ permissionMode: effective });
+      const mapped = get().sessions.find((item) => item.engine_session_id === sessionId);
+      if (mapped) {
+        const updated = await patchAppSession(mapped.id, { permission_mode: effective });
+        set((state) => ({
+          sessions: state.sessions.map((item) => (item.id === updated.id ? updated : item)),
+        }));
+      }
     } catch {
       // 会话尚未在 sidecar 里时，等发送/新建时再带上
     }
@@ -306,10 +307,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   refresh: async () => {
     try {
-      const [health, info, sessions, permissions, catalog, commands] = await Promise.all([
+      const [health, info, workspacesRaw, sessions, permissions, catalog, commands] = await Promise.all([
         fetchHealth(),
         fetchAppInfo().catch(() => null),
-        fetchSessions().catch(() => []),
+        fetchWorkspaces().catch(() => [] as Workspace[]),
+        fetchSessionList().catch(() => [] as SessionListItem[]),
         fetchPermissions().catch(() => []),
         fetchCatalog().catch(() => null),
         fetchCommands().catch(() => get().commands),
@@ -318,25 +320,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let model = state.model;
       if (!model && catalog?.default?.model) model = catalog.default.model;
       if (!model && info?.model) model = info.model;
-      const workspaces = mergeWorkspaces([
-        ...state.workspaces,
-        state.workspace,
-      ]);
-      saveWorkspaces(workspaces);
-      const live = sessions.find((item) => item.session_id === state.sessionId);
+      const workspaces = await migrateLocalWorkspaces(workspacesRaw);
+      const selected =
+        (state.workspaceId ? workspaces.find((item) => item.id === state.workspaceId) : undefined) ??
+        workspaceByPath(workspaces, state.workspace) ??
+        workspaces[0];
+      if (selected) saveDraftWorkspace(selected.path);
+      const live = sessions.find((item) => item.engine_session_id === state.sessionId);
       const permissionMode = live?.permission_mode
         ? normalizePermissionMode(live.permission_mode)
         : state.permissionMode;
       if (live?.permission_mode) saveDraftPermissionMode(permissionMode);
-      const sessionTitles = await resolveSessionTitles(sessions, state.sessionTitles);
+      const sessionTitles = titlesFromSessions(sessions, state.sessionTitles);
       set({
         healthOk: health.status === "ok",
         info,
-        sessions: mergeLocalDraft(sessions, { ...state, sessionTitles }),
+        sessions,
         permissions,
         catalog,
         model,
         workspaces,
+        workspace: selected?.path ?? state.workspace,
+        workspaceId: selected?.id ?? null,
         permissionMode,
         sessionTitles,
         commands,
@@ -375,35 +380,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
     const permissionMode = get().permissionMode;
-    const session = await createSession({
+    const workspace = await upsertWorkspace(cwd);
+    const session = await createAppSession({
+      workspace_id: workspace.id,
       model: model || undefined,
-      cwd,
       permission_mode: permissionMode,
     });
     const nextMode = normalizePermissionMode(session.permission_mode || permissionMode);
-    saveDraftWorkspace(cwd);
+    saveDraftWorkspace(workspace.path);
     saveDraftModel(session.model);
     saveDraftPermissionMode(nextMode);
-    set((state) => {
-      const workspaces = mergeWorkspaces([session.cwd || cwd, ...state.workspaces]);
-      saveWorkspaces(workspaces);
-      return {
-      sessionId: session.session_id,
-      workspace: session.cwd || cwd,
-      workspaces,
+    set((state) => ({
+      sessionId: session.engine_session_id,
+      workspace: workspace.path,
+      workspaceId: workspace.id,
+      workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
       permissionMode: nextMode,
       model: session.model,
-      sessions: [
-        {
-          ...session,
-          turn_count: 0,
-          total_tokens: 0,
-          summary: "新会话",
-          updated_at: Date.now() / 1000,
-        },
-        ...persistableSessions(state.sessions),
-      ],
-      sessionTitles: { ...state.sessionTitles, [session.session_id]: "新会话" },
+      sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
+      sessionTitles: { ...state.sessionTitles, [session.engine_session_id]: session.title || "新会话" },
       messages: [],
       events: [],
       usage: null,
@@ -412,12 +407,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       view: "chat",
       historyReveal: false,
       historyLoading: false,
-    };
-    });
+    }));
   },
 
   openSession: async (sessionId) => {
-    const session = get().sessions.find((item) => item.session_id === sessionId);
+    const session = get().sessions.find((item) => item.engine_session_id === sessionId);
     const permissionMode = session?.permission_mode
       ? normalizePermissionMode(session.permission_mode)
       : get().permissionMode;
@@ -425,6 +419,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       sessionId,
       workspace: session?.cwd || state.workspace,
+      workspaceId: session?.workspace_id || state.workspaceId,
       model: session?.model || state.model,
       permissionMode,
       error: null,
@@ -434,7 +429,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       historyReveal: false,
       historyLoading: true,
       view: "chat",
-      sessions: keepOpenSession(state.sessions, sessionId),
     }));
     try {
       const events = await fetchSessionEvents(sessionId);
@@ -452,6 +446,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         historyReveal: true,
         historyLoading: false,
       });
+      if (title) {
+        const mapped = get().sessions.find((item) => item.engine_session_id === sessionId);
+        if (mapped && (!mapped.title.trim() || mapped.title === "新会话")) {
+          void patchAppSession(mapped.id, { title }).then((updated) => {
+            set((state) => ({
+              sessions: state.sessions.map((item) => (item.id === updated.id ? updated : item)),
+            }));
+          }).catch(() => undefined);
+        }
+      }
       if (!older.length) {
         requestAnimationFrame(() => {
           if (get().sessionId === sessionId) set({ historyReveal: false });
@@ -526,38 +530,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     const userMessage: ChatMessage = { id: nextId(), role: "user", text };
     const draftId = nextId();
-    set((state) => {
-      const already = state.sessions.some((item) => item.session_id === sessionId);
-      const sessions = already
-        ? state.sessions
-        : [
-            {
-              session_id: sessionId,
-              model: state.model,
-              cwd: state.workspace,
-              turn_count: 0,
-              total_tokens: 0,
-              permission_mode: state.permissionMode,
-              summary: titleFromText(text),
-              updated_at: Date.now() / 1000,
-            },
-            ...state.sessions,
-          ];
-      return {
+    const nextTitle = titleFromText(text);
+    set((state) => ({
       input: "",
       streaming: true,
       error: null,
       view: "chat",
-      sessions,
+      sessions: state.sessions.map((item) =>
+        item.engine_session_id === sessionId && (!item.title.trim() || item.title === "新会话")
+          ? { ...item, title: nextTitle, updated_at: Date.now() / 1000 }
+          : item,
+      ),
       sessionTitles: {
         ...state.sessionTitles,
         [sessionId]: state.sessionTitles[sessionId] && state.sessionTitles[sessionId] !== "新会话"
           ? state.sessionTitles[sessionId]
-          : titleFromText(text),
+          : nextTitle,
       },
       messages: [...state.messages, userMessage, { id: draftId, role: "assistant", text: "", streaming: true }],
-      };
-    });
+    }));
+    const mapped = get().sessions.find((item) => item.engine_session_id === sessionId);
+    if (mapped) {
+      void patchAppSession(mapped.id, {
+        title: get().sessionTitles[sessionId] || nextTitle,
+        turn_count: Math.max(1, mapped.turn_count),
+      }).then((updated) => {
+        set((state) => ({
+          sessions: state.sessions.map((item) => (item.id === updated.id ? updated : item)),
+        }));
+      }).catch(() => {
+        // 列表刷新时再对齐
+      });
+    }
 
     const patchDraft = (updater: (item: ChatMessage) => ChatMessage) => {
       set((state) => {

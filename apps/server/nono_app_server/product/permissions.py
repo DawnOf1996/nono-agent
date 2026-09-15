@@ -1,4 +1,4 @@
-"""桌面端可交互权限检查 —— 暂停工具执行，等前端批准或拒绝。"""
+"""桌面端可交互权限检查：待办队列 + /app/permissions 路由。"""
 
 from __future__ import annotations
 
@@ -8,9 +8,18 @@ import time
 import uuid
 from typing import Any
 
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
 logger = logging.getLogger(__name__)
 
+router = APIRouter()
+
 _pending: dict[str, tuple[dict[str, Any], asyncio.Future[bool]]] = {}
+
+
+class PermissionAnswer(BaseModel):
+    allow: bool
 
 
 def list_pending() -> list[dict[str, Any]]:
@@ -50,3 +59,16 @@ def answer_permission(request_id: str, allow: bool) -> bool:
         return False
     future.set_result(allow)
     return True
+
+
+@router.get("/permissions")
+async def pending_permissions() -> dict[str, Any]:
+    return {"permissions": list_pending()}
+
+
+@router.post("/permissions/{request_id}/answer")
+async def answer(request_id: str, body: PermissionAnswer) -> dict[str, Any]:
+    ok = answer_permission(request_id, body.allow)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No pending permission for request_id")
+    return {"status": "answered", "request_id": request_id, "allow": body.allow}

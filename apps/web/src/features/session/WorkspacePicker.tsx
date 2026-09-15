@@ -119,7 +119,7 @@ export function WorkspacePicker({
               disabled={!listing?.path}
               onClick={() => {
                 if (!listing?.path) return;
-                addWorkspace(listing.path);
+                void addWorkspace(listing.path);
                 onClose();
               }}
             >

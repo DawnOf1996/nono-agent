@@ -8,8 +8,10 @@ import type {
   ProviderUpsert,
   SessionEvent,
   SessionInfo,
+  SessionListItem,
   SlashCommandInfo,
   SlashCommandResult,
+  Workspace,
 } from "@nono/protocol";
 
 import { parseSse } from "@/api/sse";
@@ -53,6 +55,64 @@ export async function saveDefaultModel(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider, model }),
+    }),
+  );
+}
+
+export async function fetchWorkspaces(): Promise<Workspace[]> {
+  const data = await readJson<{ workspaces: Workspace[] }>(await fetch("/app/workspaces"));
+  return data.workspaces;
+}
+
+export async function upsertWorkspace(path: string): Promise<Workspace> {
+  return readJson(
+    await fetch("/app/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  );
+}
+
+export async function deleteWorkspace(workspaceId: string): Promise<void> {
+  await readJson(await fetch(`/app/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE" }));
+}
+
+export async function fetchSessionList(workspaceId?: string): Promise<SessionListItem[]> {
+  const query = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+  const data = await readJson<{ sessions: SessionListItem[] }>(await fetch(`/app/sessions${query}`));
+  return data.sessions;
+}
+
+export async function createAppSession(input: {
+  workspace_id: string;
+  model?: string;
+  permission_mode?: PermissionMode;
+  title?: string;
+}): Promise<SessionListItem> {
+  return readJson(
+    await fetch("/app/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function patchAppSession(
+  sessionId: string,
+  body: {
+    title?: string;
+    model?: string;
+    permission_mode?: PermissionMode;
+    turn_count?: number;
+  },
+): Promise<SessionListItem> {
+  return readJson(
+    await fetch(`/app/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     }),
   );
 }
@@ -231,5 +291,7 @@ export type {
   PermissionRequest,
   SessionEvent,
   SessionInfo,
+  SessionListItem,
   SlashCommandInfo,
+  Workspace,
 };

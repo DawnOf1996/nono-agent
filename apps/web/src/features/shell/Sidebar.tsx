@@ -9,7 +9,7 @@ import { formatRelativeTime, sessionTitle } from "@/lib/format";
 import { sameWorkspace, workspaceLabel } from "@/lib/workspace";
 import { useChatStore } from "@/store/chat";
 
-function WorkspaceRowMenu({ cwd }: { cwd: string }) {
+function WorkspaceRowMenu({ workspace }: { workspace: { id: string; path: string } }) {
   const removeWorkspace = useChatStore((state) => state.removeWorkspace);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
@@ -45,7 +45,7 @@ function WorkspaceRowMenu({ cwd }: { cwd: string }) {
   async function openFolder() {
     setOpen(false);
     try {
-      await openWorkspaceFolder(cwd);
+      await openWorkspaceFolder(workspace.path);
     } catch (error) {
       console.error(error);
     }
@@ -53,7 +53,7 @@ function WorkspaceRowMenu({ cwd }: { cwd: string }) {
 
   function remove() {
     setOpen(false);
-    removeWorkspace(cwd);
+    void removeWorkspace(workspace.id);
   }
 
   return (
@@ -117,23 +117,19 @@ export function Sidebar() {
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const groups = useMemo(() => {
-    const byPath = new Map<string, typeof sessions>();
-    for (const path of workspaces) {
-      byPath.set(path, []);
+    const byId = new Map<string, typeof sessions>();
+    for (const item of workspaces) {
+      byId.set(item.id, []);
     }
     const unbound: typeof sessions = [];
     for (const session of sessions) {
-      const cwd = session.cwd?.trim() ?? "";
-      const owner = cwd
-        ? [...byPath.keys()].find((path) => sameWorkspace(path, cwd))
-        : undefined;
-      if (owner) {
-        byPath.get(owner)?.push(session);
+      if (byId.has(session.workspace_id)) {
+        byId.get(session.workspace_id)?.push(session);
       } else {
         unbound.push(session);
       }
     }
-    return { byPath, unbound };
+    return { byId, unbound };
   }, [sessions, workspaces]);
 
   return (
@@ -178,10 +174,11 @@ export function Sidebar() {
           </button>
         </div>
 
-        {[...groups.byPath.entries()].map(([cwd, items]) => {
-          const activeWs = sameWorkspace(cwd, workspace);
+        {workspaces.map((item) => {
+          const items = groups.byId.get(item.id) ?? [];
+          const activeWs = sameWorkspace(item.path, workspace);
           return (
-            <div key={cwd} className="mb-1">
+            <div key={item.id} className="mb-1">
               <div
                 className={`flex items-center rounded-lg pr-0.5 ${
                   activeWs && !sessionId ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
@@ -190,26 +187,28 @@ export function Sidebar() {
                 <button
                   type="button"
                   className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-[13px]"
-                  onClick={() => setWorkspace(cwd)}
+                  onClick={() => setWorkspace(item.path)}
                 >
                   <Folder className="size-3.5 shrink-0 text-muted" />
-                  <span className="truncate">{workspaceLabel(cwd)}</span>
+                  <span className="truncate">{item.name || workspaceLabel(item.path)}</span>
                 </button>
-                <WorkspaceRowMenu cwd={cwd} />
+                <WorkspaceRowMenu workspace={item} />
               </div>
               <ul className="ml-3 border-l border-line pl-2">
                 {items.map((session) => {
-                  const active = session.session_id === sessionId;
+                  const active = session.engine_session_id === sessionId;
                   return (
-                    <li key={session.session_id}>
+                    <li key={session.id}>
                       <button
                         type="button"
                         className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] ${
                           active ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
                         }`}
-                        onClick={() => void openSession(session.session_id)}
+                        onClick={() => void openSession(session.engine_session_id)}
                       >
-                        <span className="truncate">{sessionTitle(session.session_id, sessionTitles, session.summary)}</span>
+                        <span className="truncate">
+                          {sessionTitle(session.engine_session_id, sessionTitles, session.title)}
+                        </span>
                         <span className="shrink-0 text-[11px] text-faint">{formatRelativeTime(session.updated_at)}</span>
                       </button>
                     </li>
@@ -225,15 +224,17 @@ export function Sidebar() {
             <div className="px-2 py-1.5 text-[12px] text-faint">未绑定目录</div>
             <ul className="ml-3 border-l border-line pl-2">
               {groups.unbound.map((session) => (
-                <li key={session.session_id}>
+                <li key={session.id}>
                   <button
                     type="button"
                     className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] ${
-                      session.session_id === sessionId ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
+                      session.engine_session_id === sessionId ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
                     }`}
-                    onClick={() => void openSession(session.session_id)}
+                    onClick={() => void openSession(session.engine_session_id)}
                   >
-                    <span className="truncate">{sessionTitle(session.session_id, sessionTitles, session.summary)}</span>
+                    <span className="truncate">
+                      {sessionTitle(session.engine_session_id, sessionTitles, session.title)}
+                    </span>
                     <span className="shrink-0 text-[11px] text-faint">{formatRelativeTime(session.updated_at)}</span>
                   </button>
                 </li>
