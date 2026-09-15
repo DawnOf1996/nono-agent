@@ -267,3 +267,19 @@ class TestSessionModelSwitch:
         finally:
             await engine.close()
 
+
+class TestSessionTools:
+    @pytest.mark.asyncio
+    async def test_web_session_registers_builtin_tools(self, tmp_path: Path):
+        from nono_app_server.engine.session_manager import SessionManager
+
+        manager = SessionManager(EngineConfig(cwd=str(tmp_path), model="alpha"), None)
+        engine = await manager.get_or_create("sid", cwd=str(tmp_path))
+        try:
+            names = set(engine.tool_registry.names())
+            assert "read_file" in names
+            assert "bash" in names
+            assert "web_search" in names
+        finally:
+            await engine.close()
+

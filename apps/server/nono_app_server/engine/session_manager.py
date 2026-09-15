@@ -17,7 +17,9 @@ from nono_agent.session.transcript import (
     existing_transcript_path,
     peek_session_header,
 )
+from nono_agent.tools.builtin import create_builtin_tools
 from nono_agent.tools.context import PermissionChecker
+from nono_agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,14 @@ def deny_all_permission_checker(tool_name: str, input_params: dict[str, Any]) ->
         tool_name,
     )
     return False
+
+
+def build_session_tool_registry() -> ToolRegistry:
+    """每个 Web 会话一份内置工具，与 CLI 的 `create_builtin_tools()` 对齐。"""
+    registry = ToolRegistry()
+    for tool in create_builtin_tools():
+        registry.register(tool)
+    return registry
 
 
 class SessionManager:
@@ -147,6 +157,7 @@ class SessionManager:
             engine = QueryEngine(
                 engine_config,
                 permission_checker=self.permission_checker,
+                tool_registry=build_session_tool_registry(),
                 ask_user=self.make_ask_user(session_id),
             )
             await engine.initialize()
@@ -204,7 +215,12 @@ class SessionManager:
         engine_config = self.resolve_session_config(
             model, header.cwd if header else None, session_id=session_id
         )
-        engine = QueryEngine(engine_config, permission_checker=self.permission_checker)
+        engine = QueryEngine(
+            engine_config,
+            permission_checker=self.permission_checker,
+            tool_registry=build_session_tool_registry(),
+            ask_user=self.make_ask_user(session_id),
+        )
         await engine.initialize()
         messages = await engine.resume_session(session_id, skip_system=skip_system)
 
