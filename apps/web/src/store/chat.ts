@@ -67,20 +67,27 @@ import {
   saveDraftModel,
   saveDraftWorkspace,
 } from "@/lib/workspace";
+import { MAX_PENDING_IMAGES, toApiAttachments, type PendingImage } from "@/lib/images";
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 export type MainView = "chat" | "trajectory";
 export type ChatToolCall = ReplayToolCall;
 export type ChatStep = ReplayStep;
 
+export type ChatImage = {
+  src: string;
+};
+
 export type ChatMessage = {
   id: string;
   role: ChatRole;
   text: string;
+  images?: ChatImage[];
   thinking?: string;
   thinkingRunning?: boolean;
   steps?: ChatStep[];
   streaming?: boolean;
+  durationMs?: number;
 };
 
 export type TurnUsage = {
@@ -102,6 +109,7 @@ type ChatState = {
   events: SessionEvent[];
   messages: ChatMessage[];
   input: string;
+  attachments: PendingImage[];
   workspace: string;
   workspaceId: string | null;
   draftWorkspaceId: string | null;
@@ -120,6 +128,8 @@ type ChatState = {
   historyReveal: boolean;
   historyLoading: boolean;
   setInput: (value: string) => void;
+  addAttachments: (items: PendingImage[]) => void;
+  removeAttachment: (id: string) => void;
   setWorkspace: (value: string) => void;
   addWorkspace: (value: string) => Promise<void>;
   renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
@@ -152,14 +162,14 @@ function nextId(): string {
   return crypto.randomUUID();
 }
 
-function titleFromText(text: string): string {
+function titleFromText(text: string, hasImages = false): string {
   const line = text.trim().split(/\r?\n/)[0] ?? "";
-  return line.slice(0, 32) || "新会话";
+  return line.slice(0, 32) || (hasImages ? "图片问答" : "新会话");
 }
 
 function titlesFromEvents(events: SessionEvent[]): string | null {
   const first = messagesFromEvents(events).find((item) => item.role === "user");
-  return first ? titleFromText(first.text) : null;
+  return first ? titleFromText(first.text, Boolean(first.images?.length)) : null;
 }
 
 function titlesFromSessions(
@@ -290,6 +300,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   events: [],
   messages: [],
   input: "",
+  attachments: [],
   workspace: loadDraftWorkspace(),
   workspaceId: null,
   draftWorkspaceId: null,
@@ -309,6 +320,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
   historyLoading: false,
 
   setInput: (value) => set({ input: value }),
+  addAttachments: (items) => {
+    if (!items.length) return;
+    set((state) => {
+      const room = MAX_PENDING_IMAGES - state.attachments.length;
+      if (room <= 0) {
+        return { error: `最多添加 ${MAX_PENDING_IMAGES} 张图片` };
+      }
+      return {
+        attachments: [...state.attachments, ...items.slice(0, room)],
+        error: items.length > room ? `最多添加 ${MAX_PENDING_IMAGES} 张图片` : null,
+      };
+    });
+  },
+  removeAttachment: (id) =>
+    set((state) => ({
+      attachments: state.attachments.filter((item) => item.id !== id),
+    })),
   setWorkspace: (value) => {
     saveDraftWorkspace(value);
     set((state) => {
@@ -318,7 +346,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         workspace: value,
         workspaceId,
         ...(leavingDraft
-          ? { draftWorkspaceId: null, sessionId: null, input: "", messages: [], events: [], usage: null }
+          ? { draftWorkspaceId: null, sessionId: null, input: "", attachments: [], messages: [], events: [], usage: null }
           : {}),
       };
     });
@@ -336,6 +364,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
         draftWorkspaceId: leavingDraft ? null : state.draftWorkspaceId,
         input: leavingDraft ? "" : state.input,
+        attachments: leavingDraft ? [] : state.attachments,
         messages: leavingDraft ? [] : state.messages,
         events: leavingDraft ? [] : state.events,
         error: null,
@@ -511,6 +540,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       permissionMode,
       model: model || state.model,
       input: "",
+      attachments: [],
       messages: [],
       events: [],
       usage: null,
@@ -536,6 +566,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       model: session?.model || state.model,
       permissionMode,
       input: state.draftWorkspaceId ? "" : state.input,
+      attachments: state.draftWorkspaceId ? [] : state.attachments,
       error: null,
       usage: null,
       events: [],
@@ -664,19 +695,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   send: async () => {
     const text = get().input.trim();
-    if (!text || get().streaming) return;
+    const pending = get().attachments;
+    if (get().streaming) return;
     if (text.startsWith("/")) {
       await get().runCommand(text);
       return;
     }
+    if (!text && !pending.length) return;
     if (!get().workspace.trim()) {
       set({ newTaskOpen: true, error: "先选择工作空间目录" });
       return;
     }
-    const userMessage: ChatMessage = { id: nextId(), role: "user", text };
+    const images = pending.map((item) => ({ src: item.preview }));
+    const userMessage: ChatMessage = {
+      id: nextId(),
+      role: "user",
+      text,
+      images: images.length ? images : undefined,
+    };
     const draftId = nextId();
     set((state) => ({
       input: "",
+      attachments: [],
       streaming: true,
       error: null,
       view: "chat",
@@ -704,6 +744,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set((state) => ({
             streaming: false,
             input: state.input || text,
+            attachments: state.attachments.length ? state.attachments : pending,
             messages: state.messages.filter(
               (item) => item.id !== userMessage.id && item.id !== draftId,
             ),
@@ -711,7 +752,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return;
         }
       }
-      const nextTitle = titleFromText(text);
+      const nextTitle = titleFromText(text, pending.length > 0);
       set((state) => ({
         sessions: state.sessions.map((item) =>
           item.engine_session_id === sessionId && (!item.title.trim() || item.title === "新会话")
@@ -746,6 +787,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         text,
         get().model || undefined,
         get().permissionMode,
+        pending.length ? toApiAttachments(pending) : undefined,
       );
       if (!response.ok) {
         throw new Error(await response.text());
@@ -821,6 +863,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             set({ error: result.errors?.join("\n") || result.result || "本轮失败" });
           }
           set({ usage: usageFromResult(result) });
+          if (result.duration_ms) {
+            patchDraft((item) => ({ ...item, durationMs: result.duration_ms }));
+          }
         }
       }
     } catch (error) {
@@ -831,6 +876,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...(persistFailed
             ? {
                 input: state.input || text,
+                attachments: state.attachments.length ? state.attachments : pending,
                 messages: state.messages.filter(
                   (item) => item.id !== userMessage.id && item.id !== draftId,
                 ),

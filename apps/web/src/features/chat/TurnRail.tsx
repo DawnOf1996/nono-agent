@@ -14,7 +14,11 @@ export function groupChatTurns(messages: ChatMessage[]): ChatTurn[] {
   for (const message of messages) {
     if (message.role === "user") {
       if (current) turns.push(current);
-      current = { id: message.id, userText: message.text, assistantText: "" };
+      current = {
+        id: message.id,
+        userText: message.text.trim() || (message.images?.length ? "图片" : ""),
+        assistantText: "",
+      };
       continue;
     }
     if (message.role === "system") continue;

@@ -394,13 +394,18 @@ class QueryEngine:
         # Phase 2: 组装用户消息（模型可见状态），但**不在 loop 前入库**。
         # 由 loop 在首个 step 的管线压缩之后追加进 store，避免它落入压缩边界；
         # user/message 事件由引擎在 step/start 之后（首个 RequestStartEvent）补写。
-        user_msg = UserMessage(
-            message={
-                "role": "user",
-                "content": user_input if not attachments else
-                    [{"type": "text", "text": user_input}] + attachments,
-            }
-        )
+        if attachments:
+            content: list[dict[str, Any]] = []
+            if user_input.strip():
+                content.append({"type": "text", "text": user_input})
+            content.extend(attachments)
+            user_msg = UserMessage(
+                message={"role": "user", "content": content or user_input}
+            )
+        else:
+            user_msg = UserMessage(
+                message={"role": "user", "content": user_input}
+            )
 
         # 可选回放用户消息给消费者（Server 场景需要）
         if self._config.replay_user_messages:

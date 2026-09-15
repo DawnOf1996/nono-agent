@@ -2,6 +2,7 @@ import type {
   AppInfo,
   AskUserSignal,
   CatalogSnapshot,
+  ChatImageAttachment,
   FsListing,
   PermissionRequest,
   PermissionMode,
@@ -277,6 +278,7 @@ export function postChat(
   message: string,
   model?: string,
   permissionMode?: PermissionMode,
+  attachments?: ChatImageAttachment[],
 ): Promise<Response> {
   return fetch("/chat", {
     method: "POST",
@@ -286,6 +288,7 @@ export function postChat(
       message,
       model,
       permission_mode: permissionMode,
+      ...(attachments?.length ? { attachments } : {}),
     }),
   });
 }

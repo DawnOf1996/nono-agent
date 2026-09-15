@@ -1,11 +1,39 @@
 import { ChevronDown, Copy } from "lucide-react";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { ImageLightbox } from "@/components/ImageLightbox";
 import { MarkdownText } from "@/components/MarkdownText";
 import { ReasoningRow } from "@/features/chat/ReasoningRow";
 import { TurnRail, groupChatTurns } from "@/features/chat/TurnRail";
-import type { ChatMessage } from "@/store/chat";
+import type { ChatImage, ChatMessage } from "@/store/chat";
 import { useChatStore } from "@/store/chat";
+
+function MessageImages({ images, messageId }: { images: ChatImage[]; messageId: string }) {
+  const [preview, setPreview] = useState<string | null>(null);
+
+  return (
+    <>
+      <div className="flex flex-wrap justify-end gap-2">
+        {images.map((image, index) => (
+          <button
+            key={`${messageId}-img-${index}`}
+            type="button"
+            className="block shrink-0 cursor-zoom-in overflow-hidden rounded-2xl border border-line bg-bg p-1.5 shadow-[0_8px_24px_rgba(15,17,21,0.06)]"
+            title="查看大图"
+            onClick={() => setPreview(image.src)}
+          >
+            <img
+              src={image.src}
+              alt=""
+              className="max-h-56 max-w-80 rounded-xl object-contain"
+            />
+          </button>
+        ))}
+      </div>
+      <ImageLightbox src={preview} onClose={() => setPreview(null)} />
+    </>
+  );
+}
 
 const NEAR_BOTTOM_PX = 96;
 
@@ -20,8 +48,15 @@ function MessageBlock({ message }: { message: ChatMessage }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[min(42rem,92%)] rounded-2xl bg-card px-4 py-2.5">
-          <MarkdownText text={message.text} />
+        <div className="flex max-w-[min(42rem,92%)] flex-col items-end gap-2">
+          {message.images?.length ? (
+            <MessageImages images={message.images} messageId={message.id} />
+          ) : null}
+          {message.text.trim() ? (
+            <div className="rounded-2xl bg-card px-4 py-2.5">
+              <MarkdownText text={message.text} />
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -43,7 +78,8 @@ function MessageBlock({ message }: { message: ChatMessage }) {
           thinking={message.thinking}
           steps={message.steps}
           liveText={liveInThinking ? message.text : undefined}
-          running={Boolean(message.thinkingRunning || (message.streaming && message.steps?.length))}
+          running={Boolean(message.streaming)}
+          durationMs={message.durationMs}
         />
       ) : null}
       {answer ? <MarkdownText text={answer} /> : null}

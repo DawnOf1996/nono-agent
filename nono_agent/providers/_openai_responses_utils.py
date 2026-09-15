@@ -9,7 +9,10 @@ import json
 from typing import Any
 
 from nono_agent.core.types import Message
-from nono_agent.providers._openai_chat_completions_utils import usage_to_buckets
+from nono_agent.providers._openai_chat_completions_utils import (
+    image_url_from_block,
+    usage_to_buckets,
+)
 
 
 def responses_usage_buckets(usage: Any) -> dict[str, int]:
@@ -35,6 +38,7 @@ def normalize_responses_input(messages: list[Message]) -> list[dict[str, Any]]:
     """将内部消息转换为 Responses API 的 ``input`` items 列表。
 
     - user 文本块 → ``message`` (role=user, input_text)
+    - user 图片块 → ``input_image``
     - user tool_result → ``function_call_output``
     - assistant 文本块 → ``message`` (role=assistant, output_text)
     - assistant tool_use → ``function_call``
@@ -48,12 +52,22 @@ def normalize_responses_input(messages: list[Message]) -> list[dict[str, Any]]:
         if not isinstance(content, list):
             continue
 
+        user_parts: list[dict[str, Any]] = []
+
+        def flush_user() -> None:
+            if user_parts:
+                items.append(
+                    {"type": "message", "role": "user", "content": list(user_parts)}
+                )
+                user_parts.clear()
+
         for block in content:
             if not isinstance(block, dict):
                 continue
             btype = block.get("type")
 
             if btype == "tool_result":
+                flush_user()
                 output = block.get("content", "")
                 items.append(
                     {
@@ -63,14 +77,13 @@ def normalize_responses_input(messages: list[Message]) -> list[dict[str, Any]]:
                     }
                 )
             elif role == "user" and btype == "text":
-                items.append(
-                    {
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": block.get("text", "")}],
-                    }
-                )
+                user_parts.append({"type": "input_text", "text": block.get("text", "")})
+            elif role == "user" and btype in ("image", "image_url"):
+                url = image_url_from_block(block)
+                if url:
+                    user_parts.append({"type": "input_image", "image_url": url})
             elif role == "assistant" and btype == "text":
+                flush_user()
                 items.append(
                     {
                         "type": "message",
@@ -79,6 +92,7 @@ def normalize_responses_input(messages: list[Message]) -> list[dict[str, Any]]:
                     }
                 )
             elif role == "assistant" and btype == "tool_use":
+                flush_user()
                 raw_input = block.get("input", {})
                 arguments = (
                     raw_input
@@ -93,6 +107,7 @@ def normalize_responses_input(messages: list[Message]) -> list[dict[str, Any]]:
                         "arguments": arguments,
                     }
                 )
+        flush_user()
 
     return items
 

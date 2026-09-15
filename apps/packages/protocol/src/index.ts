@@ -2,6 +2,15 @@
 
 export type PermissionMode = "default" | "accept_edits" | "plan" | "bypass";
 
+export type ChatImageAttachment = {
+  type: "image";
+  source: {
+    type: "base64";
+    media_type: string;
+    data: string;
+  };
+};
+
 export type SlashCommandInfo = {
   name: string;
   description: string;

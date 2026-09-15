@@ -23,6 +23,10 @@ export function formatDuration(ms: number): string {
   return `${minutes}m${rest}s`;
 }
 
+export function formatElapsed(ms: number): string {
+  return `${(Math.max(0, ms) / 1000).toFixed(1)}秒`;
+}
+
 export function formatRelativeTime(unixSeconds?: number | null): string {
   if (!unixSeconds) return "";
   const elapsed = Date.now() - unixSeconds * 1000;

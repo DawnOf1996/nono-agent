@@ -1,7 +1,8 @@
 import { ChevronRight } from "lucide-react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
 import { MarkdownText } from "@/components/MarkdownText";
+import { formatElapsed } from "@/lib/format";
 import type { ChatStep, ChatToolCall } from "@/store/chat";
 
 function pickString(input: Record<string, unknown>, keys: string[]): string {
@@ -136,16 +137,53 @@ function StepBody({ step, reveal }: { step: ChatStep; reveal: boolean }) {
   );
 }
 
+const ElapsedClock = memo(function ElapsedClock({
+  active,
+  durationMs,
+}: {
+  active: boolean;
+  durationMs?: number;
+}) {
+  const nodeRef = useRef<HTMLSpanElement>(null);
+  const startedRef = useRef<number | null>(null);
+  const lastMsRef = useRef(0);
+
+  useEffect(() => {
+    const write = (ms: number) => {
+      if (nodeRef.current) nodeRef.current.textContent = `（用时 ${formatElapsed(ms)}）`;
+    };
+    if (!active) {
+      const ms = durationMs && durationMs > 0 ? durationMs : lastMsRef.current;
+      if (ms > 0) write(ms);
+      return;
+    }
+    if (startedRef.current == null) startedRef.current = performance.now();
+    const started = startedRef.current;
+    let raf = 0;
+    const tick = () => {
+      lastMsRef.current = performance.now() - started;
+      write(lastMsRef.current);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [active, durationMs]);
+
+  return <span ref={nodeRef} />;
+});
+
 export function ReasoningRow({
   thinking,
   steps,
   liveText,
   running,
+  durationMs,
 }: {
   thinking?: string;
   steps?: ChatStep[];
   liveText?: string;
   running: boolean;
+  durationMs?: number;
 }) {
   const [expanded, setExpanded] = useState(running);
   const hasSteps = Boolean(steps?.some((step) => step.text || step.thinking || step.tools?.length));
@@ -165,7 +203,10 @@ export function ReasoningRow({
         onClick={() => setExpanded((value) => !value)}
       >
         <ChevronRight className={`size-3.5 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />
-        <span>{running ? "思考中" : "已思考"}</span>
+        <span>
+          {running ? "思考中" : "已思考"}
+          <ElapsedClock active={running} durationMs={durationMs} />
+        </span>
       </button>
       {expanded ? (
         <div className="mt-2 space-y-3 pl-[22px]">

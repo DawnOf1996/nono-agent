@@ -120,6 +120,41 @@ export function contentToText(content: unknown): string {
     .join("\n");
 }
 
+export type ReplayImage = {
+  src: string;
+};
+
+export function contentToImages(content: unknown): ReplayImage[] {
+  if (!Array.isArray(content)) return [];
+  const images: ReplayImage[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const rec = block as {
+      type?: string;
+      source?: { type?: string; media_type?: string; data?: string; url?: string };
+      image_url?: { url?: string } | string;
+      url?: string;
+    };
+    if (rec.type === "image") {
+      const source = rec.source;
+      if (source?.type === "base64" && source.data) {
+        const media = source.media_type || "image/png";
+        images.push({ src: `data:${media};base64,${source.data}` });
+        continue;
+      }
+      if (source?.url) {
+        images.push({ src: source.url });
+        continue;
+      }
+    }
+    if (rec.type === "image_url") {
+      const url = typeof rec.image_url === "string" ? rec.image_url : rec.image_url?.url;
+      if (url) images.push({ src: url });
+    }
+  }
+  return images;
+}
+
 export function contentToThinking(content: unknown): string {
   if (!Array.isArray(content)) return "";
   return content
@@ -203,23 +238,28 @@ export function foldAssistantTurn(parts: ReplayStep[]): {
 }
 
 export function messagesFromEvents(
-  events: Array<{ seq: number; type: string; data: Record<string, unknown> }>,
+  events: Array<{ seq: number; type: string; data: Record<string, unknown>; timestamp?: number }>,
 ): Array<{
   id: string;
   role: "user" | "assistant";
   text: string;
+  images?: ReplayImage[];
   thinking?: string;
   steps?: ReplayStep[];
+  durationMs?: number;
 }> {
   const messages: Array<{
     id: string;
     role: "user" | "assistant";
     text: string;
+    images?: ReplayImage[];
     thinking?: string;
     steps?: ReplayStep[];
+    durationMs?: number;
   }> = [];
   let pending: ReplayStep[] = [];
   let pendingThinking = "";
+  let turnStartedAt: number | null = null;
 
   const takeChunkThinking = (raw: Record<string, unknown>): string => {
     const chunk = raw.chunk;
@@ -227,7 +267,7 @@ export function messagesFromEvents(
     return extractThinkingDelta({ event: chunk });
   };
 
-  const flushAssistant = () => {
+  const flushAssistant = (durationMs?: number) => {
     if (!pending.length && !pendingThinking.trim()) {
       pendingThinking = "";
       return;
@@ -245,6 +285,7 @@ export function messagesFromEvents(
       id: last.id,
       role: "assistant",
       ...foldAssistantTurn(pending),
+      durationMs: durationMs && durationMs > 0 ? durationMs : undefined,
     });
     pending = [];
   };
@@ -258,9 +299,15 @@ export function messagesFromEvents(
     if (event.type === "user/message") {
       if (isToolResultContent(content)) continue;
       const text = contentToText(content);
-      if (!text.trim()) continue;
+      const images = contentToImages(content);
+      if (!text.trim() && !images.length) continue;
       flushAssistant();
-      messages.push({ id: `evt-${event.seq}`, role: "user", text });
+      messages.push({
+        id: `evt-${event.seq}`,
+        role: "user",
+        text,
+        images: images.length ? images : undefined,
+      });
     } else if (event.type === "assistant/message") {
       const step = stepFromContent(`evt-${event.seq}`, content);
       if (step) {
@@ -270,8 +317,14 @@ export function messagesFromEvents(
         pendingThinking = "";
         pending.push(step);
       }
+    } else if (event.type === "turn/start") {
+      turnStartedAt = typeof event.timestamp === "number" ? event.timestamp : null;
     } else if (event.type === "turn/end") {
-      flushAssistant();
+      const endedAt = typeof event.timestamp === "number" ? event.timestamp : null;
+      const durationMs =
+        turnStartedAt != null && endedAt != null ? Math.max(0, endedAt - turnStartedAt) : undefined;
+      flushAssistant(durationMs);
+      turnStartedAt = null;
     }
   }
   flushAssistant();

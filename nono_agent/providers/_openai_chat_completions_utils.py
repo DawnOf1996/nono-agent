@@ -80,6 +80,41 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return result
 
 
+def image_url_from_block(block: dict[str, Any]) -> str | None:
+    """从 Anthropic ``image`` 块或 OpenAI ``image_url`` 块提取 URL。"""
+    btype = block.get("type")
+    if btype == "image_url":
+        image_url = block.get("image_url")
+        if isinstance(image_url, str) and image_url:
+            return image_url
+        if isinstance(image_url, dict):
+            url = image_url.get("url")
+            return url if isinstance(url, str) and url else None
+    source = block.get("source")
+    if isinstance(source, dict):
+        if source.get("type") == "base64" and source.get("data"):
+            media = source.get("media_type") or "image/png"
+            return f"data:{media};base64,{source['data']}"
+        url = source.get("url")
+        if isinstance(url, str) and url:
+            return url
+    url = block.get("url")
+    return url if isinstance(url, str) and url else None
+
+
+def _openai_user_block(block: dict[str, Any]) -> dict[str, Any] | None:
+    """将内部用户内容块转为 Chat Completions 多模态格式。"""
+    btype = block.get("type")
+    if btype == "text":
+        return {"type": "text", "text": block.get("text") or ""}
+    if btype in ("image", "image_url"):
+        url = image_url_from_block(block)
+        if not url:
+            return None
+        return {"type": "image_url", "image_url": {"url": url}}
+    return block
+
+
 def normalize_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
     """将内部消息转换为 OpenAI Chat Completions 格式。
 
@@ -156,7 +191,9 @@ def normalize_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
                                     }
                                 )
                             else:
-                                new_content.append(block)
+                                converted = _openai_user_block(block)
+                                if converted is not None:
+                                    new_content.append(converted)
                     if new_content:
                         api_msg["content"] = new_content
                         api_msg["role"] = role
