@@ -16,10 +16,30 @@ import type {
 
 import { parseSse } from "@/api/sse";
 
+function errorMessage(text: string, fallback: string): string {
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (typeof parsed.detail === "string" && parsed.detail.trim()) return parsed.detail;
+    if (Array.isArray(parsed.detail)) {
+      const parts = parsed.detail
+        .map((item) => {
+          if (typeof item === "string") return item;
+          if (item && typeof item === "object" && "msg" in item) return String((item as { msg: unknown }).msg);
+          return "";
+        })
+        .filter(Boolean);
+      if (parts.length) return parts.join("; ");
+    }
+  } catch {
+    // keep raw text
+  }
+  return text.trim() || fallback;
+}
+
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `${response.status} ${response.statusText}`);
+    throw new Error(errorMessage(text, `${response.status} ${response.statusText}`));
   }
   return (await response.json()) as T;
 }
@@ -55,6 +75,38 @@ export async function saveDefaultModel(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider, model }),
+    }),
+  );
+}
+
+export async function deleteProvider(providerId: string): Promise<CatalogSnapshot> {
+  return readJson(
+    await fetch(`/app/catalog/providers/${encodeURIComponent(providerId)}`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+export async function fetchRemoteModels(body: {
+  base_url: string;
+  api: string;
+  api_key?: string | null;
+  provider_id?: string | null;
+}): Promise<Array<{ id: string; name: string }>> {
+  const data = await readJson<{ models: Array<{ id: string; name: string }> }>(
+    await fetch("/app/catalog/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+  return data.models;
+}
+
+export async function openCatalogConfig(): Promise<{ path: string; opened: boolean }> {
+  return readJson(
+    await fetch("/app/catalog/open-config", {
+      method: "POST",
     }),
   );
 }

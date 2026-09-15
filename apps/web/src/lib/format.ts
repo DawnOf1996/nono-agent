@@ -41,3 +41,22 @@ export function formatTokens(n: number): string {
   if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
   return `${Math.round(n / 1000)}k`;
 }
+
+export function formatTokenSize(n: number | null | undefined): string {
+  if (n == null || n <= 0) return "";
+  if (n % 1_000_000 === 0) return `${n / 1_000_000}M`;
+  if (n % 1_000 === 0) return `${n / 1_000}K`;
+  return String(n);
+}
+
+export function parseTokenSize(raw: string): number | null {
+  const text = raw.trim().replace(/,/g, "").replace(/_/g, "");
+  if (!text) return null;
+  const match = text.match(/^(\d+)\s*([kKmM])?$/);
+  if (!match) return null;
+  let n = Number(match[1]);
+  const suffix = (match[2] ?? "").toUpperCase();
+  if (suffix === "K") n *= 1_000;
+  if (suffix === "M") n *= 1_000_000;
+  return n > 0 ? n : null;
+}

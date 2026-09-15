@@ -61,6 +61,7 @@ export type CatalogModel = {
   id: string;
   name?: string | null;
   context_window?: number | null;
+  max_tokens?: number | null;
 };
 
 export type CatalogProvider = {
@@ -70,6 +71,8 @@ export type CatalogProvider = {
   base_url?: string | null;
   api_key_env: string;
   has_key: boolean;
+  extra_headers?: Record<string, string>;
+  extra_body?: Record<string, unknown>;
   models: CatalogModel[];
 };
 
@@ -77,6 +80,7 @@ export type CatalogSnapshot = {
   adapters: string[];
   default: { provider: string; model: string } | null;
   providers: CatalogProvider[];
+  config_path?: string | null;
 };
 
 export type ProviderUpsert = {
@@ -85,7 +89,14 @@ export type ProviderUpsert = {
   api: string;
   base_url?: string | null;
   api_key?: string | null;
-  models: Array<{ id: string; name?: string }>;
+  extra_headers?: Record<string, string> | null;
+  extra_body?: Record<string, unknown> | null;
+  models: Array<{
+    id: string;
+    name?: string;
+    context_window?: number | null;
+    max_tokens?: number | null;
+  }>;
 };
 
 export type PermissionRequest = {
