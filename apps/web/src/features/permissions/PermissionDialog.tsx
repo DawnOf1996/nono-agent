@@ -8,7 +8,11 @@ const CARD =
   "pointer-events-auto w-full max-w-lg rounded-2xl border border-line bg-bg p-5 shadow-[0_16px_48px_rgba(15,17,21,0.24)]";
 
 export function PermissionDialog() {
-  const { permissions, ask, sessionId, resolvePermission, resolveAsk } = useChatStore();
+  const permissions = useChatStore((state) => state.permissions);
+  const ask = useChatStore((state) => state.ask);
+  const sessionId = useChatStore((state) => state.sessionId);
+  const resolvePermission = useChatStore((state) => state.resolvePermission);
+  const resolveAsk = useChatStore((state) => state.resolveAsk);
   // 只弹当前会话的授权；别的会话继续挂起，等切回去再确认。
   const pending = permissions.find(
     (item) => !item.session_id || item.session_id === sessionId,

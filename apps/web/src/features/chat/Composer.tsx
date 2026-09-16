@@ -17,21 +17,20 @@ import {
 import { useChatStore } from "@/store/chat";
 
 export function Composer() {
-  const {
-    input,
-    setInput,
-    send,
-    runCommand,
-    abort,
-    streaming,
-    commands,
-    error,
-    usage,
-    attachments,
-    addAttachments,
-    removeAttachment,
-    setError,
-  } = useChatStore();
+  // 逐字段订阅：无参 useChatStore() 会订阅整个 store，流式输出时每次提交都要重渲染整个输入区。
+  const input = useChatStore((state) => state.input);
+  const setInput = useChatStore((state) => state.setInput);
+  const send = useChatStore((state) => state.send);
+  const runCommand = useChatStore((state) => state.runCommand);
+  const abort = useChatStore((state) => state.abort);
+  const streaming = useChatStore((state) => state.streaming);
+  const commands = useChatStore((state) => state.commands);
+  const error = useChatStore((state) => state.error);
+  const usage = useChatStore((state) => state.usage);
+  const attachments = useChatStore((state) => state.attachments);
+  const addAttachments = useChatStore((state) => state.addAttachments);
+  const removeAttachment = useChatStore((state) => state.removeAttachment);
+  const setError = useChatStore((state) => state.setError);
   const [menuOpen, setMenuOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);

@@ -6,7 +6,11 @@ import { workspaceLabel } from "@/lib/workspace";
 import { useChatStore } from "@/store/chat";
 
 export function ChatPane() {
-  const { sessionId, sessionTitles, view, setView, workspace } = useChatStore();
+  const sessionId = useChatStore((state) => state.sessionId);
+  const sessionTitles = useChatStore((state) => state.sessionTitles);
+  const view = useChatStore((state) => state.view);
+  const setView = useChatStore((state) => state.setView);
+  const workspace = useChatStore((state) => state.workspace);
   const title = sessionId ? sessionTitle(sessionId, sessionTitles) : "新会话";
   const workspaceName = workspace.trim() ? workspaceLabel(workspace) : "";
 

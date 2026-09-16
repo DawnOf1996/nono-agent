@@ -6,17 +6,15 @@ import { pickWorkspace } from "@/lib/workspace";
 import { useChatStore } from "@/store/chat";
 
 export function NewTaskDialog() {
-  const {
-    newTaskOpen,
-    setNewTaskOpen,
-    workspace,
-    setWorkspace,
-    model,
-    setModel,
-    catalog,
-    newSession,
-    setSettingsOpen,
-  } = useChatStore();
+  const newTaskOpen = useChatStore((state) => state.newTaskOpen);
+  const setNewTaskOpen = useChatStore((state) => state.setNewTaskOpen);
+  const workspace = useChatStore((state) => state.workspace);
+  const setWorkspace = useChatStore((state) => state.setWorkspace);
+  const model = useChatStore((state) => state.model);
+  const setModel = useChatStore((state) => state.setModel);
+  const catalog = useChatStore((state) => state.catalog);
+  const newSession = useChatStore((state) => state.newSession);
+  const setSettingsOpen = useChatStore((state) => state.setSettingsOpen);
 
   if (!newTaskOpen) return null;
 

@@ -552,14 +552,12 @@ function WorkspaceRow({
 }
 
 export function Sidebar() {
-  const {
-    sessions,
-    healthOk,
-    workspace,
-    workspaces,
-    setSettingsOpen,
-    newSession,
-  } = useChatStore();
+  const sessions = useChatStore((state) => state.sessions);
+  const healthOk = useChatStore((state) => state.healthOk);
+  const workspace = useChatStore((state) => state.workspace);
+  const workspaces = useChatStore((state) => state.workspaces);
+  const setSettingsOpen = useChatStore((state) => state.setSettingsOpen);
+  const newSession = useChatStore((state) => state.newSession);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
 
@@ -604,12 +602,14 @@ export function Sidebar() {
   return (
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-line bg-sidebar">
       <div className="flex items-center gap-2 px-4 py-4">
-        <span className="flex size-7 items-center justify-center rounded-full bg-accent text-[11px] font-semibold text-white">
-          N
-        </span>
-        <div className="min-w-0">
-          <div className="text-sm font-medium">Nono</div>
-          <div className="truncate text-[11px] text-faint">{healthOk ? "sidecar 在线" : "sidecar 离线"}</div>
+        <img src="/logo.png" alt="" draggable={false} className="size-8 shrink-0 rounded-[10px]" />
+        <div className="flex min-w-0 items-center gap-1.5">
+          <div className="text-sm font-medium">NoNo Agent</div>
+          <span
+            className={`size-2 shrink-0 rounded-full ${healthOk ? "bg-[#22c55e]" : "bg-danger"}`}
+            title={healthOk ? "服务在线" : "服务离线"}
+            aria-label={healthOk ? "服务在线" : "服务离线"}
+          />
         </div>
       </div>
 

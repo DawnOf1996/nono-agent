@@ -8,6 +8,9 @@ export type ChatTurn = {
   assistantText: string;
 };
 
+/** 轨道只显示很短的预览，先截断再处理 —— 否则流式追加时每个分片都要拷一遍整篇正文。 */
+const PREVIEW_SOURCE_MAX = 400;
+
 export function groupChatTurns(messages: ChatMessage[]): ChatTurn[] {
   const turns: ChatTurn[] = [];
   let current: ChatTurn | null = null;
@@ -16,18 +19,20 @@ export function groupChatTurns(messages: ChatMessage[]): ChatTurn[] {
       if (current) turns.push(current);
       current = {
         id: message.id,
-        userText: message.text.trim() || (message.images?.length ? "图片" : ""),
+        userText:
+          message.text.slice(0, PREVIEW_SOURCE_MAX).trim() ||
+          (message.images?.length ? "图片" : ""),
         assistantText: "",
       };
       continue;
     }
     if (message.role === "system") continue;
-    const text = message.text.trim();
+    const text = message.text.slice(0, PREVIEW_SOURCE_MAX).trim();
     if (!text) continue;
     if (!current) {
       current = { id: message.id, userText: "", assistantText: text };
     } else if (current.assistantText) {
-      current.assistantText = `${current.assistantText}\n${text}`;
+      current.assistantText = `${current.assistantText}\n${text}`.slice(0, PREVIEW_SOURCE_MAX);
     } else {
       current.assistantText = text;
     }

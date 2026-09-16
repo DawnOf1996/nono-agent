@@ -1,5 +1,5 @@
 import { ChevronDown, Copy } from "lucide-react";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { MarkdownText } from "@/components/MarkdownText";
@@ -37,7 +37,8 @@ function MessageImages({ images, messageId }: { images: ChatImage[]; messageId: 
 
 const NEAR_BOTTOM_PX = 96;
 
-function MessageBlock({ message }: { message: ChatMessage }) {
+/** memo：流式追加时只有最后一条消息在变，历史消息不该重新渲染。 */
+const MessageBlock = memo(function MessageBlock({ message }: { message: ChatMessage }) {
   if (message.role === "system") {
     return (
       <div className="rounded-2xl border border-line bg-sidebar px-4 py-3 font-mono text-[13px] leading-6 whitespace-pre-wrap text-muted">
@@ -82,7 +83,7 @@ function MessageBlock({ message }: { message: ChatMessage }) {
           durationMs={message.durationMs}
         />
       ) : null}
-      {answer ? <MarkdownText text={answer} /> : null}
+      {answer ? <MarkdownText text={answer} streaming={message.streaming} /> : null}
       {message.streaming && !answer && !showThinking ? (
         <p className="text-sm text-faint">正在写入…</p>
       ) : null}
@@ -100,7 +101,7 @@ function MessageBlock({ message }: { message: ChatMessage }) {
       ) : null}
     </div>
   );
-}
+});
 
 function isNearBottom(el: HTMLElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
@@ -117,6 +118,7 @@ export function MessageList() {
   const sessionRef = useRef(sessionId);
   const heightRef = useRef(0);
   const countRef = useRef(0);
+  const syncRafRef = useRef(0);
   const [showJump, setShowJump] = useState(false);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const turns = useMemo(() => groupChatTurns(messages), [messages]);
@@ -138,14 +140,32 @@ export function MessageList() {
     setActiveTurnId(current);
   }, []);
 
-  const syncJump = useCallback(() => {
+  // 读位置会强制同步布局，流式追加时每个分片都算一遍会把主线程压死 —— 按帧合并成一次。
+  const scheduleSync = useCallback(() => {
+    if (syncRafRef.current) return;
+    syncRafRef.current = requestAnimationFrame(() => {
+      syncRafRef.current = 0;
+      const el = scrollerRef.current;
+      if (!el) return;
+      setShowJump(!stickRef.current && el.scrollHeight > el.clientHeight + 8);
+      syncActiveTurn();
+    });
+  }, [syncActiveTurn]);
+
+  useEffect(
+    () => () => {
+      if (syncRafRef.current) cancelAnimationFrame(syncRafRef.current);
+    },
+    [],
+  );
+
+  const onScroll = useCallback(() => {
     const el = scrollerRef.current;
     if (!el) return;
-    const near = isNearBottom(el);
-    stickRef.current = near;
-    setShowJump(!near && el.scrollHeight > el.clientHeight + 8);
-    syncActiveTurn();
-  }, [syncActiveTurn]);
+    // 是否贴底必须立刻记下来，否则下一个分片会把用户往回拽。
+    stickRef.current = isNearBottom(el);
+    scheduleSync();
+  }, [scheduleSync]);
 
   useLayoutEffect(() => {
     if (streaming) stickRef.current = true;
@@ -153,9 +173,16 @@ export function MessageList() {
 
   useLayoutEffect(() => {
     const el = scrollerRef.current;
-    if (!el) return;
     const sessionChanged = sessionRef.current !== sessionId;
-    if (sessionChanged) stickRef.current = true;
+    sessionRef.current = sessionId;
+    if (!el) {
+      // 列表为空时没有滚动容器，清掉基准：下次有内容就是一个全新视图。
+      heightRef.current = 0;
+      countRef.current = 0;
+      return;
+    }
+    // 换会话、或列表刚从空变成有内容（重新载入历史）：都当新视图看，直接贴底。
+    if (sessionChanged || countRef.current === 0) stickRef.current = true;
 
     if (stickRef.current) {
       el.scrollTop = el.scrollHeight;
@@ -164,11 +191,10 @@ export function MessageList() {
       if (delta > 0 && messages.length > countRef.current) el.scrollTop += delta;
     }
 
-    sessionRef.current = sessionId;
     heightRef.current = el.scrollHeight;
     countRef.current = messages.length;
-    syncJump();
-  }, [messages, sessionId, syncJump]);
+    scheduleSync();
+  }, [messages, sessionId, scheduleSync]);
 
   function jumpToTurn(id: string) {
     const root = scrollerRef.current;
@@ -209,7 +235,7 @@ export function MessageList() {
       <div
         ref={scrollerRef}
         className="absolute inset-0 overflow-auto px-8 py-6 pr-16"
-        onScroll={syncJump}
+        onScroll={onScroll}
       >
         <div
           className={`mx-auto flex max-w-3xl flex-col gap-8 ${historyReveal ? "chat-history-reveal" : ""}`}

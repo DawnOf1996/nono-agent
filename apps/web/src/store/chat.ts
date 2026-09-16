@@ -184,6 +184,14 @@ type ChatState = {
   chooseDefault: (provider: string, model: string) => Promise<void>;
 };
 
+/**
+ * 流式分片的合并窗口（毫秒）。
+ *
+ * 模型一秒能吐几十个分片，逐片提交就是逐片全量重渲染 —— 正文越长每次越贵，
+ * 主线程被占满后浏览器根本排不上绘制，看起来就是「卡住不动、最后一次性全出来」。
+ */
+const STREAM_FLUSH_MS = 50;
+
 function nextId(): string {
   return crypto.randomUUID();
 }
@@ -871,6 +879,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
     };
 
+    // 分片先攒在这里，按 STREAM_FLUSH_MS 合并成一次 set。
+    const buffer: { text: string; thinking: string; last: "thinking" | "text" | null } = {
+      text: "",
+      thinking: "",
+      last: null,
+    };
+    let flushTimer: number | null = null;
+
+    const takeBuffer = () => {
+      if (flushTimer != null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      const taken = { ...buffer };
+      buffer.text = "";
+      buffer.thinking = "";
+      buffer.last = null;
+      return taken;
+    };
+
+    const flushStream = () => {
+      const { text: textChunk, thinking: thinkingChunk, last } = takeBuffer();
+      if (!textChunk && !thinkingChunk && !last) return;
+      patchDraft((item) => {
+        const next: ChatMessage = { ...item, streaming: true };
+        if (thinkingChunk) next.thinking = (item.thinking ?? "") + thinkingChunk;
+        if (textChunk) next.text = item.text + textChunk;
+        if (last === "thinking") {
+          next.thinkingRunning = true;
+        } else if (last === "text") {
+          next.thinkingRunning = item.steps?.length ? item.thinkingRunning : false;
+        }
+        return next;
+      });
+    };
+
+    const queueStream = () => {
+      if (flushTimer == null) flushTimer = window.setTimeout(flushStream, STREAM_FLUSH_MS);
+    };
+
+    /** 本轮已经作废（报错回滚）时丢掉未提交的分片，别让延迟的 flush 把草稿又写回去。 */
+    const cancelStream = () => {
+      takeBuffer();
+    };
+
     const dropDraft = (state: ChatState, message: string | null): Partial<ChatState> => ({
       input: state.input || text,
       attachments: state.attachments.length ? state.attachments : pending,
@@ -943,6 +996,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         if (frame.event === "ask_user") {
           const signal = JSON.parse(frame.data) as AskUserSignal;
+          flushStream();
           set((state) => patchRun(state, runKey, { ask: signal }));
           continue;
         }
@@ -950,29 +1004,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const payload = JSON.parse(frame.data) as unknown;
         if (frame.event === "stream_event") {
           if (isThinkingBlockStart(payload)) {
-            patchDraft((item) => ({ ...item, thinkingRunning: true, streaming: true }));
+            buffer.last = "thinking";
+            queueStream();
             continue;
           }
           const thinkingDelta = extractThinkingDelta(payload);
           if (thinkingDelta) {
-            patchDraft((item) => ({
-              ...item,
-              thinking: (item.thinking ?? "") + thinkingDelta,
-              thinkingRunning: true,
-              streaming: true,
-            }));
+            buffer.thinking += thinkingDelta;
+            buffer.last = "thinking";
+            queueStream();
             continue;
           }
           const textStarted = isTextBlockStart(payload);
           const textDelta = extractTextDelta(payload);
           if (!textDelta && !textStarted) continue;
-          patchDraft((item) => ({
-            ...item,
-            text: textDelta ? item.text + textDelta : item.text,
-            thinkingRunning: item.steps?.length ? item.thinkingRunning : false,
-            streaming: true,
-          }));
+          buffer.text += textDelta;
+          buffer.last = "text";
+          queueStream();
         } else if (frame.event === "assistant") {
+          // 整段消息会覆盖草稿正文，先把攒着的分片落地，避免顺序错乱。
+          flushStream();
           const full = extractAssistantText(payload);
           const thinking = extractAssistantThinking(payload);
           const tools = extractTools(payload);
@@ -1002,6 +1053,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             };
           });
         } else if (frame.event === "result") {
+          flushStream();
           const result = payload as SdkResultMessage;
           set((state) =>
             patchRun(state, runKey, {
@@ -1018,10 +1070,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "发送失败";
+      cancelStream();
       set((state) =>
         sessionId ? patchRun(state, runKey, { error: message }) : dropDraft(state, message),
       );
     } finally {
+      // 正常收尾时把最后一批分片写进去；出错路径已经 cancelStream，这里是空操作。
+      flushStream();
       set((state) =>
         patchRun(state, runKey, {
           streaming: false,

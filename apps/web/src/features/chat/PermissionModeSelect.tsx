@@ -14,7 +14,9 @@ const ICONS: Record<PermissionMode, typeof Shield> = {
 };
 
 export function PermissionModeSelect() {
-  const { permissionMode, setPermissionMode, streaming } = useChatStore();
+  const permissionMode = useChatStore((state) => state.permissionMode);
+  const setPermissionMode = useChatStore((state) => state.setPermissionMode);
+  const streaming = useChatStore((state) => state.streaming);
   const [open, setOpen] = useState(false);
   const [confirmBypass, setConfirmBypass] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);

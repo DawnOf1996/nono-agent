@@ -120,14 +120,14 @@ function ThinkingWrap({
             stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
           }}
         >
-          <MarkdownText text={text} tone="muted" />
+          <MarkdownText text={text} tone="muted" streaming={follow} />
         </div>
       ) : null}
     </div>
   );
 }
 
-function ToolRunRow({ tool }: { tool: ChatToolCall }) {
+const ToolRunRow = memo(function ToolRunRow({ tool }: { tool: ChatToolCall }) {
   const [open, setOpen] = useState(false);
   const detail =
     tool.name === "bash" && tool.input?.command
@@ -151,9 +151,10 @@ function ToolRunRow({ tool }: { tool: ChatToolCall }) {
       ) : null}
     </div>
   );
-}
+});
 
-function StepBody({ step, reveal }: { step: ChatStep; reveal: boolean }) {
+/** 已经落定的中间步骤不该跟着流式分片重渲染。 */
+const StepBody = memo(function StepBody({ step, reveal }: { step: ChatStep; reveal: boolean }) {
   return (
     <div className="space-y-2">
       {step.thinking ? <ThinkingWrap text={step.thinking} startOpen={reveal} /> : null}
@@ -163,7 +164,7 @@ function StepBody({ step, reveal }: { step: ChatStep; reveal: boolean }) {
       ))}
     </div>
   );
-}
+});
 
 const ElapsedClock = memo(function ElapsedClock({
   active,
@@ -244,7 +245,7 @@ export function ReasoningRow({
           {thinking?.trim() ? (
             <ThinkingWrap text={thinking} startOpen={expanded || running} follow={running} />
           ) : null}
-          {liveText?.trim() ? <MarkdownText text={liveText} tone="muted" /> : null}
+          {liveText?.trim() ? <MarkdownText text={liveText} tone="muted" streaming={running} /> : null}
           {running && !hasBody ? <div className="text-faint">…</div> : null}
         </div>
       ) : null}

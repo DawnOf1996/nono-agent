@@ -25,16 +25,14 @@ const TABS: Array<{ id: SettingsTab; label: string; icon: ReactNode }> = [
 ];
 
 export function SettingsPanel() {
-  const {
-    settingsOpen,
-    setSettingsOpen,
-    catalog,
-    info,
-    upsertProvider,
-    removeProvider,
-    chooseDefault,
-    setModel,
-  } = useChatStore();
+  const settingsOpen = useChatStore((state) => state.settingsOpen);
+  const setSettingsOpen = useChatStore((state) => state.setSettingsOpen);
+  const catalog = useChatStore((state) => state.catalog);
+  const info = useChatStore((state) => state.info);
+  const upsertProvider = useChatStore((state) => state.upsertProvider);
+  const removeProvider = useChatStore((state) => state.removeProvider);
+  const chooseDefault = useChatStore((state) => state.chooseDefault);
+  const setModel = useChatStore((state) => state.setModel);
   const [tab, setTab] = useState<SettingsTab>("models");
   const [modelView, setModelView] = useState<ModelView>("list");
   const [draft, setDraft] = useState<ProviderDraft | null>(null);

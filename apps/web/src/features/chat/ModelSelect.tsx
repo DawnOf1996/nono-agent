@@ -5,7 +5,10 @@ import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chat";
 
 export function ModelSelect() {
-  const { model, catalog, setModel, streaming } = useChatStore();
+  const model = useChatStore((state) => state.model);
+  const catalog = useChatStore((state) => state.catalog);
+  const setModel = useChatStore((state) => state.setModel);
+  const streaming = useChatStore((state) => state.streaming);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const providers = catalog?.providers ?? [];
