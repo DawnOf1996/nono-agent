@@ -17,6 +17,7 @@ from nono_agent.core.types import ToolResult
 from nono_agent.permissions.bash_classify import BashClassifier, BashRisk
 from nono_agent.tools.builtin._common import decode_text, ok_result, resolve_path, truncate_text
 from nono_agent.tools.protocol import ToolBase
+from nono_agent.utils.process import hidden_kwargs
 
 # 默认输出上限（字符）
 _MAX_OUTPUT_CHARS = 30_000
@@ -90,6 +91,7 @@ class BashTool(ToolBase):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=workdir,
+                **hidden_kwargs(),
             )
         except (OSError, ValueError) as exc:
             return ToolResult(

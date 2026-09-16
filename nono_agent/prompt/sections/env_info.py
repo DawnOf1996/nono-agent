@@ -7,6 +7,7 @@ import platform
 import subprocess
 
 from nono_agent.prompt.section import PromptContext, PromptSectionBase
+from nono_agent.utils.process import hidden_kwargs
 
 
 class EnvInfoSection(PromptSectionBase):
@@ -38,6 +39,7 @@ class EnvInfoSection(PromptSectionBase):
                 text=True,
                 timeout=2,
                 check=False,
+                **hidden_kwargs(),
             )
             branch = result.stdout.strip()
             return branch if branch and result.returncode == 0 else None

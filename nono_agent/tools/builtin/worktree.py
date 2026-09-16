@@ -11,6 +11,7 @@ from typing import Any
 
 from nono_agent.core.types import ToolResult
 from nono_agent.tools.protocol import ToolBase
+from nono_agent.utils.process import hidden_kwargs
 
 
 async def _run_git(cwd: str, *args: str) -> tuple[int, str]:
@@ -22,6 +23,7 @@ async def _run_git(cwd: str, *args: str) -> tuple[int, str]:
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            **hidden_kwargs(),
         )
     except (OSError, ValueError) as exc:
         return -1, str(exc)

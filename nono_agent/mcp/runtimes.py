@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 from nono_agent.paths import user_home
+from nono_agent.utils.process import hidden_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,7 @@ def _run(argv: list[str], *, what: str) -> None:
             check=False,
             capture_output=True,
             text=True,
+            **hidden_kwargs(),
         )
     except OSError as exc:
         raise MCPRuntimeSetupError(f"Failed to start {what}: {exc}") from exc

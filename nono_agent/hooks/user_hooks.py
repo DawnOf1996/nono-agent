@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from nono_agent.utils.process import hidden_kwargs
+
 
 @dataclass
 class UserHook:
@@ -129,6 +131,7 @@ class UserHookExecutor:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **hidden_kwargs(),
             )
         except OSError as exc:
             return HookRunResult(exit_code=-1, stdout="", stderr=str(exc))

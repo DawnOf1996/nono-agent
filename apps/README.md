@@ -63,3 +63,44 @@ pnpm dev:desktop
 Windows 也可在仓库根执行 `.\scripts\dev.ps1`，会拉起 sidecar 与 Vite。
 
 浏览器打开 http://127.0.0.1:5173 。Electron 加载同一地址。点「新任务」可选本地目录作为工作空间；「设置」里配置 / 切换模型。
+
+## 打包 Windows 桌面版
+
+在仓库根执行（需要 Python 3.12+、`uv`、Node 20+、`pnpm`）：
+
+```powershell
+.\scripts\pack-desktop.cmd
+```
+
+默认 PowerShell 会禁止直接跑 `.ps1`。上面这个 `.cmd` 会用 `-ExecutionPolicy Bypass` 启动；也可以手写：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\pack-desktop.ps1
+```
+
+脚本会依次：
+
+1. `uv sync --extra dev` 同步 Python 依赖
+2. 在 `apps/` 里 `pnpm install` 并 `pnpm build:web`，产出 Vite 静态资源
+3. 用 PyInstaller 把 sidecar 冻成 `nono-app-server.exe`（首次较慢）
+4. 把 web 产物与 sidecar 拷进 Electron `extraResources`
+5. `electron-builder --win` 打安装包
+
+产物：
+
+| 文件 | 说明 |
+|------|------|
+| `apps/desktop/release/win-unpacked/Nono.exe` | 免安装，解压目录里直接双击 |
+| `apps/desktop/release/Nono-0.1.0-setup.exe` | NSIS 安装包 |
+
+运行时 Electron 会拉起本机 sidecar，sidecar 托管前端并提供 `/health`、`/chat` 等 API。模型配置仍读 `~/.nono-agent/`（与开发态相同）。
+
+只重打其中一步时可用：
+
+```powershell
+.\scripts\pack-desktop.cmd -SkipWeb        # 前端没改
+.\scripts\pack-desktop.cmd -SkipSidecar    # Python 没改
+.\scripts\pack-desktop.cmd -SkipElectron   # 只准备 resources，不跑 electron-builder
+```
+
+换过 sidecar / 前端后，已安装的旧版不会自动更新，需要再跑一遍脚本并用新的 `Nono.exe` 或 setup 覆盖安装。

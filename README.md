@@ -102,7 +102,7 @@ uv run nono-app-server
 # GET  /session/<id>/events      （会话事件流，SSE，脱敏后推送）
 ```
 
-桌面产品层（React + Electron + sidecar）与终端 CLI 在 [`apps/`](apps/README.md)，引擎包 `nono_agent/` 不再包含 CLI/Server 适配层。
+桌面产品层（React + Electron + sidecar）与终端 CLI 在 [`apps/`](apps/README.md)，引擎包 `nono_agent/` 不再包含 CLI/Server 适配层。Windows 桌面版打包见 [`apps/README.md`](apps/README.md#打包-windows-桌面版)（仓库根 `.\scripts\pack-desktop.cmd`）。
 
 更多示例见 `examples/`（`engine_basic.py` 库用法、`custom_provider.py` 自定义 Provider）。产品 CLI / Server 入口是 `uv run nono` 与 `uv run nono-app-server`。
 
@@ -121,6 +121,7 @@ uv run nono-app-server
 | 文档 | 说明 |
 |------|------|
 | [docs/USAGE.md](docs/USAGE.md) | 使用与测试说明（库 / CLI / Server / 配置 / 工具 / 测试） |
+| [apps/README.md](apps/README.md) | 产品层开发与 Windows 桌面版打包 |
 | [docs/Session-Observability-Design.md](docs/Session-Observability-Design.md) | 会话事件溯源设计（门禁、后端、可观测性） |
 | [docs/Session-Event-Catalog.md](docs/Session-Event-Catalog.md) | 19 类会话事件的时机、顺序与载荷示例 |
 | [docs/NonoAgent-Architecture.md](docs/NonoAgent-Architecture.md) | 设计理念与系统架构 |

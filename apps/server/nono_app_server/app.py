@@ -12,6 +12,7 @@ from nono_app_server.product.permissions import (
     desktop_permission_checker,
     make_permission_checker,
 )
+from nono_app_server.web_ui import mount_web_ui, resolve_web_dist
 
 
 def create_app() -> Any:
@@ -28,4 +29,7 @@ def create_app() -> Any:
         permission_canceller=cancel_session_permissions,
     )
     mount_product_routes(app, settings, config)
+    web_dist = resolve_web_dist()
+    if web_dist is not None:
+        mount_web_ui(app, web_dist)
     return app

@@ -16,6 +16,7 @@ from typing import Any
 from nono_agent.core.types import ToolResult
 from nono_agent.tools.builtin._common import error_result, ok_result
 from nono_agent.tools.protocol import ToolBase
+from nono_agent.utils.process import hidden_kwargs
 
 
 class LSPClient:
@@ -39,6 +40,7 @@ class LSPClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **hidden_kwargs(),
         )
         self._reader = asyncio.create_task(self._read_loop())
         await self._request(

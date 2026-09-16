@@ -1,28 +1,74 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, shell } = require("electron");
 const { spawn } = require("node:child_process");
+const net = require("node:net");
 const path = require("node:path");
 
-const WEB_URL = process.env.NONO_WEB_URL || "http://127.0.0.1:5173";
-const SIDECAR_HEALTH = process.env.NONO_SIDECAR_URL || "http://127.0.0.1:8000/health";
+const DEV_WEB_URL = process.env.NONO_WEB_URL || "http://127.0.0.1:5173";
+const DEV_SIDECAR_HEALTH = process.env.NONO_SIDECAR_URL || "http://127.0.0.1:8000/health";
 
 let sidecar = null;
+let mainWindow = null;
+let tray = null;
+let quitting = false;
 
-async function sidecarUp() {
+function isPackaged() {
+  return app.isPackaged || process.env.NONO_DESKTOP_PACKAGED === "1";
+}
+
+function pickFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 8000;
+      server.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
+}
+
+async function sidecarUp(healthUrl) {
   try {
-    const response = await fetch(SIDECAR_HEALTH);
+    const response = await fetch(healthUrl, { signal: AbortSignal.timeout(1500) });
     return response.ok;
   } catch {
     return false;
   }
 }
 
-function startSidecar() {
-  const serverDir = path.resolve(__dirname, "..", "..", "server");
-  const child = spawn("uv", ["run", "nono-app-server"], {
-    cwd: serverDir,
-    env: { ...process.env, PYTHONUNBUFFERED: "1" },
+function sidecarSpec(port) {
+  if (isPackaged()) {
+    const exeName = process.platform === "win32" ? "nono-app-server.exe" : "nono-app-server";
+    const exe = path.join(process.resourcesPath, "sidecar", exeName);
+    return {
+      command: exe,
+      args: [],
+      cwd: path.dirname(exe),
+      env: {
+        NONO_HOST: "127.0.0.1",
+        NONO_PORT: String(port),
+        NONO_WEB_DIST: path.join(process.resourcesPath, "web"),
+        NONO_WEB_ORIGIN: `http://127.0.0.1:${port}`,
+        NONO_SIDECAR_LOG: path.join(app.getPath("userData"), "sidecar.log"),
+      },
+    };
+  }
+  return {
+    command: "uv",
+    args: ["run", "nono-app-server"],
+    cwd: path.resolve(__dirname, "..", "..", "server"),
+    env: {},
+  };
+}
+
+function startSidecar(port) {
+  const spec = sidecarSpec(port);
+  const child = spawn(spec.command, spec.args, {
+    cwd: spec.cwd,
+    env: { ...process.env, PYTHONUNBUFFERED: "1", ...spec.env },
     windowsHide: true,
-    stdio: "inherit",
+    stdio: isPackaged() ? "ignore" : "inherit",
   });
   sidecar = child;
   child.on("exit", (code) => {
@@ -31,15 +77,46 @@ function startSidecar() {
   });
 }
 
-async function ensureSidecar() {
+function stopSidecar() {
+  if (!sidecar) return;
+  const child = sidecar;
+  const pid = child.pid;
+  sidecar = null;
+  if (process.platform === "win32" && pid) {
+    spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    return;
+  }
+  if (pid && !child.killed) {
+    child.kill("SIGTERM");
+  }
+}
+
+async function ensureSidecar(healthUrl, port) {
   if (process.env.NONO_SIDECAR === "0") return;
-  if (await sidecarUp()) return;
-  startSidecar();
-  for (let i = 0; i < 40; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    if (await sidecarUp()) return;
+  if (await sidecarUp(healthUrl)) return;
+  startSidecar(port);
+  const attempts = isPackaged() ? 120 : 40;
+  const delayMs = isPackaged() ? 500 : 250;
+  for (let i = 0; i < attempts; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (await sidecarUp(healthUrl)) return;
   }
   console.warn("sidecar did not become healthy in time; UI will show offline");
+}
+
+function showWindow(win = mainWindow) {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function quitApp() {
+  quitting = true;
+  app.quit();
 }
 
 function createWindow() {
@@ -56,10 +133,41 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-  win.loadURL(WEB_URL);
+  win.on("close", (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    win.hide();
+  });
+  return win;
 }
 
-app.whenReady().then(async () => {
+async function createTray(win) {
+  const icon = await app.getFileIcon(process.execPath, { size: "small" });
+  const trayIcon = new Tray(icon);
+  trayIcon.setToolTip("Nono");
+  trayIcon.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "显示窗口", click: () => showWindow(win) },
+      { type: "separator" },
+      { label: "退出", click: () => quitApp() },
+    ]),
+  );
+  trayIcon.on("click", () => showWindow(win));
+  return trayIcon;
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+}
+
+app.on("second-instance", () => {
+  showWindow();
+});
+
+app.setAppUserModelId("com.nono.agent");
+
+if (gotLock) app.whenReady().then(async () => {
   ipcMain.handle("select-workspace", async () => {
     const result = await dialog.showOpenDialog({
       title: "选择工作空间",
@@ -73,17 +181,36 @@ app.whenReady().then(async () => {
     const error = await shell.openPath(target);
     return { ok: !error, error: error || undefined };
   });
-  await ensureSidecar();
-  createWindow();
+
+  const port = isPackaged() ? await pickFreePort() : Number(process.env.NONO_PORT || 8000);
+  const healthUrl = isPackaged()
+    ? `http://127.0.0.1:${port}/health`
+    : DEV_SIDECAR_HEALTH;
+  const webUrl = isPackaged() ? `http://127.0.0.1:${port}/` : DEV_WEB_URL;
+
+  mainWindow = createWindow();
+  tray = await createTray(mainWindow);
+  if (isPackaged()) {
+    await mainWindow.loadFile(path.join(__dirname, "loading.html"));
+  }
+  await ensureSidecar(healthUrl, port);
+  await mainWindow.loadURL(webUrl);
+
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!mainWindow) mainWindow = createWindow();
+    showWindow(mainWindow);
   });
 });
 
 app.on("before-quit", () => {
-  if (sidecar && !sidecar.killed) sidecar.kill();
+  quitting = true;
+  stopSidecar();
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  // 点 × 只是隐藏窗口，进程留在托盘，不退出。
 });

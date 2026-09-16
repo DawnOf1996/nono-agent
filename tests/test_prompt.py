@@ -124,3 +124,26 @@ class TestDefaultSections:
         ctx = PromptContext(custom_system_prompt="CUSTOM IDENTITY")
         result = assembler.assemble(ctx)
         assert "CUSTOM IDENTITY" in result.static_prefix
+
+
+class TestEnvInfoHidesConsole:
+    def test_git_branch_passes_hidden_kwargs(self, monkeypatch):
+        import subprocess
+
+        from nono_agent.prompt.sections.env_info import EnvInfoSection
+        from nono_agent.utils.process import hidden_kwargs
+
+        captured: dict = {}
+
+        class _Result:
+            returncode = 0
+            stdout = "main\n"
+
+        def fake_run(*_args, **kwargs):
+            captured.update(kwargs)
+            return _Result()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert EnvInfoSection._git_branch(".") == "main"
+        for key, value in hidden_kwargs().items():
+            assert captured[key] == value
