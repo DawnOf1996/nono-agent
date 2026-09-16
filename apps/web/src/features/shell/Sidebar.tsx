@@ -5,6 +5,7 @@ import type { SessionListItem, Workspace } from "@nono/protocol";
 
 import { openWorkspaceFolder } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { WorkspacePicker } from "@/features/session/WorkspacePicker";
 import { formatRelativeTime, sessionTitle } from "@/lib/format";
 import { sameWorkspace, workspaceLabel } from "@/lib/workspace";
@@ -37,14 +38,16 @@ function WorkspaceRowMenu({
   workspace,
   onRename,
 }: {
-  workspace: { id: string; path: string };
+  workspace: { id: string; path: string; name: string };
   onRename: () => void;
 }) {
   const removeWorkspace = useChatStore((state) => state.removeWorkspace);
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const label = workspace.name || workspaceLabel(workspace.path);
 
   useEffect(() => {
     if (!open) return;
@@ -86,9 +89,9 @@ function WorkspaceRowMenu({
     }
   }
 
-  function remove() {
+  function requestRemove() {
     setOpen(false);
-    void removeWorkspace(workspace.id);
+    setConfirming(true);
   }
 
   return (
@@ -131,7 +134,7 @@ function WorkspaceRowMenu({
               <button
                 type="button"
                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-danger hover:bg-danger/10"
-                onClick={remove}
+                onClick={requestRemove}
               >
                 <Trash2 className="size-3.5" />
                 删除工作区
@@ -140,16 +143,30 @@ function WorkspaceRowMenu({
             document.body,
           )
         : null}
+      <ConfirmDialog
+        open={confirming}
+        title="删除工作区"
+        description={`删除「${label}」后，其中的会话会移到未分组。磁盘上的文件夹不会被删除。`}
+        confirmLabel="删除工作区"
+        danger
+        onConfirm={() => {
+          setConfirming(false);
+          void removeWorkspace(workspace.id);
+        }}
+        onCancel={() => setConfirming(false)}
+      />
     </>
   );
 }
 
 function SessionRowMenu({
   sessionId,
+  title,
   onRename,
   onOpenChange,
 }: {
   sessionId: string;
+  title: string;
   onRename: () => void;
   onOpenChange?: (open: boolean) => void;
 }) {
@@ -157,6 +174,7 @@ function SessionRowMenu({
   const archiveSession = useChatStore((state) => state.archiveSession);
   const deleteSession = useChatStore((state) => state.deleteSession);
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -250,8 +268,9 @@ function SessionRowMenu({
                 type="button"
                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-danger hover:bg-danger/10"
                 onClick={() => {
-                  toggle(false);
-                  void deleteSession(sessionId);
+                  setOpen(false);
+                  setConfirming(true);
+                  onOpenChange?.(true);
                 }}
               >
                 <Trash2 className="size-3.5" />
@@ -261,6 +280,22 @@ function SessionRowMenu({
             document.body,
           )
         : null}
+      <ConfirmDialog
+        open={confirming}
+        title="删除会话"
+        description={`删除「${title}」后无法恢复。`}
+        confirmLabel="删除"
+        danger
+        onConfirm={() => {
+          setConfirming(false);
+          onOpenChange?.(false);
+          void deleteSession(sessionId);
+        }}
+        onCancel={() => {
+          setConfirming(false);
+          onOpenChange?.(false);
+        }}
+      />
     </>
   );
 }
@@ -363,6 +398,7 @@ function SessionRow({ session }: { session: SessionListItem }) {
               <span className={menuOpen ? "flex" : "hidden group-hover:flex"}>
                 <SessionRowMenu
                   sessionId={session.id}
+                  title={title}
                   onRename={() => {
                     setDraft(title);
                     setRenaming(true);
