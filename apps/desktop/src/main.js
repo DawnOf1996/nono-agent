@@ -1,5 +1,6 @@
-const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } = require("electron");
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 
@@ -119,7 +120,18 @@ function quitApp() {
   app.quit();
 }
 
+function resolveAppIcon() {
+  const candidates = [
+    path.join(__dirname, "..", "build", "icon.ico"),
+    path.join(__dirname, "..", "build", "icon.png"),
+    path.join(__dirname, "..", "..", "logo.png"),
+    path.join(process.resourcesPath || "", "web", "logo.png"),
+  ];
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate));
+}
+
 function createWindow() {
+  const icon = resolveAppIcon();
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -127,6 +139,7 @@ function createWindow() {
     minHeight: 640,
     backgroundColor: "#14181F",
     autoHideMenuBar: true,
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -142,7 +155,13 @@ function createWindow() {
 }
 
 async function createTray(win) {
-  const icon = await app.getFileIcon(process.execPath, { size: "small" });
+  const iconPath = resolveAppIcon();
+  let icon = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  if (icon.isEmpty()) {
+    icon = await app.getFileIcon(process.execPath, { size: "small" });
+  } else if (process.platform === "win32") {
+    icon = icon.resize({ width: 16, height: 16 });
+  }
   const trayIcon = new Tray(icon);
   trayIcon.setToolTip("Nono");
   trayIcon.setContextMenu(

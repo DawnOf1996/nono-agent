@@ -19,8 +19,10 @@
     "copyright": "Copyright © Nono",
     "asar": true,
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
+    "icon": "icon.ico",
     "files": [
       "src/**/*",
       "package.json"
@@ -36,6 +38,7 @@
       }
     ],
     "win": {
+      "icon": "icon.ico",
       "target": [
         "nsis"
       ],
@@ -47,7 +50,9 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Nono",
-      "uninstallDisplayName": "Nono"
+      "uninstallDisplayName": "Nono",
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico"
     },
     "npmRebuild": false,
     "nodeGypRebuild": false

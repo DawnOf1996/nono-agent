@@ -41,6 +41,50 @@ function Assert-LastExit([string]$Label) {
     }
 }
 
+function Prepare-AppIcon {
+    $logo = Join-Path $apps "logo.png"
+    if (-not (Test-Path $logo)) {
+        throw "缺少应用图标: $logo"
+    }
+    $buildDir = Join-Path $desktop "build"
+    $webLogo = Join-Path $apps "web\public\logo.png"
+    New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path $webLogo) | Out-Null
+    Copy-Item $logo (Join-Path $buildDir "icon.png") -Force
+
+    $logoPy = $logo.Replace("\", "/")
+    $buildPy = $buildDir.Replace("\", "/")
+    $webPy = $webLogo.Replace("\", "/")
+    $scriptPath = Join-Path $buildDir "_make_icon.py"
+    @"
+from pathlib import Path
+from PIL import Image
+
+src = Path("$logoPy")
+build = Path("$buildPy")
+im = Image.open(src).convert("RGBA")
+sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+ico = build / "icon.ico"
+im.save(ico, format="ICO", sizes=sizes)
+
+web = im.copy()
+web.thumbnail((256, 256), Image.Resampling.LANCZOS)
+web_path = Path("$webPy")
+web.save(web_path, format="PNG", optimize=True)
+print(f"wrote {ico} ({ico.stat().st_size} bytes)")
+print(f"wrote {web_path} ({web_path.stat().st_size} bytes)")
+"@ | Set-Content -Path $scriptPath -Encoding utf8
+    try {
+        uv run --with pillow python $scriptPath
+        Assert-LastExit "generate app icon"
+    } finally {
+        Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-Path (Join-Path $buildDir "icon.ico"))) {
+        throw "生成 icon.ico 失败"
+    }
+}
+
 Require-Cmd uv
 Require-Cmd pnpm
 Require-Cmd node
@@ -49,6 +93,9 @@ Set-Location $root
 Write-Host "==> 同步 Python 依赖"
 uv sync --extra dev
 Assert-LastExit "uv sync"
+
+Write-Host "==> 从 apps/logo.png 生成应用图标"
+Prepare-AppIcon
 
 if (-not $SkipWeb) {
     Write-Host "==> 安装前端依赖并构建 web"
