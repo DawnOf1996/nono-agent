@@ -15,7 +15,7 @@ import httpx
 
 from nono_agent.core.types import ToolResult
 from nono_agent.tools.builtin._common import error_result, ok_result
-from nono_agent.tools.builtin.web_fetch import is_url_blocked
+from nono_agent.tools.builtin.web_fetch import _http_proxy_enabled, is_url_blocked
 from nono_agent.tools.protocol import ToolBase
 
 SearchFn = Callable[[str, int], Awaitable[list[dict[str, str]]]]
@@ -74,7 +74,7 @@ class WebSearchTool(ToolBase):
         key = os.environ.get("NONO_SEARCH_API_KEY")
         if not url:
             return None
-        if is_url_blocked(url):
+        if is_url_blocked(url, skip_dns=_http_proxy_enabled()):
             return None
 
         headers = {"Authorization": f"Bearer {key}"} if key else {}

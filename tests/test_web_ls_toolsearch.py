@@ -16,6 +16,8 @@ class TestIsUrlBlocked:
         assert is_url_blocked("http://192.168.1.1/x")
         assert is_url_blocked("http://172.16.0.1/")
         assert is_url_blocked("http://169.254.169.254/latest/meta-data/")  # 云元数据
+        assert is_url_blocked("http://[::1]/")
+        assert is_url_blocked("http://[::ffff:127.0.0.1]/")
 
     def test_block_non_http(self):
         assert is_url_blocked("file:///etc/passwd")
@@ -26,6 +28,27 @@ class TestIsUrlBlocked:
 
     def test_block_private_resolver(self):
         assert is_url_blocked("https://example.com/", resolver=lambda h: ["10.0.0.5"])
+
+    def test_allow_proxy_fake_ip(self):
+        # Clash / sing-box TUN fake-ip（198.18.0.0/15），不是 RFC1918
+        assert not is_url_blocked(
+            "https://en.wikipedia.org/wiki/Peak_(video_game)",
+            resolver=lambda h: ["198.18.0.69"],
+        )
+
+    def test_allow_ipv4_mapped_public(self):
+        assert not is_url_blocked(
+            "https://example.com/",
+            resolver=lambda h: ["::ffff:93.184.216.34"],
+        )
+
+    def test_skip_dns_allows_hostname(self):
+        assert not is_url_blocked(
+            "https://en.wikipedia.org/wiki/x",
+            resolver=lambda h: ["10.0.0.5"],
+            skip_dns=True,
+        )
+        assert is_url_blocked("http://127.0.0.1/", skip_dns=True)
 
 
 class TestLSTool:
