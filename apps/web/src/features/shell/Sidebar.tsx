@@ -161,12 +161,10 @@ function WorkspaceRowMenu({
 
 function SessionRowMenu({
   sessionId,
-  title,
   onRename,
   onOpenChange,
 }: {
   sessionId: string;
-  title: string;
   onRename: () => void;
   onOpenChange?: (open: boolean) => void;
 }) {
@@ -283,7 +281,7 @@ function SessionRowMenu({
       <ConfirmDialog
         open={confirming}
         title="删除会话"
-        description={`删除「${title}」后无法恢复。`}
+        description="删除会话后无法恢复。"
         confirmLabel="删除"
         danger
         onConfirm={() => {
@@ -398,7 +396,6 @@ function SessionRow({ session }: { session: SessionListItem }) {
               <span className={menuOpen ? "flex" : "hidden group-hover:flex"}>
                 <SessionRowMenu
                   sessionId={session.id}
-                  title={title}
                   onRename={() => {
                     setDraft(title);
                     setRenaming(true);

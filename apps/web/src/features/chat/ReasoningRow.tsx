@@ -1,5 +1,5 @@
 import { ChevronRight } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { MarkdownText } from "@/components/MarkdownText";
 import { formatElapsed } from "@/lib/format";
@@ -78,12 +78,32 @@ function RowToggle({
   );
 }
 
-function ThinkingWrap({ text, startOpen = false }: { text: string; startOpen?: boolean }) {
+function ThinkingWrap({
+  text,
+  startOpen = false,
+  follow = false,
+}: {
+  text: string;
+  startOpen?: boolean;
+  follow?: boolean;
+}) {
   const [open, setOpen] = useState(startOpen);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
 
   useEffect(() => {
     if (startOpen) setOpen(true);
   }, [startOpen]);
+
+  useEffect(() => {
+    if (follow) stickRef.current = true;
+  }, [follow]);
+
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    if (!el || !open || !follow || !stickRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [text, open, follow]);
 
   if (!text.trim()) return null;
 
@@ -91,7 +111,15 @@ function ThinkingWrap({ text, startOpen = false }: { text: string; startOpen?: b
     <div>
       <RowToggle label="深度思考" open={open} onToggle={() => setOpen((value) => !value)} />
       {open ? (
-        <div className="mt-1 max-h-48 overflow-auto border-l border-line pl-3">
+        <div
+          ref={scrollerRef}
+          className="mt-1 max-h-48 overflow-auto border-l border-line pl-3"
+          onScroll={() => {
+            const el = scrollerRef.current;
+            if (!el) return;
+            stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          }}
+        >
           <MarkdownText text={text} tone="muted" />
         </div>
       ) : null}
@@ -213,7 +241,9 @@ export function ReasoningRow({
           {steps?.map((step) => (
             <StepBody key={step.id} step={step} reveal={expanded || running} />
           ))}
-          {thinking?.trim() ? <ThinkingWrap text={thinking} startOpen={expanded || running} /> : null}
+          {thinking?.trim() ? (
+            <ThinkingWrap text={thinking} startOpen={expanded || running} follow={running} />
+          ) : null}
           {liveText?.trim() ? <MarkdownText text={liveText} tone="muted" /> : null}
           {running && !hasBody ? <div className="text-faint">…</div> : null}
         </div>

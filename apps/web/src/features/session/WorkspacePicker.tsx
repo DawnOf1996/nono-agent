@@ -1,10 +1,13 @@
 import { ChevronRight, Folder, Home, Plus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { createDirectory, fetchDirectory } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useChatStore } from "@/store/chat";
 import type { FsListing } from "@nono/protocol";
+
+const INVALID_NAME = /[<>:"/\\|?*]/;
 
 export function WorkspacePicker({
   open,
@@ -18,9 +21,12 @@ export function WorkspacePicker({
   const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [draftName, setDraftName] = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   async function load(path?: string | null) {
     setError(null);
+    setDraftName(null);
     try {
       setListing(await fetchDirectory(path));
     } catch (cause) {
@@ -29,14 +35,62 @@ export function WorkspacePicker({
   }
 
   useEffect(() => {
-    if (open) void load();
+    if (!open) {
+      setDraftName(null);
+      setError(null);
+      return;
+    }
+    void load();
   }, [open]);
+
+  useEffect(() => {
+    if (draftName === null) return;
+    nameRef.current?.focus();
+    nameRef.current?.select();
+  }, [draftName]);
 
   if (!open) return null;
 
+  const canCreate = Boolean(listing?.path);
   const entries = (listing?.entries ?? []).filter(
     (item) => showHidden || !item.name.startsWith("."),
   );
+
+  function startCreate() {
+    if (!canCreate) {
+      setError("请先进入一个磁盘或文件夹，再新建");
+      return;
+    }
+    setError(null);
+    setDraftName("新建文件夹");
+  }
+
+  async function submitCreate(event?: FormEvent) {
+    event?.preventDefault();
+    const name = draftName?.trim() ?? "";
+    if (!listing?.path || creating) return;
+    if (!name) {
+      setError("请输入文件夹名称");
+      nameRef.current?.focus();
+      return;
+    }
+    if (INVALID_NAME.test(name) || name === "." || name === "..") {
+      setError("名称不能包含 \\ / : * ? \" < > |");
+      nameRef.current?.focus();
+      return;
+    }
+    setCreating(true);
+    setError(null);
+    try {
+      const created = await createDirectory(listing.path, name);
+      setDraftName(null);
+      await load(created.path);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "创建失败");
+    } finally {
+      setCreating(false);
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/25 p-6">
@@ -44,7 +98,9 @@ export function WorkspacePicker({
         <div className="px-5 pt-5">
           <div className="text-[15px] font-medium">选择工作区目录</div>
           <div className="mt-3 flex items-center justify-between text-[13px] text-muted">
-            <span>主目录</span>
+            <span className="min-w-0 truncate" title={listing?.path || "选择磁盘"}>
+              {listing?.path || "选择磁盘"}
+            </span>
             <button
               type="button"
               className="rounded-full p-1 hover:bg-hover"
@@ -67,6 +123,32 @@ export function WorkspacePicker({
               ..
             </button>
           ) : null}
+          {draftName !== null ? (
+            <form
+              className="flex items-center gap-2 rounded-lg bg-hover px-3 py-1.5"
+              onSubmit={(event) => void submitCreate(event)}
+            >
+              <Folder className="size-4 shrink-0 text-muted" />
+              <Input
+                ref={nameRef}
+                value={draftName}
+                placeholder="文件夹名称"
+                disabled={creating}
+                className="h-8 bg-bg"
+                onChange={(event) => setDraftName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setDraftName(null);
+                    setError(null);
+                  }
+                }}
+              />
+              <Button type="submit" size="sm" disabled={creating || !draftName.trim()}>
+                创建
+              </Button>
+            </form>
+          ) : null}
           {entries.map((entry) => (
             <button
               key={entry.path}
@@ -86,19 +168,10 @@ export function WorkspacePicker({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              className="flex items-center gap-1 rounded-full px-2 py-1 text-[13px] text-muted hover:bg-hover"
-              disabled={creating || !listing?.path}
-              onClick={() => {
-                const name = window.prompt("文件夹名称");
-                if (!name?.trim() || !listing?.path) return;
-                setCreating(true);
-                void createDirectory(listing.path, name.trim())
-                  .then((created) => load(created.path))
-                  .catch((cause) => {
-                    setError(cause instanceof Error ? cause.message : "创建失败");
-                  })
-                  .finally(() => setCreating(false));
-              }}
+              className="flex items-center gap-1 rounded-full px-2 py-1 text-[13px] text-muted hover:bg-hover disabled:opacity-40"
+              disabled={creating}
+              title={canCreate ? "在当前目录新建文件夹" : "请先进入一个磁盘或文件夹"}
+              onClick={startCreate}
             >
               <Plus className="size-3.5" />
               新建文件夹

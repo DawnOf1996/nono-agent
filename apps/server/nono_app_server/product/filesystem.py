@@ -24,6 +24,19 @@ class OpenPathBody(BaseModel):
     path: str
 
 
+_INVALID_FOLDER_CHARS = frozenset('<>:"/\\|?*')
+
+
+def _valid_folder_name(name: str) -> bool:
+    if not name or name in {".", ".."}:
+        return False
+    if any(char in _INVALID_FOLDER_CHARS for char in name):
+        return False
+    if name.endswith((" ", ".")):
+        return False
+    return True
+
+
 def _home() -> Path:
     return Path.home()
 
@@ -101,7 +114,7 @@ async def list_directory(path: str | None = Query(default=None)) -> dict[str, An
 @router.post("/fs/mkdir")
 async def make_directory(body: MkdirBody) -> dict[str, Any]:
     name = body.name.strip()
-    if not name or any(sep in name for sep in ("/", "\\")) or name in {".", ".."}:
+    if not _valid_folder_name(name):
         raise HTTPException(status_code=400, detail="Invalid folder name")
     parent = _resolve_dir(body.parent)
     target = parent / name
