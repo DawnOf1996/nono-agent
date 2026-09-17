@@ -156,3 +156,7 @@ class ToolBase:
             "description": self.description,
             "input_schema": self.input_schema,
         }
+
+    async def execute(self, input_params: dict[str, Any], context: Any) -> ToolResult:
+        """执行工具 —— 子类必须覆盖。"""
+        raise NotImplementedError

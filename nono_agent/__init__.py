@@ -4,7 +4,8 @@
 - QueryEngine: 顶层编排引擎
 - EngineConfig/QueryConfig/ProviderConfig: 配置类型
 - LLMProvider/ProviderRegistry: LLM Provider 抽象与注册
-- TranscriptWriter/LocalFileTranscriptWriter: Transcript 持久化协议与默认实现
+- TranscriptWriter/LocalFileTranscriptWriter: 会话事件流协议与默认实现
+- SessionEvent: 会话事件信封（落盘只有事件）
 - PermissionChecker: 工具权限检查器类型
 - Tool: 工具协议基类
 """
@@ -12,7 +13,8 @@
 from nono_agent.core.config import EngineConfig, ProviderConfig, QueryConfig  # 配置类型
 from nono_agent.core.engine import QueryEngine  # 顶层编排引擎
 from nono_agent.providers.base import LLMProvider, ProviderRegistry  # LLM Provider 抽象
-from nono_agent.session.transcript import (  # Transcript 持久化
+from nono_agent.session.events import SessionEvent  # 会话事件信封
+from nono_agent.session.transcript import (  # 会话事件流持久化
     LocalFileTranscriptWriter,
     TranscriptWriter,
 )
@@ -28,6 +30,7 @@ __all__ = [
     "ProviderRegistry",
     "TranscriptWriter",
     "LocalFileTranscriptWriter",
+    "SessionEvent",
     "PermissionChecker",
     "Tool",
 ]

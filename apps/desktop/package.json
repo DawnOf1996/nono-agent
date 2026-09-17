@@ -1,0 +1,60 @@
+{
+  "name": "@nono/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NoNo desktop shell",
+  "author": "NoNo",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^37.3.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.nono.agent",
+    "productName": "NoNo",
+    "copyright": "Copyright © NoNo",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "icon": "icon.ico",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/sidecar",
+        "to": "sidecar"
+      },
+      {
+        "from": "resources/web",
+        "to": "web"
+      }
+    ],
+    "win": {
+      "icon": "icon.ico",
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "NoNo-${version}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NoNo",
+      "uninstallDisplayName": "NoNo",
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico"
+    },
+    "npmRebuild": false,
+    "nodeGypRebuild": false
+  }
+}

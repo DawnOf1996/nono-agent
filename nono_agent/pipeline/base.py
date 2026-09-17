@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from nono_agent.core.types import Message
+from nono_agent.utils.tokens import DEFAULT_CONTEXT_WINDOW
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +31,21 @@ logger = logging.getLogger(__name__)
 class PipelineContext:
     """管线上下文 —— 在 stage 间传递的共享状态。"""
 
-    # 当前模型 ID（用于上下文窗口计算）
+    # 当前模型 ID（用于日志与摘要器签名）
     model_id: str = ""
+
+    # 生效的模型上下文窗口大小（token 数）—— 来自模型配置
+    # （EngineConfig.effective_model_context），stage 据此计算触发阈值
+    context_window: int = DEFAULT_CONTEXT_WINDOW
+
+    # 系统提示词 + 工具 schema 的固定 token 开销。
+    # 这部分不随消息压缩变化，计入 estimated_tokens 但 stage 重算消息部分时需加回。
+    overhead_tokens: int = 0
 
     # API 调用的 token 预算
     max_tokens: int | None = None
 
-    # 当前 token 估算值（stage 压缩后更新）
+    # 当前 token 估算值（含 overhead_tokens；stage 压缩后更新）
     estimated_tokens: int = 0
 
     # 是否是重试尝试（重试时 stage 可采取更激进的策略）

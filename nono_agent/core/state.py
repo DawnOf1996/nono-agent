@@ -15,7 +15,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from nono_agent.tools.context import ToolUseContext
+    pass
 
 
 class TransitionReason(Enum):
@@ -59,6 +59,7 @@ class TerminalReason(Enum):
     STOP_HOOK_PREVENTED = auto()   # stop hook 明确阻止继续
     HOOK_STOPPED = auto()          # middleware 在 on_transition 中否决继续
     MAX_TURNS = auto()             # 达到最大轮次限制
+    TASK_BUDGET_EXHAUSTED = auto() # 超出 token 预算 (task_budget)
 
 
 @dataclass(frozen=True)

@@ -9,7 +9,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from nono_agent.core.types import (
     AssistantMessage,
@@ -18,7 +19,7 @@ from nono_agent.core.types import (
     UserMessage,
 )
 from nono_agent.pipeline.base import PipelineContext
-from nono_agent.utils.tokens import count_tokens, get_context_window_size
+from nono_agent.utils.tokens import count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +62,10 @@ class ContextCollapseStage:
         messages: list[Message],
         context: PipelineContext,
     ) -> bool:
-        if not context.model_id or self._summarizer is None:
+        if self._summarizer is None:
             return False
-        window = get_context_window_size(context.model_id)
-        return context.estimated_tokens > int(window * self._threshold)
+        # 阈值基于配置的上下文窗口（context.context_window）
+        return context.estimated_tokens > int(context.context_window * self._threshold)
 
     async def execute(
         self,
@@ -115,7 +116,10 @@ class ContextCollapseStage:
             is_compact_summary=True,
         )
 
-        result = [boundary, summary_msg] + recent_messages
+        result: list[Message] = []
+        result.append(boundary)
+        result.append(summary_msg)
+        result.extend(recent_messages)
 
         # Update token estimate
         old_tokens = sum(

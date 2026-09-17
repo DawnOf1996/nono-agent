@@ -11,9 +11,12 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Callable
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from nono_agent.paths import resolve_session_cwd
+from nono_agent.utils.tokens import resolve_context_window
 
 
 def _gen_session_id() -> str:
@@ -24,16 +27,17 @@ def _gen_session_id() -> str:
 class ProviderConfig(BaseModel):
     """LLM Provider 初始化配置 —— 用于创建 Provider 实例。
 
-    配置驱动适配器选择：
-    - adapter: 显式指定 API 协议类型（"openai" / "anthropic" / "responses"）
+    配置驱动适配器选择（按 API 协议，不区分原厂 / 其他供应商）：
+    - adapter: openai_chat_completions | openai_responses | anthropic_messages
     - extra_body: 每次请求时深度合并到请求体中的额外参数
-    
+    - 供应商由 api_key + base_url 决定；三类协议一律走对应 SDK client
+
     用法示例::
 
-        # MiniMax-M3 通过 OpenAI 兼容 API
+        # MiniMax 通过 OpenAI Chat Completions 协议
         ProviderConfig(
             model_id="MiniMax-M3",
-            adapter="openai",
+            adapter="openai_chat_completions",
             api_key="your-key",
             base_url="https://api.minimax.chat/v1",
             extra_body={"reasoning_split": True},
@@ -41,13 +45,21 @@ class ProviderConfig(BaseModel):
     """
 
     model_id: str                              # 模型 ID（如 "claude-sonnet-4-20250514"）
-    adapter: str | None = None                 # API 协议类型: "openai" | "anthropic" | "responses"
+    # 模型上下文窗口大小（token 数）。压缩管线按此值计算触发阈值；
+    # 未配置时回退 DEFAULT_CONTEXT_WINDOW（不做模型前缀猜测）。
+    model_context: int | None = None
+    # API 协议: openai_chat_completions | openai_responses | anthropic_messages
+    adapter: str | None = None
     api_key: str = ""                          # API 密钥
     base_url: str | None = None                # 自定义 API 端点（代理/厂商地址）
     extra_headers: dict[str, str] = Field(default_factory=dict)  # 额外 HTTP 头
     extra_body: dict[str, Any] = Field(default_factory=dict)     # 额外请求体参数（深度合并）
     timeout: float = 600.0                     # 请求超时时间（秒）
     max_retries: int = 3                       # 最大重试次数
+    # 单次补全 max tokens；未配置时由各协议实现自己的默认值
+    max_tokens: int | None = None
+    # 是否在 SDK 发 HTTP 前把请求 params 打到日志（默认关；体积大，可能含提示词）
+    log_api_requests: bool = False
 
 
 class ThinkingConfig(BaseModel):
@@ -64,19 +76,27 @@ class EngineConfig(BaseModel):
     每次 submit_message() 会基于此创建 QueryConfig 快照。
     """
 
-    # 工具执行的工作目录
+    # 工具执行的工作目录（构造时收成绝对路径，禁止 ``.`` 进入会话 header）
     cwd: str = "."
+
+    @field_validator("cwd")
+    @classmethod
+    def _absolute_cwd(cls, value: str) -> str:
+        return resolve_session_cwd(value or ".")
 
     # 主模型和备用模型（主模型不可用时切换）
     model: str = "claude-sonnet-4-20250514"
     fallback_model: str | None = None
 
-    # Provider 配置（可选，不填则根据 model 前缀自动路由）
+    # 模型上下文窗口大小（token 数）—— provider.model_context 未配置时的兜底配置。
+    # 未配置任何值时回退 DEFAULT_CONTEXT_WINDOW；不再基于模型 ID 前缀匹配。
+    model_context: int | None = None
+
+    # Provider 配置（库用法直接构造；CLI 从 YAML 目录 resolve）
     provider: ProviderConfig | None = None
 
     # 运行限制
     max_turns: int | None = None                  # 最大循环轮次（None 表示不限制）
-    max_budget_usd: float | None = None           # 最大美元预算
     task_budget: dict[str, float] | None = None   # Token 预算: {"total": 100000}
 
     # 扩展思考配置
@@ -88,8 +108,15 @@ class EngineConfig(BaseModel):
     # 追加系统提示（拼接到默认/自定义提示后面）
     append_system_prompt: str | None = None
 
+    # 输出风格（concise/detailed/explanatory）；None=不注入
+    output_style: str | None = None
+
     # 结构化输出 JSON Schema（配置后 LLM 会返回符合 schema 的 JSON）
     json_schema: dict[str, Any] | None = None
+
+    # ContextCollapse 默认 summarizer（§3.3）：启用后把 LLM 摘要折叠加入默认管线
+    context_collapse_enabled: bool = False
+    context_collapse_model: str | None = None  # 摘要用模型（None=主模型）
 
     # 详细日志
     verbose: bool = False
@@ -103,8 +130,39 @@ class EngineConfig(BaseModel):
     # 会话 ID（不填则自动生成）
     session_id: str = Field(default_factory=_gen_session_id)
 
-    class Config:
-        frozen = True  # 不可变，防止运行期意外修改配置
+    # 记忆作用域：所属 agent（None=不按 agent 隔离；小镇场景每个 NPC 一个 id）
+    agent_id: str | None = None
+
+    # 记忆检索预算（对齐 MemoryManager.retrieve 的 top-k / token 上限）
+    memory_retrieval_k: int = 10
+    memory_retrieval_token_budget: int = 2000
+
+    # 会话日志一致性门禁：每次 LLM 请求前校验「事件流重建 == 运行时消息状态」
+    # - strict: 不一致则终止本轮（log_reconstruction_desync）
+    # - warn:   只记日志与指标，不打断
+    # - off:    不校验（长会话省一次全量事件读取）
+    session_invariant: Literal["strict", "warn", "off"] = "strict"
+
+    # 是否把流式增量（assistant/chunk）写入事件流。
+    # 开启后可在不调 LLM 的情况下逐字回放 UI，代价是事件量随输出 token 线性增长；
+    # 关闭为降级模式，只保留合并后的 assistant/message。
+    log_assistant_chunks: bool = True
+
+    # 是否在 SDK 发 HTTP 前把请求 params 打到日志（默认关）。
+    # 记录协议转换与 extra_body 合并后的请求体，不写入会话事件流。
+    # CLI：``--log-api-requests`` 或环境变量 ``NONO_LOG_API_REQUESTS=1``。
+    log_api_requests: bool = False
+
+    model_config = ConfigDict(frozen=True)  # 不可变，防止运行期意外修改配置
+
+    def provider_config_for_api(self) -> ProviderConfig | None:
+        """resolve Provider 时使用的配置：把引擎级 ``log_api_requests`` 拷到 Provider。"""
+        pc = self.provider
+        if pc is None:
+            return None
+        if self.log_api_requests and not pc.log_api_requests:
+            return pc.model_copy(update={"log_api_requests": True})
+        return pc
 
     @property
     def effective_model(self) -> str:
@@ -112,6 +170,17 @@ class EngineConfig(BaseModel):
         if self.provider:
             return self.provider.model_id
         return self.model
+
+    @property
+    def effective_model_context(self) -> int:
+        """生效的模型上下文窗口大小（token 数）。
+
+        解析顺序：provider.model_context > model_context > DEFAULT_CONTEXT_WINDOW。
+        压缩管线的全部触发阈值均基于此值计算。
+        """
+        if self.provider and self.provider.model_context:
+            return resolve_context_window(self.provider.model_context)
+        return resolve_context_window(self.model_context)
 
 
 class RuntimeGates(BaseModel):
@@ -136,5 +205,4 @@ class QueryConfig(BaseModel):
     session_id: str                              # 所属会话 ID
     gates: RuntimeGates = Field(default_factory=RuntimeGates)  # 特性门控快照
 
-    class Config:
-        frozen = True  # 不可变，保证循环体内看到的状态一致
+    model_config = ConfigDict(frozen=True)  # 不可变，保证循环体内看到的状态一致

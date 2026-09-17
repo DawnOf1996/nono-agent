@@ -1,20 +1,30 @@
 """LLM Provider 协议与注册表。
 
-定义所有模型提供商必须实现的 LLMProvider Protocol，
-以及支持配置驱动和前缀回退两种路由模式的 ProviderRegistry。
+定义所有模型提供商必须实现的 LLMProvider Protocol，以及 ProviderRegistry。
 
-路由优先级：
-1. config.adapter 显式指定 → 按适配器类型创建（"openai" / "anthropic" / "responses"）
-2. model_id 前缀匹配 → 向后兼容的默认行为（"claude-" → Anthropic, "gpt-" → OpenAI）
+``config.adapter`` 必须显式指定（YAML 目录的 ``api`` 字段）。无 adapter 则失败
+（``register(prefix)`` 仍可供测试与自定义 Provider 注入）。
+
+协议只有三类，一律走对应 SDK client（供应商由 api_key + base_url 决定）：
+- ``openai_chat_completions`` → OpenAI SDK ``AsyncOpenAI.chat.completions``
+- ``openai_responses``        → OpenAI SDK ``AsyncOpenAI.responses``
+- ``anthropic_messages``      → Anthropic SDK ``AsyncAnthropic.messages``
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from nono_agent.core.config import ProviderConfig, ThinkingConfig
 from nono_agent.core.types import Message, StreamEvent
+
+# 三类协议（按 API 形态；供应商由 api_key + base_url 决定）
+CANONICAL_ADAPTERS: tuple[str, ...] = (
+    "openai_chat_completions",
+    "openai_responses",
+    "anthropic_messages",
+)
 
 
 class FallbackTriggeredError(Exception):
@@ -84,30 +94,27 @@ class LLMProvider(Protocol):
 
 
 class ProviderRegistry:
-    """提供商注册表 —— 支持配置驱动和自动推断两种路由模式。
+    """提供商注册表 —— 配置驱动适配器路由。
 
-    路由优先级：
-    1. config.adapter 显式指定 → 按适配器类型创建 Provider
-    2. model_id 前缀匹配 → 向后兼容的默认行为
-
-    适配器类型映射：
-    - "openai"    → OpenAICompatibleProvider（通用 OpenAI 兼容协议）
-    - "anthropic" → AnthropicProvider（Anthropic Messages 协议）
-    - "responses" → ResponsesProvider（OpenAI Responses 协议）
+    ``config.adapter`` 必须显式指定（YAML 目录的 ``api`` 字段）。
+    ``register(prefix)`` 仍可供测试与自定义 Provider 按 model_id 前缀注入。
     """
 
     def __init__(self) -> None:
-        self._providers: dict[str, type] = {}           # 前缀 → Provider 类（回退路由）
+        self._providers: dict[str, type] = {}           # 前缀 → Provider 类（自定义/测试）
         self._instances: dict[str, LLMProvider] = {}     # 缓存的 Provider 实例
         self._adapter_map: dict[str, type] = {}          # 适配器名称 → Provider 类
 
     def register(self, prefix: str, provider_cls: type) -> None:
-        """为 model_id 前缀注册 Provider 类（回退路由）。"""
+        """为 model_id 前缀注册 Provider 类（测试与自定义注入）。"""
         self._providers[prefix] = provider_cls
 
     def register_adapter(self, adapter_name: str, provider_cls: type) -> None:
         """注册适配器类型 → Provider 类的映射（配置驱动路由）。"""
         self._adapter_map[adapter_name] = provider_cls
+
+    def _available_adapter_names(self) -> str:
+        return str([n for n in CANONICAL_ADAPTERS if n in self._adapter_map])
 
     def resolve(
         self,
@@ -116,38 +123,31 @@ class ProviderRegistry:
     ) -> LLMProvider:
         """根据配置解析 Provider 实例。
 
-        路由优先级：
-        1. config.adapter 显式指定 → 从 adapter_map 创建
-        2. model_id 前缀匹配 → 从 providers 创建（向后兼容）
+        ``config.adapter`` 优先；未指定时仅匹配已 register 的前缀（测试/自定义）。
         """
-        # 优先级 1: 显式 adapter 指定（配置驱动）
         if config and config.adapter:
             cls = self._adapter_map.get(config.adapter)
             if cls is None:
-                available = list(self._adapter_map.keys())
                 raise ValueError(
                     f"Unknown adapter type '{config.adapter}'. "
-                    f"Available adapters: {available}"
+                    f"Available adapters: {self._available_adapter_names()}"
                 )
-            # 配置驱动的 Provider 每次都创建新实例（因为配置可能不同）
-            return cls(config=config)
+            return cast(LLMProvider, cls(config=config))
 
-        # 优先级 2: 缓存实例匹配
         for prefix, instance in self._instances.items():
             if model_id.startswith(prefix):
                 return instance
 
-        # 优先级 3: 前缀匹配（向后兼容）
         for prefix, cls in self._providers.items():
             if model_id.startswith(prefix):
-                instance = cls(config=config) if config else cls()
+                instance = cast(LLMProvider, cls(config=config) if config else cls())
                 self._instances[prefix] = instance
                 return instance
 
         raise ValueError(
             f"No provider registered for model '{model_id}'. "
             f"Registered prefixes: {list(self._providers.keys())}. "
-            f"Available adapters: {list(self._adapter_map.keys())}. "
+            f"Available adapters: {self._available_adapter_names()}. "
             f"Hint: set config.adapter to explicitly choose an API protocol."
         )
 
@@ -157,55 +157,27 @@ class ProviderRegistry:
 
 
 def create_default_registry() -> ProviderRegistry:
-    """创建默认注册表 —— 内置 Anthropic、OpenAI 和通用 OpenAI 兼容提供商。
-
-    注册两套路由：
-    1. 适配器映射（配置驱动）：adapter="openai" / "anthropic" / "responses"
-    2. 前缀映射（向后兼容）："claude-" → Anthropic, "gpt-"/"o1"/"o3"/"o4" → OpenAI
-    """
+    """创建默认注册表 —— 三类协议均走对应 SDK client。"""
     registry = ProviderRegistry()
 
-    # ------------------------------------------------------------------
-    # 适配器映射 —— 配置驱动路由（用户通过 config.adapter 显式指定）
-    # ------------------------------------------------------------------
-
-    # Anthropic Messages API 适配器
     try:
-        from nono_agent.providers.anthropic_provider import AnthropicProvider
-        registry.register_adapter("anthropic", AnthropicProvider)
-    except ImportError:
-        pass
+        from nono_agent.providers.anthropic_messages import AnthropicMessagesProvider
 
-    # 通用 OpenAI 兼容适配器（适用于 MiniMax/DeepSeek/通义千问/智谱/Moonshot 等）
-    try:
-        from nono_agent.providers.openai_compatible import OpenAICompatibleProvider
-        registry.register_adapter("openai", OpenAICompatibleProvider)
-    except ImportError:
-        pass
-
-    # OpenAI Responses API 适配器（预留）
-    try:
-        from nono_agent.providers.responses_provider import ResponsesProvider
-        registry.register_adapter("responses", ResponsesProvider)
-    except ImportError:
-        pass
-
-    # ------------------------------------------------------------------
-    # 前缀映射 —— 向后兼容路由（不配置 adapter 时按 model_id 前缀自动推断）
-    # ------------------------------------------------------------------
-
-    try:
-        from nono_agent.providers.anthropic_provider import AnthropicProvider
-        registry.register("claude-", AnthropicProvider)
+        registry.register_adapter("anthropic_messages", AnthropicMessagesProvider)
     except ImportError:
         pass
 
     try:
-        from nono_agent.providers.openai_provider import OpenAIProvider
-        registry.register("gpt-", OpenAIProvider)
-        registry.register("o1", OpenAIProvider)
-        registry.register("o3", OpenAIProvider)
-        registry.register("o4", OpenAIProvider)
+        from nono_agent.providers.openai_chat_completions import OpenAIChatCompletionsProvider
+
+        registry.register_adapter("openai_chat_completions", OpenAIChatCompletionsProvider)
+    except ImportError:
+        pass
+
+    try:
+        from nono_agent.providers.openai_responses import OpenAIResponsesProvider
+
+        registry.register_adapter("openai_responses", OpenAIResponsesProvider)
     except ImportError:
         pass
 

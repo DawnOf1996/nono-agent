@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from nono_agent.core.types import Message, UserMessage
 from nono_agent.pipeline.base import PipelineContext
@@ -45,7 +44,7 @@ class ToolResultBudgetStage:
     def priority(self) -> int:
         return 10
 
-    def should_run(self, messages, context) -> bool:
+    def should_run(self, messages: list[Message], context: PipelineContext) -> bool:
         # 始终运行 —— 检查代价低，大多数对话都有工具结果
         return True
 
@@ -54,8 +53,6 @@ class ToolResultBudgetStage:
         messages: list[Message],
         context: PipelineContext,
     ) -> tuple[list[Message], PipelineContext]:
-        modified = False
-
         for msg in messages:
             if not isinstance(msg, UserMessage):
                 continue
@@ -81,7 +78,6 @@ class ToolResultBudgetStage:
                             PRESERVE_TAIL_TOKENS,
                         )
                         content[i] = {**block, "content": truncated}
-                        modified = True
                         logger.debug(
                             "Truncated tool_result %s: %d -> ~%d tokens",
                             block.get("tool_use_id", "?"),

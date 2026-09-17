@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../ClaudeCode"
+		},
+		{
+			"path": "../../deepseek-harness"
+		},
+		{
+			"path": "../../simulated-town"
+		}
+	],
+	"settings": {}
+}

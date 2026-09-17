@@ -14,13 +14,20 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from nono_agent.core.types import ToolResult, ToolUseBlock
+from nono_agent.observability.metrics import (
+    METRIC_TOOL_ERRORS,
+    METRIC_TOOL_EXECUTIONS,
+    METRIC_TOOL_LATENCY,
+    record_counter,
+    record_histogram,
+)
+from nono_agent.permissions.policy import PermissionDecision
 from nono_agent.tools.context import ToolUseContext
 from nono_agent.tools.registry import ToolNotFound, ToolRegistry
-
 
 # ---------------------------------------------------------------------------
 # 工具执行结果包装器
@@ -192,26 +199,43 @@ class StreamingToolExecutor:
                 tool_name=block.name,
             )
 
-        # 3. 检查权限（有写副作用的工具需要用户授权）
-        needs_permission = tool.should_prompt_for_permission(block.input, context)
-        if needs_permission:
-            try:
-                allowed = await context.check_permission(block.name, block.input)
-            except (EOFError, KeyboardInterrupt):
-                # 用户在权限提示中按了 Ctrl+C / Ctrl+D → 视为拒绝
-                allowed = False
-            if not allowed:
-                return ToolExecutionResult(
-                    result=ToolResult(
-                        tool_use_id=block.id,
-                        content=f"Permission denied for tool '{block.name}'.",
-                        is_error=True,
-                        tool_name=block.name,
-                    ),
-                    tool_use_id=block.id,
-                    tool_name=block.name,
-                    permission_denied=True,
+        # 3. 检查权限（fail-closed：有策略时始终决策，否则仅写副作用工具询问）
+        try:
+            if context.policy is not None:
+                decision = await context.check_permission_decision(
+                    block.name,
+                    block.input,
+                    has_write_side_effects=tool.has_write_side_effects,
                 )
+            elif tool.should_prompt_for_permission(block.input, context):
+                decision = await context.check_permission_decision(
+                    block.name,
+                    block.input,
+                    has_write_side_effects=tool.has_write_side_effects,
+                )
+            else:
+                decision = PermissionDecision.ALLOW
+        except (EOFError, KeyboardInterrupt):
+            # 用户在权限提示中按了 Ctrl+C / Ctrl+D → 视为拒绝
+            decision = PermissionDecision.DENY
+
+        if decision is not PermissionDecision.ALLOW:
+            context.record_denial(
+                block.name,
+                f"Permission denied for tool '{block.name}'.",
+                block.input,
+            )
+            return ToolExecutionResult(
+                result=ToolResult(
+                    tool_use_id=block.id,
+                    content=f"Permission denied for tool '{block.name}'.",
+                    is_error=True,
+                    tool_name=block.name,
+                ),
+                tool_use_id=block.id,
+                tool_name=block.name,
+                permission_denied=True,
+            )
 
         # 3.5 权限等待期间可能触发了 abort（Ctrl+C），重新检查
         if context.signal.aborted:
@@ -231,6 +255,10 @@ class StreamingToolExecutor:
         try:
             result = await tool.execute(block.input, context)
             elapsed = (time.monotonic() - start) * 1000  # 计算执行耗时
+            record_counter(METRIC_TOOL_EXECUTIONS, tool=block.name)
+            record_histogram(METRIC_TOOL_LATENCY, elapsed, tool=block.name)
+            if result.is_error:
+                record_counter(METRIC_TOOL_ERRORS, tool=block.name)
             return ToolExecutionResult(
                 result=result,
                 tool_use_id=block.id,
@@ -240,6 +268,8 @@ class StreamingToolExecutor:
         except Exception as exc:
             # 5. 捕获异常: 将异常信息作为 is_error 结果返回（不抛出）
             elapsed = (time.monotonic() - start) * 1000
+            record_counter(METRIC_TOOL_EXECUTIONS, tool=block.name)
+            record_counter(METRIC_TOOL_ERRORS, tool=block.name)
             return ToolExecutionResult(
                 result=ToolResult(
                     tool_use_id=block.id,

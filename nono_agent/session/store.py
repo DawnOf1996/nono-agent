@@ -6,7 +6,7 @@ TS 版有三个独立数组 (mutableMessages, messages, messagesForQuery)，
 
 核心操作:
 - append/extend: 添加消息
-- snapshot_after_boundary(): 获取压缩边界后的消息（用于 API 调用）
+- snapshot_for_request(): 获取压缩边界后消息的深拷贝（用于预处理管线 + API 调用）
 - gc_before_boundary(): 清理压缩边界前的旧消息
 - remove_by_uuid(): 支持 Tombstone 清理
 """
@@ -14,13 +14,12 @@ TS 版有三个独立数组 (mutableMessages, messages, messagesForQuery)，
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from typing import Union
+from typing import Any
 
 from nono_agent.core.types import (
     AssistantMessage,
     Message,
     SystemMessage,
-    UserMessage,
 )
 
 
@@ -58,15 +57,19 @@ class MessageStore:
     # Views / Snapshots
     # ------------------------------------------------------------------
 
-    def snapshot_after_boundary(self) -> list[Message]:
-        """Return a shallow copy of messages after the last compact boundary.
+    def snapshot_for_request(self) -> list[Message]:
+        """返回压缩边界之后消息的**深拷贝** —— 供预处理管线自由改写。
 
-        This replaces getMessagesAfterCompactBoundary() + [...messages] shallow copy.
-        The returned list is a new list (safe to mutate) but the message objects
-        are shared references (mutations to messages are visible in the store).
+        深拷贝是事件溯源的前提：管线 stage 会就地截断 tool_result、剥离 thinking，
+        若共享消息对象，这些改写会永久重写已记录的历史，让「日志重建 == 运行时状态」
+        静默失配。管线输出只服务于本次请求；只有显式 ``replace()``（并伴随
+        ``compact/boundary`` 事件）才允许变更会话状态。
+
+        Returns:
+            边界后消息的深拷贝列表。
         """
         boundary_idx = self._find_last_compact_boundary()
-        return list(self._messages[boundary_idx:])
+        return [msg.model_copy(deep=True) for msg in self._messages[boundary_idx:]]
 
     def all_messages(self) -> list[Message]:
         """Return a shallow copy of all messages."""
@@ -111,9 +114,9 @@ class MessageStore:
     def get_tool_use_blocks_from_assistants(
         self,
         assistant_messages: list[AssistantMessage],
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Extract tool_use blocks from a list of assistant messages."""
-        blocks = []
+        blocks: list[dict[str, Any]] = []
         for msg in assistant_messages:
             content = msg.message.get("content", [])
             for block in content:

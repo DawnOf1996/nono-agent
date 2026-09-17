@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "calculator": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-u", "mcp_servers/calculator_stdio.py"]
+    },
+    "username": {
+      "url": "http://127.0.0.1:8889/mcp",
+      "headers": {
+        "Authorization": "Bearer runtime-test-secret",
+        "X-Demo-User": "Alice",
+        "X-Demo-Auth": "header-ok"
+      }
+    }
+  }
+}

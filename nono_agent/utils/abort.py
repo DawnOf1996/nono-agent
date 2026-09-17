@@ -12,12 +12,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 
 class AbortSignal:
     """取消信号 —— 可被检查或等待。
-    
+
     内部使用 asyncio.Event 实现，支持同步检查 (aborted) 和异步等待 (wait())。
     """
 

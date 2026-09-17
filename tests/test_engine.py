@@ -1,10 +1,11 @@
 """Tests for the core engine and agentic loop."""
 
-import pytest
 import asyncio
-from nono_agent.adapters.testing import create_test_engine, MockTool
-from nono_agent.core.config import EngineConfig
-from nono_agent.core.types import SDKResultMessage, SDKAssistantMessage
+
+import pytest
+
+from nono_agent.core.types import SDKResultMessage
+from tests.helpers import MockTool, create_test_engine
 
 
 @pytest.fixture
@@ -102,8 +103,8 @@ class TestQueryEngine:
             assert len(engine.session_id) > 0
 
     @pytest.mark.asyncio
-    async def test_cost_tracking(self):
-        """Test that cost tracking accumulates."""
+    async def test_token_tracking(self):
+        """Test that token tracking accumulates."""
         engine = create_test_engine(
             responses=[
                 {"text": "Response 1", "tool_calls": []},
@@ -114,8 +115,9 @@ class TestQueryEngine:
             async for _ in engine.submit_message("Hello"):
                 pass
 
-            usage = engine.cost_tracker.get_total_usage()
+            usage = engine.token_tracker.get_total_usage()
             assert usage.input_tokens >= 0
+            assert engine.token_tracker.get_total_tokens() >= 0
             assert usage.output_tokens >= 0
 
 
@@ -123,9 +125,34 @@ class TestMockProvider:
     """Test the mock provider directly."""
 
     @pytest.mark.asyncio
+    async def test_result_carries_context_usage(self):
+        """结果消息与 token tracker 均携带上下文用量分析快照。"""
+        engine = create_test_engine(
+            responses=[{"text": "Hello!", "tool_calls": []}],
+        )
+
+        async with engine:
+            messages = []
+            async for msg in engine.submit_message("Hi"):
+                messages.append(msg)
+
+            result = messages[-1]
+            assert isinstance(result, SDKResultMessage)
+            ctx_usage = result.context_usage
+            assert ctx_usage is not None
+            # analyze_context_usage 口径：窗口 + 分项齐全
+            assert ctx_usage["context_window"] == 200_000  # 测试引擎未配置 model_context
+            assert ctx_usage["total_tokens"] > 0
+            assert ctx_usage["message_count"] >= 1
+            assert ctx_usage["system_prompt_tokens"] > 0
+            # tracker 侧：latest + 历史同步
+            assert engine.token_tracker.get_context_usage() == ctx_usage
+            assert len(engine.token_tracker.get_context_usage_history()) == 1
+
+    @pytest.mark.asyncio
     async def test_default_response(self):
         """Test that default response is returned when no scripts."""
-        from nono_agent.adapters.testing import MockProvider
+        from tests.helpers import MockProvider
         provider = MockProvider()
 
         events = []
@@ -141,7 +168,7 @@ class TestMockProvider:
     @pytest.mark.asyncio
     async def test_scripted_responses(self):
         """Test that scripted responses are returned in order."""
-        from nono_agent.adapters.testing import MockProvider
+        from tests.helpers import MockProvider
         provider = MockProvider(
             responses=[
                 {"text": "First", "tool_calls": []},

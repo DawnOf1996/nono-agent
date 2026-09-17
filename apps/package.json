@@ -1,0 +1,15 @@
+{
+  "name": "nono-agent-apps",
+  "private": true,
+  "scripts": {
+    "dev:web": "pnpm --filter @nono/web dev",
+    "dev:desktop": "pnpm --filter @nono/desktop start",
+    "build:web": "pnpm --filter @nono/web build",
+    "dist:desktop": "pnpm --filter @nono/desktop dist"
+  },
+  "workspaces": [
+    "web",
+    "desktop",
+    "packages/*"
+  ]
+}
