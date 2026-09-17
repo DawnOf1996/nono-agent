@@ -1,4 +1,4 @@
-import { forwardRef, type InputHTMLAttributes, type LabelHTMLAttributes, type SelectHTMLAttributes } from "react";
+import { forwardRef, type InputHTMLAttributes, type LabelHTMLAttributes } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -16,18 +16,6 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
     );
   },
 );
-
-export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <select
-      className={cn(
-        "h-9 w-full rounded-lg border border-line bg-bg px-2 text-sm text-ink focus:border-line-strong focus:outline-none",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
 
 export function FieldLabel({ className, ...props }: LabelHTMLAttributes<HTMLLabelElement>) {
   return (

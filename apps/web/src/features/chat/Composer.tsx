@@ -46,9 +46,20 @@ export function Composer() {
     function onPointer(event: PointerEvent) {
       if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
     }
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setMenuOpen(false);
+      if (input.startsWith("/")) setInput("");
+    }
     document.addEventListener("pointerdown", onPointer);
-    return () => document.removeEventListener("pointerdown", onPointer);
-  }, [paletteOpen]);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [paletteOpen, input, setInput]);
 
   async function ingestFiles(files: File[]) {
     if (!files.length || streaming) return;
@@ -91,12 +102,6 @@ export function Composer() {
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-    if (event.key === "Escape" && paletteOpen) {
-      event.preventDefault();
-      setMenuOpen(false);
-      if (input.startsWith("/")) setInput("");
-      return;
-    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (event.repeat || streaming || !canSend) return;

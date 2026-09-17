@@ -2,7 +2,7 @@ import { Composer } from "@/features/chat/Composer";
 import { MessageList } from "@/features/chat/MessageList";
 import { Trajectory } from "@/features/chat/Trajectory";
 import { sessionTitle } from "@/lib/format";
-import { workspaceLabel } from "@/lib/workspace";
+import { sameWorkspace, workspaceLabel } from "@/lib/workspace";
 import { useChatStore } from "@/store/chat";
 
 export function ChatPane() {
@@ -11,8 +11,13 @@ export function ChatPane() {
   const view = useChatStore((state) => state.view);
   const setView = useChatStore((state) => state.setView);
   const workspace = useChatStore((state) => state.workspace);
+  const workspaces = useChatStore((state) => state.workspaces);
+  const draftWorkspaceId = useChatStore((state) => state.draftWorkspaceId);
   const title = sessionId ? sessionTitle(sessionId, sessionTitles) : "新会话";
-  const workspaceName = workspace.trim() ? workspaceLabel(workspace) : "";
+  const listed = workspaces.find((item) => sameWorkspace(item.path, workspace));
+  const bound = Boolean(sessionId || draftWorkspaceId);
+  const workspaceName =
+    bound && workspace.trim() ? listed?.name || workspaceLabel(workspace) : "";
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">

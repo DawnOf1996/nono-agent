@@ -2,8 +2,8 @@
   "name": "@nono/desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Nono desktop shell",
-  "author": "Nono",
+  "description": "NoNo desktop shell",
+  "author": "NoNo",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
@@ -15,8 +15,8 @@
   },
   "build": {
     "appId": "com.nono.agent",
-    "productName": "Nono",
-    "copyright": "Copyright © Nono",
+    "productName": "NoNo",
+    "copyright": "Copyright © NoNo",
     "asar": true,
     "directories": {
       "output": "release",
@@ -42,15 +42,15 @@
       "target": [
         "nsis"
       ],
-      "artifactName": "Nono-${version}-setup.${ext}"
+      "artifactName": "NoNo-${version}-setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Nono",
-      "uninstallDisplayName": "Nono",
+      "shortcutName": "NoNo",
+      "uninstallDisplayName": "NoNo",
       "installerIcon": "icon.ico",
       "uninstallerIcon": "icon.ico"
     },

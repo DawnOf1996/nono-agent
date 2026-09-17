@@ -222,6 +222,12 @@ function titlesFromSessions(
   return next;
 }
 
+function catalogHasSelectedModel(catalog: CatalogSnapshot | null, model: string): boolean {
+  const id = model.trim();
+  if (!id || !catalog) return false;
+  return catalog.providers.some((provider) => provider.models.some((item) => item.id === id));
+}
+
 function workspaceByPath(workspaces: Workspace[], path: string): Workspace | undefined {
   return workspaces.find((item) => sameWorkspace(item.path, path));
 }
@@ -305,6 +311,10 @@ async function persistDraftSession(
     };
     if (!cwd) {
       fail("先选择工作空间目录");
+      return null;
+    }
+    if (!catalogHasSelectedModel(get().catalog, model)) {
+      fail("先选择模型");
       return null;
     }
     const permissionMode = get().permissionMode;
@@ -571,16 +581,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
         fetchCommands().catch(() => get().commands),
       ]);
       const state = get();
+      const catalogIds = catalog
+        ? new Set(catalog.providers.flatMap((provider) => provider.models.map((item) => item.id)))
+        : null;
       let model = state.model;
-      if (!model && catalog?.default?.model) model = catalog.default.model;
-      if (!model && info?.model) model = info.model;
+      if (catalogIds && model && !catalogIds.has(model)) model = "";
+      if (!model && catalog?.default?.model && (!catalogIds || catalogIds.has(catalog.default.model))) {
+        model = catalog.default.model;
+      }
+      if (!model && info?.model && (!catalogIds || catalogIds.has(info.model))) {
+        model = info.model;
+      }
       const workspaces = workspacesRaw;
       const live = sessions.find((item) => item.engine_session_id === state.sessionId);
       const selected =
         listedWorkspace(workspaces, live?.workspace_id) ??
         listedWorkspace(workspaces, state.workspaceId) ??
-        (live ? undefined : workspaceByPath(workspaces, state.workspace) ?? workspaces[0]);
+        (live ? undefined : workspaceByPath(workspaces, state.workspace));
       if (selected) saveDraftWorkspace(selected.path);
+      else if (!live) saveDraftWorkspace("");
       const permissionMode = live?.permission_mode
         ? normalizePermissionMode(live.permission_mode)
         : state.permissionMode;
@@ -594,13 +613,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         catalog,
         model,
         workspaces,
-        workspace: selected?.path ?? live?.cwd ?? state.workspace,
+        workspace: selected?.path ?? live?.cwd ?? "",
         workspaceId: selected?.id ?? null,
         permissionMode,
         sessionTitles,
         commands,
       });
-      if (model) saveDraftModel(model);
+      saveDraftModel(model);
     } catch (error) {
       set((state) => ({
         healthOk: false,
@@ -837,6 +856,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         newTaskOpen: true,
         ...patchRun(state, runKey, { error: "先选择工作空间目录" }),
       }));
+      return;
+    }
+    if (!catalogHasSelectedModel(get().catalog, get().model)) {
+      set((state) => patchRun(state, runKey, { error: "先选择模型" }));
       return;
     }
     const images = pending.map((item) => ({ src: item.preview }));

@@ -2,8 +2,8 @@
 # 用法（仓库根）: .\scripts\pack-desktop.cmd
 # 或: powershell -ExecutionPolicy Bypass -File .\scripts\pack-desktop.ps1
 # 产物:
-#   apps\desktop\release\win-unpacked\Nono.exe
-#   apps\desktop\release\Nono-0.1.0-setup.exe
+#   apps\desktop\release\win-unpacked\NoNo.exe
+#   apps\desktop\release\NoNo-0.1.0-setup.exe
 
 [CmdletBinding()]
 param(
@@ -146,8 +146,8 @@ if (-not $SkipElectron) {
     }
 }
 
-$unpacked = Join-Path $desktop "release\win-unpacked\Nono.exe"
-$setup = Get-ChildItem -Path (Join-Path $desktop "release") -Filter "Nono-*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+$unpacked = Join-Path $desktop "release\win-unpacked\NoNo.exe"
+$setup = Get-ChildItem -Path (Join-Path $desktop "release") -Filter "NoNo-*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 
 Write-Host ""
 Write-Host "打包完成。"

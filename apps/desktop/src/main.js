@@ -163,7 +163,7 @@ async function createTray(win) {
     icon = icon.resize({ width: 16, height: 16 });
   }
   const trayIcon = new Tray(icon);
-  trayIcon.setToolTip("Nono");
+  trayIcon.setToolTip("NoNo");
   trayIcon.setContextMenu(
     Menu.buildFromTemplate([
       { label: "显示窗口", click: () => showWindow(win) },

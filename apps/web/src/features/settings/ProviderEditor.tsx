@@ -4,7 +4,8 @@ import { useMemo, useState } from "react";
 
 import { fetchRemoteModels } from "@/api/client";
 import { Button } from "@/components/ui/button";
-import { FieldLabel, Input, Select } from "@/components/ui/input";
+import { Dropdown, DropdownItem, FieldSelectButton } from "@/components/ui/dropdown";
+import { FieldLabel, Input } from "@/components/ui/input";
 import { ADAPTER_LABELS, PROVIDER_ID_PATTERN, titleFromId } from "@/features/settings/presets";
 import { formatTokenSize, parseTokenSize } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -151,6 +152,7 @@ export function ProviderEditor({
   const [displayName, setDisplayName] = useState(draft.display_name);
   const [nameTouched, setNameTouched] = useState(Boolean(draft.display_name));
   const [api, setApi] = useState(draft.api);
+  const [apiOpen, setApiOpen] = useState(false);
   const [baseUrl, setBaseUrl] = useState(draft.base_url);
   const [apiKey, setApiKey] = useState("");
   const [extraHeaders, setExtraHeaders] = useState(draft.extra_headers);
@@ -336,18 +338,38 @@ export function ProviderEditor({
 
           <div className="mt-4">
             <FieldLabel htmlFor="provider-api">API 协议</FieldLabel>
-            <Select
-              id="provider-api"
-              value={api}
-              className={fieldClass()}
-              onChange={(event) => setApi(event.target.value)}
+            <Dropdown
+              open={apiOpen}
+              onOpenChange={setApiOpen}
+              matchTriggerWidth
+              trigger={
+                <FieldSelectButton
+                  id="provider-api"
+                  open={apiOpen}
+                  label={ADAPTER_LABELS[api] ?? api}
+                  className={fieldClass()}
+                  onClick={() => setApiOpen((value) => !value)}
+                />
+              }
             >
               {(adapters.length ? adapters : Object.keys(ADAPTER_LABELS)).map((item) => (
-                <option key={item} value={item}>
-                  {ADAPTER_LABELS[item] ?? item}
-                </option>
+                <DropdownItem
+                  key={item}
+                  selected={item === api}
+                  onClick={() => {
+                    setApi(item);
+                    setApiOpen(false);
+                  }}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-[12px] text-ink">
+                      {ADAPTER_LABELS[item] ?? item}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[11px] leading-4 text-faint">{item}</span>
+                  </span>
+                </DropdownItem>
               ))}
-            </Select>
+            </Dropdown>
           </div>
 
           <div className="mt-4">

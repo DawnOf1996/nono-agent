@@ -17,6 +17,7 @@ def _web_dist(tmp_path: Path) -> Path:
     assets = dist / "assets"
     assets.mkdir(parents=True)
     (dist / "index.html").write_text("<html>desktop-ui</html>", encoding="utf-8")
+    (dist / "logo.png").write_bytes(b"png")
     (assets / "app.js").write_text("console.log(1)", encoding="utf-8")
     return dist
 
@@ -49,3 +50,8 @@ def test_mount_web_ui_keeps_api_routes(tmp_path: Path) -> None:
         asset = client.get("/assets/app.js")
         assert asset.status_code == 200
         assert "console.log" in asset.text
+        logo = client.get("/logo.png")
+        assert logo.status_code == 200
+        assert logo.content == b"png"
+        missing = client.get("/not-a-file.png")
+        assert missing.status_code == 404

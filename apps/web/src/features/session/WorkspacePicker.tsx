@@ -49,6 +49,23 @@ export function WorkspacePicker({
     nameRef.current?.select();
   }, [draftName]);
 
+  useEffect(() => {
+    if (!open) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (draftName !== null) {
+        setDraftName(null);
+        setError(null);
+        return;
+      }
+      onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, draftName, onClose]);
+
   if (!open) return null;
 
   const canCreate = Boolean(listing?.path);
@@ -136,13 +153,6 @@ export function WorkspacePicker({
                 disabled={creating}
                 className="h-8 bg-bg"
                 onChange={(event) => setDraftName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    setDraftName(null);
-                    setError(null);
-                  }
-                }}
               />
               <Button type="submit" size="sm" disabled={creating || !draftName.trim()}>
                 创建
