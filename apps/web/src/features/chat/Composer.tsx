@@ -1,5 +1,5 @@
 import { ArrowUp, Paperclip, Plus, Square, X } from "lucide-react";
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -46,7 +46,7 @@ export function Composer() {
     function onPointer(event: PointerEvent) {
       if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
     }
-    function onKey(event: KeyboardEvent) {
+    function onKey(event: globalThis.KeyboardEvent) {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
@@ -100,7 +100,7 @@ export function Composer() {
     void ingestFiles(filesFromList(event.dataTransfer.files));
   }
 
-  function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+  function onKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
