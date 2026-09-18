@@ -3,7 +3,7 @@
 # 或: powershell -ExecutionPolicy Bypass -File .\scripts\pack-desktop.ps1
 # 产物:
 #   apps\desktop\release\win-unpacked\NoNo.exe
-#   apps\desktop\release\NoNo-0.1.0-setup.exe
+#   apps\desktop\release\NoNo-0.2.1-setup.exe
 
 [CmdletBinding()]
 param(

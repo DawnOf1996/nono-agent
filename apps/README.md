@@ -108,7 +108,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\pack-desktop.ps1
 | 文件 | 说明 |
 |------|------|
 | `apps/desktop/release/win-unpacked/NoNo.exe` | 免安装，解压目录里直接双击 |
-| `apps/desktop/release/NoNo-0.1.0-setup.exe` | NSIS 安装包 |
+| `apps/desktop/release/NoNo-0.2.1-setup.exe` | NSIS 安装包 |
 
 运行时 Electron 会拉起本机 sidecar，sidecar 托管前端并提供 `/health`、`/chat` 等 API。模型配置仍读 `~/.nono-agent/`（与开发态相同）。
 
