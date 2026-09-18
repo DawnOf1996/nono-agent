@@ -71,6 +71,7 @@ export type CatalogModel = {
   name?: string | null;
   context_window?: number | null;
   max_tokens?: number | null;
+  extra_body?: Record<string, unknown>;
 };
 
 export type CatalogProvider = {
@@ -105,6 +106,7 @@ export type ProviderUpsert = {
     name?: string;
     context_window?: number | null;
     max_tokens?: number | null;
+    extra_body?: Record<string, unknown> | null;
   }>;
 };
 
@@ -194,3 +196,43 @@ export type FsListing = {
   home: string;
   entries: FsEntry[];
 };
+
+export type McpServerSource = "user" | "plugin";
+
+export type McpServerInfo = {
+  id: string;
+  transport: string;
+  command?: string | null;
+  args: string[];
+  env: Record<string, string>;
+  url?: string | null;
+  headers: Record<string, string>;
+  env_file?: string | null;
+  cwd?: string | null;
+  source: McpServerSource;
+  enabled: boolean;
+  running: boolean;
+  tool_count: number;
+  error?: string | null;
+  disabled_tools: string[];
+};
+
+export type McpSnapshot = {
+  config_path: string;
+  enabled: boolean;
+  servers: McpServerInfo[];
+};
+
+export type McpServerUpsert = {
+  id: string;
+  transport: string;
+  command?: string | null;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string | null;
+  headers?: Record<string, string>;
+  env_file?: string | null;
+  cwd?: string | null;
+};
+
+export type SettingsTab = "general" | "models" | "connectors" | "plugins" | "agents";

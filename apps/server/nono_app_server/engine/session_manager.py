@@ -204,6 +204,27 @@ class SessionManager:
                         self.last_activity.pop(sid, None)
                         logger.info("Session %s expired (TTL)", sid)
 
+    async def reload_mcp_for_cwd(self, cwd: str | None) -> None:
+        """工作区 MCP 开关变化后，刷新同一 cwd 下的活跃引擎。"""
+        if not cwd or not str(cwd).strip():
+            return
+        resolved = resolve_session_cwd(cwd)
+        async with self.lock:
+            engines = [
+                engine
+                for engine in self.sessions.values()
+                if resolve_session_cwd(engine._config.cwd) == resolved
+            ]
+        for engine in engines:
+            try:
+                await engine.reload_mcp()
+            except Exception:
+                logger.exception(
+                    "Failed to reload MCP for session %s cwd=%s",
+                    engine._config.session_id,
+                    resolved,
+                )
+
     def events_writer(self, session_id: str) -> Any | None:
         """取该会话的事件流读取器 —— 活跃会话复用其写入器，否则按默认路径打开。"""
         engine = self.sessions.get(session_id)

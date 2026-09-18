@@ -2,12 +2,15 @@ import type {
   AppInfo,
   AskUserSignal,
   CatalogSnapshot,
+  McpServerInfo,
+  McpServerUpsert,
   PermissionMode,
   PermissionRequest,
   ProviderUpsert,
   SdkResultMessage,
   SessionEvent,
   SessionListItem,
+  SettingsTab,
   SlashCommandInfo,
   Workspace,
 } from "@nono/protocol";
@@ -19,11 +22,13 @@ import {
   answerPermission,
   createAppSession,
   deleteAppSession,
+  deleteMcpServer,
   deleteWorkspace,
   fetchAppInfo,
   fetchCatalog,
   fetchCommands,
   fetchHealth,
+  fetchMcp,
   fetchPermissions,
   fetchSessionEvents,
   fetchSessionList,
@@ -35,7 +40,9 @@ import {
   postChat,
   deleteProvider,
   saveDefaultModel,
+  saveMcpServer,
   saveProvider,
+  setMcpEnabled as patchMcpEnabled,
   setSessionPermission,
   upsertWorkspace,
 } from "@/api/client";
@@ -86,6 +93,8 @@ export type ChatMessage = {
   steps?: ChatStep[];
   streaming?: boolean;
   durationMs?: number;
+  /** 事件流剪切点（含此 seq），用于从此条回复叉分出新会话。 */
+  seq?: number;
 };
 
 export type TurnUsage = {
@@ -124,6 +133,8 @@ type ChatState = {
   healthOk: boolean;
   info: AppInfo | null;
   catalog: CatalogSnapshot | null;
+  mcpServers: McpServerInfo[];
+  mcpConfigPath: string | null;
   sessions: SessionListItem[];
   sessionId: string | null;
   sessionTitles: Record<string, string>;
@@ -147,6 +158,7 @@ type ChatState = {
   permissions: PermissionRequest[];
   newTaskOpen: boolean;
   settingsOpen: boolean;
+  settingsTab: SettingsTab;
   view: MainView;
   usage: TurnUsage | null;
   commands: SlashCommandInfo[];
@@ -163,15 +175,17 @@ type ChatState = {
   setPermissionMode: (mode: PermissionMode) => Promise<void>;
   setModel: (value: string) => Promise<void>;
   setNewTaskOpen: (open: boolean) => void;
-  setSettingsOpen: (open: boolean) => void;
+  setSettingsOpen: (open: boolean, tab?: SettingsTab) => void;
   setView: (view: MainView) => void;
   refresh: () => Promise<void>;
   refreshHealth: () => Promise<void>;
   refreshPermissions: () => Promise<void>;
+  refreshMcp: () => Promise<void>;
   newSession: (opts?: { model?: string; cwd?: string }) => Promise<void>;
   openSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
-  forkSession: (sessionId: string) => Promise<void>;
+  forkSession: (sessionId: string, seq?: number) => Promise<void>;
+  forkFromMessage: (seq: number) => Promise<void>;
   archiveSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   send: () => Promise<void>;
@@ -182,6 +196,9 @@ type ChatState = {
   upsertProvider: (body: ProviderUpsert) => Promise<void>;
   removeProvider: (providerId: string) => Promise<void>;
   chooseDefault: (provider: string, model: string) => Promise<void>;
+  setMcpEnabled: (id: string, enabled: boolean) => Promise<void>;
+  upsertMcpServer: (body: McpServerUpsert) => Promise<void>;
+  removeMcpServer: (id: string) => Promise<void>;
 };
 
 /**
@@ -391,6 +408,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   healthOk: false,
   info: null,
   catalog: null,
+  mcpServers: [],
+  mcpConfigPath: null,
   sessions: [],
   sessionId: null,
   sessionTitles: {},
@@ -412,6 +431,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   permissions: [],
   newTaskOpen: false,
   settingsOpen: false,
+  settingsTab: "models",
   view: "chat",
   usage: null,
   commands: [],
@@ -462,6 +482,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : {}),
       };
     });
+    void get().refreshMcp();
   },
   addWorkspace: async (value) => {
     const path = value.trim();
@@ -482,6 +503,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : patchRun(state, activeKey(state), { error: null })),
       };
     });
+    void get().refreshMcp();
   },
   renameWorkspace: async (workspaceId, name) => {
     const target = workspaceId.trim();
@@ -566,7 +588,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
   setNewTaskOpen: (open) => set({ newTaskOpen: open }),
-  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setSettingsOpen: (open, tab) =>
+    set({
+      settingsOpen: open,
+      settingsTab: open ? (tab ?? "models") : get().settingsTab,
+    }),
   setView: (view) => set({ view }),
 
   refresh: async () => {
@@ -605,6 +631,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         : state.permissionMode;
       if (live?.permission_mode) saveDraftPermissionMode(permissionMode);
       const sessionTitles = titlesFromSessions(sessions, state.sessionTitles);
+      const workspacePath = selected?.path ?? live?.cwd ?? "";
+      const mcp = await fetchMcp(workspacePath).catch(() => null);
       set({
         healthOk: health.status === "ok",
         info,
@@ -613,11 +641,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         catalog,
         model,
         workspaces,
-        workspace: selected?.path ?? live?.cwd ?? "",
+        workspace: workspacePath,
         workspaceId: selected?.id ?? null,
         permissionMode,
         sessionTitles,
         commands,
+        mcpServers: mcp?.servers ?? [],
+        mcpConfigPath: mcp?.config_path ?? null,
       });
       saveDraftModel(model);
     } catch (error) {
@@ -642,6 +672,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   refreshPermissions: async () => {
     try {
       set({ permissions: await fetchPermissions() });
+    } catch {
+      // keep last list
+    }
+  },
+
+  refreshMcp: async () => {
+    try {
+      const mcp = await fetchMcp(get().workspace);
+      set({ mcpServers: mcp.servers, mcpConfigPath: mcp.config_path });
     } catch {
       // keep last list
     }
@@ -713,6 +752,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ...run,
       };
     });
+    void get().refreshMcp();
     if (live) return;
 
     // 历史只写进该会话的运行态；期间它若开始新一轮输出就让位给流式内容。
@@ -766,18 +806,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
   },
 
-  forkSession: async (sessionId) => {
+  forkSession: async (sessionId, seq) => {
     if (!sessionId.trim()) return;
-    const forked = await forkAppSession(sessionId);
-    set((state) => ({
-      sessions: [forked, ...state.sessions.filter((item) => item.id !== forked.id)],
-      sessionTitles: {
-        ...state.sessionTitles,
-        [forked.engine_session_id]: forked.title || "新会话",
-      },
-      ...patchRun(state, activeKey(state), { error: null }),
-    }));
-    await get().openSession(forked.engine_session_id);
+    try {
+      const forked = await forkAppSession(sessionId, seq);
+      set((state) => ({
+        sessions: [forked, ...state.sessions.filter((item) => item.id !== forked.id)],
+        sessionTitles: {
+          ...state.sessionTitles,
+          [forked.engine_session_id]: forked.title || "新会话",
+        },
+        ...patchRun(state, activeKey(state), { error: null }),
+      }));
+      await get().openSession(forked.engine_session_id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "叉分失败";
+      set((state) => patchRun(state, activeKey(state), { error: message }));
+    }
+  },
+
+  forkFromMessage: async (seq) => {
+    const engineId = get().sessionId;
+    if (!engineId || !Number.isFinite(seq) || seq < 0) return;
+    const mapped = get().sessions.find((item) => item.engine_session_id === engineId);
+    if (!mapped) return;
+    await get().forkSession(mapped.id, seq);
   },
 
   archiveSession: async (sessionId) => {
@@ -1169,5 +1222,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const catalog = await saveDefaultModel(provider, model);
     saveDraftModel(model);
     set({ catalog, model });
+  },
+
+  setMcpEnabled: async (id, enabled) => {
+    const cwd = get().workspace.trim();
+    if (!cwd) {
+      set((state) => patchRun(state, activeKey(state), { error: "先选择工作空间目录" }));
+      return;
+    }
+    const mcp = await patchMcpEnabled(cwd, id, enabled);
+    set({ mcpServers: mcp.servers, mcpConfigPath: mcp.config_path });
+  },
+
+  upsertMcpServer: async (body) => {
+    const mcp = await saveMcpServer(body, get().workspace);
+    set({ mcpServers: mcp.servers, mcpConfigPath: mcp.config_path });
+  },
+
+  removeMcpServer: async (id) => {
+    const mcp = await deleteMcpServer(id, get().workspace);
+    set({ mcpServers: mcp.servers, mcpConfigPath: mcp.config_path });
   },
 }));

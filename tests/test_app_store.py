@@ -206,6 +206,67 @@ class TestProductMappingApi:
             listed = client.get("/app/sessions").json()["sessions"]
             assert {item["id"] for item in listed} == {row["id"], copy["id"]}
 
+    def test_fork_session_at_boundary_seq(self, tmp_path: Path):
+        import asyncio
+
+        from nono_agent.core import engine as engine_module
+        from nono_agent.session.events import (
+            EVENT_ASSISTANT_MESSAGE,
+            EVENT_TURN_END,
+            EVENT_TURN_START,
+            EVENT_USER_MESSAGE,
+            SessionEvent,
+        )
+        from nono_agent.session.transcript import (
+            JSONL_ZSTD_SUFFIX,
+            LocalFileTranscriptWriter,
+        )
+
+        with _client(tmp_path) as client:
+            workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
+            row = client.post(
+                "/app/sessions", json={"workspace_id": workspace["id"], "title": "原会话"}
+            ).json()
+            manager = client.app.state.engine_sessions
+            engine = manager.sessions[row["engine_session_id"]]
+            writer = engine.transcript_writer
+            assert writer is not None
+
+            async def seed() -> None:
+                await writer.append_events(
+                    [
+                        SessionEvent.make(0, EVENT_TURN_START, turn=1),
+                        SessionEvent.make(0, EVENT_USER_MESSAGE, content="第一问"),
+                        SessionEvent.make(0, EVENT_ASSISTANT_MESSAGE, content="第一答"),
+                        SessionEvent.make(0, EVENT_TURN_END, turn=1),
+                        SessionEvent.make(0, EVENT_TURN_START, turn=2),
+                        SessionEvent.make(0, EVENT_USER_MESSAGE, content="第二问"),
+                        SessionEvent.make(0, EVENT_ASSISTANT_MESSAGE, content="第二答"),
+                        SessionEvent.make(0, EVENT_TURN_END, turn=2),
+                    ]
+                )
+
+            asyncio.run(seed())
+            forked = client.post(
+                f"/app/sessions/{row['id']}/fork",
+                json={"boundary_seq": 4},
+            )
+            assert forked.status_code == 200
+            copy = forked.json()
+            assert copy["turn_count"] == 1
+            child_path = (
+                engine_module.DEFAULT_SESSION_DIR
+                / f"{copy['engine_session_id']}{JSONL_ZSTD_SUFFIX}"
+            )
+            child = LocalFileTranscriptWriter(child_path)
+            child_events = asyncio.run(child.read_events())
+            assert [event.type for event in child_events] == [
+                EVENT_TURN_START,
+                EVENT_USER_MESSAGE,
+                EVENT_ASSISTANT_MESSAGE,
+                EVENT_TURN_END,
+            ]
+
     def test_patch_model_updates_live_engine(self, tmp_path: Path):
         with _client(tmp_path) as client:
             workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()

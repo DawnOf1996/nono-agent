@@ -139,6 +139,15 @@ from nono_agent.utils.tokens import analyze_context_usage
 logger = logging.getLogger(__name__)
 
 
+def _error_text(terminal_error: Any) -> str:
+    """把 loop 终止错误收成用户可读的一句话。"""
+    if isinstance(terminal_error, dict):
+        message = terminal_error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return str(terminal_error)
+
+
 class QueryEngine:
     """主代理引擎 —— 编排 agentic loop 的核心组件。
 
@@ -663,7 +672,7 @@ class QueryEngine:
             model_usage=self._token_tracker.get_model_usage(),
             context_usage=self._token_tracker.get_context_usage(),
             permission_denials=self._denial_tracker.list(),
-            errors=[str(terminal_error)] if terminal_error else [],
+            errors=[_error_text(terminal_error)] if terminal_error else [],
             structured_output=structured_output,
         )
 
@@ -839,6 +848,12 @@ class QueryEngine:
     @property
     def mcp_runtime(self) -> Any:
         return self._mcp_runtime
+
+    async def reload_mcp(self) -> None:
+        """按当前工作区设置重新拉起 MCP（会话内开关后调用）。"""
+        if not self._auto_load_mcp:
+            return
+        await self._load_mcp()
 
     # ------------------------------------------------------------------
     # 事件溯源辅助

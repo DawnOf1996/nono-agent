@@ -212,7 +212,7 @@ class McpCommand(_SimpleCommand):
                 lines.append("Runtime not started (disabled by settings).")
                 return "\n".join(lines)
             if not runtime.statuses:
-                lines.append("No MCP servers configured (.nono-agent/mcp.json).")
+                lines.append("No MCP servers configured (~/.nono-agent/mcp.json).")
                 return "\n".join(lines)
             lines.append("MCP servers:")
             for status in runtime.statuses:
@@ -237,14 +237,12 @@ class McpCommand(_SimpleCommand):
                     lines.append(f"  error: {status.error}")
             return "\n".join(lines)
 
-        from nono_agent.mcp.config import load_mcp_config
         from nono_agent.mcp.policy import resolve_server_policy
-        from nono_agent.paths import project_dir
+        from nono_agent.mcp.runtime import collect_mcp_servers
 
-        mcp_path = project_dir(ctx.cwd) / "mcp.json"
-        servers = load_mcp_config(mcp_path)
+        servers = collect_mcp_servers(ctx.cwd)
         if not servers:
-            lines.append("No MCP servers configured (.nono-agent/mcp.json).")
+            lines.append("No MCP servers configured (~/.nono-agent/mcp.json).")
             return "\n".join(lines)
         lines.append("MCP servers:")
         for name, server in servers.items():

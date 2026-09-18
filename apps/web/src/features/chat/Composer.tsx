@@ -1,9 +1,10 @@
-import { ArrowUp, Paperclip, Plus, Square, X } from "lucide-react";
+import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { Textarea } from "@/components/ui/textarea";
 import { CommandPalette } from "@/features/chat/CommandPalette";
+import { ComposerMenu } from "@/features/chat/ComposerMenu";
 import { ModelSelect } from "@/features/chat/ModelSelect";
 import { PermissionModeSelect } from "@/features/chat/PermissionModeSelect";
 import { FALLBACK_COMMANDS } from "@/lib/commands";
@@ -31,26 +32,26 @@ export function Composer() {
   const addAttachments = useChatStore((state) => state.addAttachments);
   const removeAttachment = useChatStore((state) => state.removeAttachment);
   const setError = useChatStore((state) => state.setError);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState<"plus" | "connectors" | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const slashQuery = input.startsWith("/") ? input.slice(1).split(/\s/)[0] ?? "" : "";
-  const paletteOpen = menuOpen || input.startsWith("/");
+  const slashOpen = input.startsWith("/");
   const canSend = Boolean(input.trim() || attachments.length);
 
   useEffect(() => {
-    if (!paletteOpen) return;
+    if (!menuOpen && !slashOpen) return;
     function onPointer(event: PointerEvent) {
-      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(null);
     }
     function onKey(event: globalThis.KeyboardEvent) {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
-      setMenuOpen(false);
+      setMenuOpen(null);
       if (input.startsWith("/")) setInput("");
     }
     document.addEventListener("pointerdown", onPointer);
@@ -59,7 +60,7 @@ export function Composer() {
       document.removeEventListener("pointerdown", onPointer);
       window.removeEventListener("keydown", onKey);
     };
-  }, [paletteOpen, input, setInput]);
+  }, [menuOpen, slashOpen, input, setInput]);
 
   async function ingestFiles(files: File[]) {
     if (!files.length || streaming) return;
@@ -169,23 +170,20 @@ export function Composer() {
           <div className="mt-2 flex items-center justify-between gap-2">
             <div ref={menuRef} className="relative flex min-w-0 items-center gap-1">
               <CommandPalette
-                open={paletteOpen}
+                open={slashOpen}
                 query={slashQuery}
                 commands={commands.length ? commands : FALLBACK_COMMANDS}
                 onPick={(command) => {
-                  setMenuOpen(false);
+                  setMenuOpen(null);
                   void runCommand(`/${command.name}`);
                 }}
               />
-              <button
-                type="button"
-                className="flex size-8 items-center justify-center rounded-full text-muted hover:bg-hover hover:text-ink"
-                title="指令"
+              <ComposerMenu
+                open={slashOpen ? null : menuOpen}
+                onOpenChange={setMenuOpen}
                 disabled={streaming}
-                onClick={() => setMenuOpen((value) => !value)}
-              >
-                <Plus className="size-4" />
-              </button>
+                onAddImages={() => fileRef.current?.click()}
+              />
               <input
                 ref={fileRef}
                 type="file"

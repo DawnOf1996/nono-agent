@@ -247,6 +247,7 @@ export function messagesFromEvents(
   thinking?: string;
   steps?: ReplayStep[];
   durationMs?: number;
+  seq?: number;
 }> {
   const messages: Array<{
     id: string;
@@ -256,9 +257,11 @@ export function messagesFromEvents(
     thinking?: string;
     steps?: ReplayStep[];
     durationMs?: number;
+    seq?: number;
   }> = [];
   let pending: ReplayStep[] = [];
   let pendingThinking = "";
+  let pendingSeq = 0;
   let turnStartedAt: number | null = null;
 
   const takeChunkThinking = (raw: Record<string, unknown>): string => {
@@ -267,7 +270,7 @@ export function messagesFromEvents(
     return extractThinkingDelta({ event: chunk });
   };
 
-  const flushAssistant = (durationMs?: number) => {
+  const flushAssistant = (durationMs?: number, boundarySeq?: number) => {
     if (!pending.length && !pendingThinking.trim()) {
       pendingThinking = "";
       return;
@@ -281,13 +284,16 @@ export function messagesFromEvents(
     pendingThinking = "";
     if (!pending.length) return;
     const last = pending[pending.length - 1];
+    const seq = boundarySeq ?? pendingSeq;
     messages.push({
       id: last.id,
       role: "assistant",
+      seq: seq > 0 ? seq : undefined,
       ...foldAssistantTurn(pending),
       durationMs: durationMs && durationMs > 0 ? durationMs : undefined,
     });
     pending = [];
+    pendingSeq = 0;
   };
 
   for (const event of events) {
@@ -307,6 +313,7 @@ export function messagesFromEvents(
         role: "user",
         text,
         images: images.length ? images : undefined,
+        seq: event.seq,
       });
     } else if (event.type === "assistant/message") {
       const step = stepFromContent(`evt-${event.seq}`, content);
@@ -316,6 +323,7 @@ export function messagesFromEvents(
         }
         pendingThinking = "";
         pending.push(step);
+        pendingSeq = event.seq;
       }
     } else if (event.type === "turn/start") {
       turnStartedAt = typeof event.timestamp === "number" ? event.timestamp : null;
@@ -323,7 +331,7 @@ export function messagesFromEvents(
       const endedAt = typeof event.timestamp === "number" ? event.timestamp : null;
       const durationMs =
         turnStartedAt != null && endedAt != null ? Math.max(0, endedAt - turnStartedAt) : undefined;
-      flushAssistant(durationMs);
+      flushAssistant(durationMs, event.seq);
       turnStartedAt = null;
     }
   }

@@ -42,7 +42,7 @@ def _short_tool_name(server_id: str, raw: str) -> str:
 class MCPServerPolicy:
     """单个 MCP server 的策略视图。"""
 
-    enabled: bool = True
+    enabled: bool = False
     disabled_tools: frozenset[str] = frozenset()
 
     def allows_tool(self, server_id: str, tool_name: str) -> bool:
@@ -52,7 +52,7 @@ class MCPServerPolicy:
 def resolve_server_policy(
     settings: Settings | None, server_id: str
 ) -> MCPServerPolicy:
-    """读取 ``mcp.servers.<id>``：未声明则启用且不禁用任何工具。"""
+    """读取 ``mcp.servers.<id>``：未声明则不启用、不禁用任何工具。"""
     if settings is None:
         return MCPServerPolicy()
     block = settings.get(f"mcp.servers.{server_id}")
@@ -65,6 +65,6 @@ def resolve_server_policy(
         )
     ]
     return MCPServerPolicy(
-        enabled=as_bool(block.get("enabled"), True),
+        enabled=as_bool(block.get("enabled"), False),
         disabled_tools=frozenset(disabled),
     )

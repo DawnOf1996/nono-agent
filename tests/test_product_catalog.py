@@ -153,6 +153,31 @@ class TestUpsertProvider:
         assert provider["extra_headers"] == {}
         assert provider["extra_body"] == {}
 
+    def test_writes_model_extra_body(self, tmp_path, monkeypatch):
+        _seed(tmp_path, monkeypatch, LlmCatalog())
+        upsert_provider(
+            ProviderUpsert(
+                id="minimax",
+                display_name="MiniMax",
+                api="openai_responses",
+                extra_body={"reasoning_split": True},
+                models=[
+                    {
+                        "id": "MiniMax-M3",
+                        "context_window": "1M",
+                        "max_tokens": "32K",
+                        "extra_body": {"reasoning": {"effort": "high"}},
+                    }
+                ],
+            )
+        )
+        snap = public_catalog(str(tmp_path))
+        provider = next(item for item in snap["providers"] if item["id"] == "minimax")
+        assert provider["extra_body"] == {"reasoning_split": True}
+        assert provider["models"][0]["context_window"] == 1_000_000
+        assert provider["models"][0]["max_tokens"] == 32_000
+        assert provider["models"][0]["extra_body"] == {"reasoning": {"effort": "high"}}
+
 
 class TestDeleteProvider:
     def test_reassigns_default(self, tmp_path, monkeypatch):

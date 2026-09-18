@@ -51,6 +51,18 @@ class TestNormalizeResponsesInput:
         assert items[3]["call_id"] == "t1"
         assert items[3]["output"] == "result"
 
+    def test_plain_string_user_content(self):
+        items = normalize_responses_input(
+            [UserMessage(message={"role": "user", "content": "你好 MiniMax"})]
+        )
+        assert items == [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "你好 MiniMax"}],
+            }
+        ]
+
 
 class TestResponsesTool:
     def test_to_responses_tool(self):

@@ -1,8 +1,10 @@
-import { Bot, Boxes, Puzzle, Settings2, SlidersHorizontal, X } from "lucide-react";
+import { Bot, Boxes, Cable, Puzzle, Settings2, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
+import type { SettingsTab } from "@nono/protocol";
 
 import { openCatalogConfig } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { ConnectorSettings } from "@/features/settings/ConnectorSettings";
 import { PresetPicker, ProviderList } from "@/features/settings/ModelSettings";
 import { titleFromId, type ProviderPreset } from "@/features/settings/presets";
 import {
@@ -14,18 +16,19 @@ import {
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chat";
 
-type SettingsTab = "general" | "models" | "plugins" | "agents";
 type ModelView = "list" | "presets" | "editor";
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: ReactNode }> = [
   { id: "general", label: "通用设置", icon: <SlidersHorizontal className="size-4" /> },
   { id: "models", label: "模型", icon: <Boxes className="size-4" /> },
+  { id: "connectors", label: "连接器", icon: <Cable className="size-4" /> },
   { id: "plugins", label: "插件", icon: <Puzzle className="size-4" /> },
   { id: "agents", label: "Agent 预设", icon: <Bot className="size-4" /> },
 ];
 
 export function SettingsPanel() {
   const settingsOpen = useChatStore((state) => state.settingsOpen);
+  const settingsTab = useChatStore((state) => state.settingsTab);
   const setSettingsOpen = useChatStore((state) => state.setSettingsOpen);
   const catalog = useChatStore((state) => state.catalog);
   const info = useChatStore((state) => state.info);
@@ -33,19 +36,18 @@ export function SettingsPanel() {
   const removeProvider = useChatStore((state) => state.removeProvider);
   const chooseDefault = useChatStore((state) => state.chooseDefault);
   const setModel = useChatStore((state) => state.setModel);
-  const [tab, setTab] = useState<SettingsTab>("models");
   const [modelView, setModelView] = useState<ModelView>("list");
   const [draft, setDraft] = useState<ProviderDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
+  const tab = settingsTab;
 
   useEffect(() => {
     if (!settingsOpen) return;
-    setTab("models");
     setModelView("list");
     setDraft(null);
     setConfigError(null);
-  }, [settingsOpen]);
+  }, [settingsOpen, settingsTab]);
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -131,7 +133,7 @@ export function SettingsPanel() {
                     tab === item.id && "bg-white text-ink shadow-sm",
                   )}
                   onClick={() => {
-                    setTab(item.id);
+                    setSettingsOpen(true, item.id);
                     if (item.id === "models") {
                       setModelView("list");
                       setDraft(null);
@@ -200,8 +202,9 @@ export function SettingsPanel() {
           ) : null}
 
           {tab === "general" ? <GeneralPane configPath={catalog?.config_path} info={info} /> : null}
+          {tab === "connectors" ? <ConnectorSettings /> : null}
           {tab === "plugins" ? (
-            <ComingSoon title="插件" detail="后续会在这里管理本地插件与 MCP 连接。" />
+            <ComingSoon title="插件" detail="后续会在这里管理本地插件。" />
           ) : null}
           {tab === "agents" ? (
             <ComingSoon title="Agent 预设" detail="后续会在这里保存常用的系统提示词与工具组合。" />

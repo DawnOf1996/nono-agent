@@ -12,6 +12,7 @@ from nono_app_server.config import SidecarSettings
 from nono_app_server.product.catalog import router as catalog_router
 from nono_app_server.product.filesystem import router as filesystem_router
 from nono_app_server.product.info import router as info_router
+from nono_app_server.product.mcp import router as mcp_router
 from nono_app_server.product.permissions import router as permissions_router
 from nono_app_server.product.sessions import router as sessions_router
 from nono_app_server.product.store import AppStore, default_db_path
@@ -36,6 +37,7 @@ def mount_product_routes(
     router = APIRouter(prefix="/app", tags=["app"])
     router.include_router(info_router)
     router.include_router(catalog_router)
+    router.include_router(mcp_router)
     router.include_router(permissions_router)
     router.include_router(filesystem_router)
     router.include_router(workspaces_router)

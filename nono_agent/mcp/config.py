@@ -1,6 +1,7 @@
 """MCP 服务器清单 —— 只解析连接字段（对齐 Cursor mcp.json）。
 
-启停与工具禁用见 ``settings.mcp.servers.<id>``，不写在本文件。
+自定义服务定义只写用户级 ``~/.nono-agent/mcp.json``。
+工作区启停与工具禁用见 ``settings.mcp.servers.<id>``，不写在本文件。
 """
 
 from __future__ import annotations
@@ -88,6 +89,67 @@ class MCPServerConfig:
             requirements=str(data["requirements"]) if data.get("requirements") else None,
             cwd=str(data["cwd"]) if data.get("cwd") else None,
         )
+
+
+def user_mcp_path() -> Path:
+    """用户级 MCP 连接清单：``~/.nono-agent/mcp.json``。"""
+    from nono_agent.paths import user_home
+
+    return user_home() / "mcp.json"
+
+
+def dump_server_config(config: MCPServerConfig) -> dict[str, Any]:
+    """把连接配置写成 Cursor 同款 mcp.json 字段。"""
+    data: dict[str, Any] = {"type": config.normalized_transport}
+    if config.command:
+        data["command"] = config.command
+    if config.args:
+        data["args"] = list(config.args)
+    if config.env:
+        data["env"] = dict(config.env)
+    if config.url:
+        data["url"] = config.url
+    if config.headers:
+        data["headers"] = dict(config.headers)
+    if config.auth:
+        data["auth"] = dict(config.auth)
+    if config.env_file:
+        data["envFile"] = config.env_file
+    if config.runtime:
+        data["runtime"] = config.runtime
+    if config.entrypoint:
+        data["entrypoint"] = config.entrypoint
+    if config.requirements:
+        data["requirements"] = config.requirements
+    if config.cwd:
+        data["cwd"] = config.cwd
+    return data
+
+
+def save_mcp_config(path: str | Path, servers: dict[str, MCPServerConfig]) -> Path:
+    """把连接清单写入 mcp.json（只含连接字段）。"""
+    dest = Path(path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "mcpServers": {
+            name: dump_server_config(config) for name, config in servers.items()
+        }
+    }
+    dest.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return dest
+
+
+def load_user_mcp_config() -> dict[str, MCPServerConfig]:
+    """加载用户级自定义 MCP 服务定义。"""
+    return load_mcp_config(user_mcp_path())
+
+
+def save_user_mcp_config(servers: dict[str, MCPServerConfig]) -> Path:
+    """覆盖写入用户级 ``mcp.json``。"""
+    return save_mcp_config(user_mcp_path(), servers)
 
 
 def load_mcp_config(path: str | Path) -> dict[str, MCPServerConfig]:

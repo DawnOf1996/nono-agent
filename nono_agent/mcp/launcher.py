@@ -1,4 +1,4 @@
-"""MCP 启动配方 —— HTTP 由产品连接；stdio 按用户命令原样执行。"""
+"""MCP 启动配方 —— HTTP 由产品连接；stdio 把 python/uv/npm 等接到内置运行时。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 from mcp.client.stdio import get_default_environment
 
 from nono_agent.mcp.config import MCPServerConfig
+from nono_agent.mcp.runtimes import apply_hosted_env, rewrite_stdio_command
 from nono_agent.paths import user_home
 
 
@@ -34,7 +35,7 @@ def mcp_data_dir() -> Path:
 
 
 def synthesize_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    """SDK 默认宿主环境 + 用户在清单里声明的变量。不改写 PATH / npm / PYTHONPATH。"""
+    """SDK 默认宿主环境 + 用户在清单里声明的变量。"""
     env = get_default_environment()
     if extra:
         env.update(extra)
@@ -46,13 +47,16 @@ def resolve_launch(
     workspace: str | Path,
     *,
     data_dir: Path | None = None,
+    runtime_root: Path | None = None,
 ) -> LaunchRecipe:
     """把清单项收成可执行配方。"""
     workspace_path = Path(workspace).resolve()
     transport = config.normalized_transport
     if transport in {"http", "sse"}:
         return _resolve_remote(config, transport)
-    return _resolve_stdio(config, workspace_path, data_dir=data_dir)
+    return _resolve_stdio(
+        config, workspace_path, data_dir=data_dir, runtime_root=runtime_root
+    )
 
 
 def _resolve_remote(config: MCPServerConfig, transport: str) -> LaunchRecipe:
@@ -70,10 +74,13 @@ def _resolve_stdio(
     workspace: Path,
     *,
     data_dir: Path | None,
+    runtime_root: Path | None,
 ) -> LaunchRecipe:
-    argv = _stdio_argv(config, workspace)
+    argv, hosted = _stdio_argv(config, workspace, runtime_root=runtime_root)
     file_env = _load_env_file(config.env_file, workspace)
     env = synthesize_env({**file_env, **(config.env or {})} or None)
+    if hosted:
+        env = apply_hosted_env(env, runtime_root)
 
     root = data_dir if data_dir is not None else mcp_data_dir()
     log_dir = root / "logs"
@@ -108,21 +115,31 @@ def _load_env_file(env_file: str | None, workspace: Path) -> dict[str, str]:
     return loaded
 
 
-def _stdio_argv(config: MCPServerConfig, workspace: Path) -> list[str]:
+def _stdio_argv(
+    config: MCPServerConfig,
+    workspace: Path,
+    *,
+    runtime_root: Path | None,
+) -> tuple[list[str], bool]:
     if config.command:
-        return [config.command, *config.args]
-    if config.runtime and config.entrypoint:
+        argv = [config.command, *config.args]
+    elif config.runtime and config.entrypoint:
         entry = Path(config.entrypoint)
         if not entry.is_absolute():
             entry = workspace / entry
         runtime = config.runtime.strip().lower()
         if runtime == "python":
-            return ["python", "-u", str(entry)]
-        if runtime == "node":
-            return ["node", str(entry)]
+            argv = ["python", "-u", str(entry)]
+        elif runtime == "node":
+            argv = ["node", str(entry)]
+        else:
+            raise MCPLaunchError(
+                f"MCP server {config.name!r} has unsupported runtime {config.runtime!r}."
+            )
+    else:
         raise MCPLaunchError(
-            f"MCP server {config.name!r} has unsupported runtime {config.runtime!r}."
+            f"MCP server {config.name!r} requires command or runtime+entrypoint."
         )
-    raise MCPLaunchError(
-        f"MCP server {config.name!r} requires command or runtime+entrypoint."
-    )
+    bound, hosted = rewrite_stdio_command(argv[0], root=runtime_root)
+    argv[0] = bound
+    return argv, hosted

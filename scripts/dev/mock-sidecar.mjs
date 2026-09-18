@@ -312,6 +312,16 @@ const server = http.createServer(async (req, res) => {
       ],
       config_path: null,
     });
+  if (path === "/app/mcp")
+    return json(res, { config_path: null, enabled: true, servers: [] });
+  if (path === "/app/mcp/enabled" && method === "POST") {
+    await readBody(req);
+    return json(res, { config_path: null, enabled: true, servers: [] });
+  }
+  if (path === "/app/mcp/servers") {
+    await readBody(req);
+    return json(res, { config_path: null, enabled: true, servers: [] });
+  }
   if (path === "/app/workspaces") {
     if (method === "POST") {
       await readBody(req);

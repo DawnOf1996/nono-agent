@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from nono_agent.core.config import ProviderConfig
 from nono_agent.paths import project_dir, user_home
 from nono_agent.providers.base import CANONICAL_ADAPTERS
+from nono_agent.settings.merge import deep_merge
 
 USER_CONFIG_PATH = user_home() / "config.yaml"
 USER_CREDENTIALS_PATH = user_home() / "credentials"
@@ -74,11 +75,21 @@ class ModelEntry(BaseModel):
     name: str | None = None
     context_window: int | None = None
     max_tokens: int | None = None
+    extra_body: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("context_window", "max_tokens", mode="before")
     @classmethod
     def _parse_sizes(cls, value: object) -> int | None:
         return _coerce_token_size(value)
+
+    @field_validator("extra_body", mode="before")
+    @classmethod
+    def _parse_extra_body(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict) or isinstance(value, list):
+            raise ValueError("extra_body must be a JSON object")
+        return {str(key): item for key, item in value.items() if str(key).strip()}
 
 
 class NamedProvider(BaseModel):
@@ -165,7 +176,7 @@ class LlmCatalog(BaseModel):
             "model_context": entry.context_window,
             "max_tokens": entry.max_tokens,
             "extra_headers": named.extra_headers,
-            "extra_body": named.extra_body,
+            "extra_body": deep_merge(dict(named.extra_body), dict(entry.extra_body)),
         }
         if named.timeout is not None:
             kwargs["timeout"] = named.timeout
@@ -363,11 +374,25 @@ def _merge_models(base: list[Any], override: list[Any]) -> list[dict[str, Any]]:
             continue
         mid = str(raw["id"])
         if mid in by_id:
-            by_id[mid] = {**by_id[mid], **raw}
+            by_id[mid] = _merge_model_dicts(by_id[mid], raw)
         else:
             by_id[mid] = dict(raw)
             order.append(mid)
     return [by_id[i] for i in order]
+
+
+def _merge_model_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = {**merged[key], **value}
+        else:
+            merged[key] = value
+    return merged
 
 
 def _merge_named_provider(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from nono_agent.paths import CONFIG_DIR_NAME, user_home
+from nono_agent.paths import CONFIG_DIR_NAME, project_dir, user_home
 from nono_agent.settings.merge import deep_merge
 from nono_agent.settings.models import Settings
 
@@ -20,7 +20,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "mcp": {"enabled": True, "servers": {}},
 }
 
-_USER_SETTINGS_PATH = user_home() / "settings.json"
 _PROJECT_SETTINGS_REL = Path(CONFIG_DIR_NAME) / "settings.json"
 
 
@@ -37,7 +36,12 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def load_user_settings(path: Path | None = None) -> dict[str, Any]:
     """加载用户级设置（``~/.nono-agent/settings.json``）。"""
-    return _read_json(path or _USER_SETTINGS_PATH)
+    return _read_json(path or (user_home() / "settings.json"))
+
+
+def project_settings_path(cwd: str | Path) -> Path:
+    """工作区设置文件：``<cwd>/.nono-agent/settings.json``。"""
+    return project_dir(cwd) / "settings.json"
 
 
 def load_project_settings(cwd: str | Path) -> dict[str, Any]:
@@ -53,6 +57,19 @@ def load_project_settings(cwd: str | Path) -> dict[str, Any]:
             break
         current = current.parent
     return {}
+
+
+def patch_project_settings(cwd: str | Path, patch: dict[str, Any]) -> dict[str, Any]:
+    """把补丁深合并进工作区 ``settings.json`` 并写回。"""
+    path = project_settings_path(cwd)
+    current = _read_json(path)
+    merged = deep_merge(current, patch)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return merged
 
 
 def load_settings(

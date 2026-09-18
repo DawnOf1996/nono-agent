@@ -1,6 +1,6 @@
 # runtime-test：验证 nono-agent 调用 MCP
 
-把本目录当作 `--cwd`。连接清单在 `.nono-agent/mcp.json`；启停与工具禁用在 `.nono-agent/settings.json` 的 `mcp.servers.<id>`。
+把本目录当作 `--cwd`。`verify_mcp.py` 会直接读本目录 `.nono-agent/mcp.json`。交互式 `nono chat --cwd runtime-test` 从用户级 `~/.nono-agent/mcp.json` 读连接清单（可把本目录那份拷过去）。启停在工作区 `.nono-agent/settings.json` 的 `mcp.servers.<id>`；默认不启用，本目录已打开 `calculator` / `username`。
 
 
 | server       | 传输              | 工具                                         | 说明                             |

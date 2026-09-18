@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from nono_agent.session.events import last_turn_number
 from nono_agent.session.fork import fork_transcript
 from nono_agent.session.header import normalize_permission_mode
 from nono_agent.session.transcript import (
@@ -41,6 +42,10 @@ class PatchSessionBody(BaseModel):
     permission_mode: str | None = None
     turn_count: int | None = None
     archived: bool | None = None
+
+
+class ForkSessionBody(BaseModel):
+    boundary_seq: int | None = None
 
 
 def _purge_session_files(engine_session_id: str) -> None:
@@ -170,31 +175,41 @@ async def patch_app_session(
     return _enrich(row, manager)
 
 
+def _fork_boundary(events: list[Any], requested: int | None) -> int:
+    last = events[-1].seq if events else 0
+    if requested is None:
+        return last
+    if requested < 0:
+        raise HTTPException(status_code=400, detail="boundary_seq must be >= 0")
+    return min(requested, last)
+
+
 @router.post("/sessions/{session_id}/fork")
 async def fork_app_session(
     session_id: str,
+    body: ForkSessionBody | None = None,
     store: AppStore = Depends(get_store),
     manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     source = store.get_session(session_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    requested = body.boundary_seq if body is not None else None
     new_engine_id = str(uuid.uuid4())
     live = manager.sessions.get(source["engine_session_id"])
     writer = live.transcript_writer if live is not None else manager.events_writer(
         source["engine_session_id"]
     )
+    events = await writer.read_events() if writer is not None else []
+    boundary = _fork_boundary(events, requested)
     if live is not None and writer is not None:
-        events = await writer.read_events()
-        await live.fork_session(events[-1].seq if events else 0, new_engine_id)
+        await live.fork_session(boundary, new_engine_id)
     elif writer is not None:
-        events = await writer.read_events()
         destination = LocalFileTranscriptWriter(
             DEFAULT_SESSION_DIR / f"{new_engine_id}{JSONL_ZSTD_SUFFIX}"
         )
-        await fork_transcript(
-            writer, destination, events[-1].seq if events else 0, new_engine_id
-        )
+        await fork_transcript(writer, destination, boundary, new_engine_id)
+    prefix = [event for event in events if event.seq <= boundary]
     title = (source["title"] or "").strip()
     row = store.create_session(
         workspace_id=source["workspace_id"],
@@ -202,7 +217,7 @@ async def fork_app_session(
         title=f"{title} 副本" if title else "新会话",
         model=source["model"],
         permission_mode=source["permission_mode"],
-        turn_count=source["turn_count"],
+        turn_count=last_turn_number(prefix),
         cwd=source["cwd"],
     )
     return _enrich(row, manager)

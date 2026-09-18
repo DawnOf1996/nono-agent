@@ -1,4 +1,4 @@
-import { ChevronDown, Copy } from "lucide-react";
+import { ChevronDown, Copy, GitFork } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ImageLightbox } from "@/components/ImageLightbox";
@@ -88,7 +88,7 @@ const MessageBlock = memo(function MessageBlock({ message }: { message: ChatMess
         <p className="text-sm text-faint">正在写入…</p>
       ) : null}
       {answer && !message.streaming ? (
-        <div className="mt-2">
+        <div className="mt-2 flex items-center gap-2">
           <button
             type="button"
             className="text-faint hover:text-ink"
@@ -97,6 +97,21 @@ const MessageBlock = memo(function MessageBlock({ message }: { message: ChatMess
           >
             <Copy className="size-3.5" />
           </button>
+          {typeof message.seq === "number" ? (
+            <button
+              type="button"
+              className="text-faint hover:text-ink"
+              title="从此处新建对话"
+              onClick={() => {
+                const seq = message.seq;
+                if (typeof seq === "number") {
+                  void useChatStore.getState().forkFromMessage(seq);
+                }
+              }}
+            >
+              <GitFork className="size-3.5" />
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

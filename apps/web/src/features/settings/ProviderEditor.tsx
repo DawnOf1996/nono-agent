@@ -16,6 +16,7 @@ type ModelDraft = {
   name: string;
   context_window: string;
   max_tokens: string;
+  extra_body: string;
 };
 
 export type ProviderDraft = {
@@ -51,6 +52,7 @@ function emptyModel(): ModelDraft {
     name: "",
     context_window: "256K",
     max_tokens: "32K",
+    extra_body: "",
   };
 }
 
@@ -95,6 +97,7 @@ export function draftFromProvider(provider: CatalogProvider): ProviderDraft {
         name: item.name ?? "",
         context_window: formatTokenSize(item.context_window) || "256K",
         max_tokens: formatTokenSize(item.max_tokens) || "32K",
+        extra_body: jsonObjectText(item.extra_body),
       }))
     : [emptyModel()];
   return {
@@ -205,11 +208,19 @@ export function ProviderEditor({
         setFormError(`模型 ${mid} 的最大输出 token 无效，请输入正整数或 32K / 1M。`);
         return;
       }
+      let modelBody: Record<string, unknown>;
+      try {
+        modelBody = parseJsonObject(item.extra_body, `模型 ${mid} 的扩展请求体`);
+      } catch (error) {
+        setFormError(error instanceof Error ? error.message : "扩展配置无效");
+        return;
+      }
       parsed.push({
         id: mid,
         name: item.name.trim() || undefined,
         context_window: parseTokenSize(item.context_window),
         max_tokens: parseTokenSize(item.max_tokens),
+        extra_body: modelBody,
       });
     }
     if (!parsed.length) {
@@ -254,9 +265,10 @@ export function ProviderEditor({
           .map((item) => ({
             key: nextKey(),
             id: item.id,
-            name: item.name && item.name !== item.id ? item.name : "",
+            name: item.name && item.name !== item.id ? item.name : titleFromId(item.id),
             context_window: "256K",
             max_tokens: "32K",
+            extra_body: "",
           }));
         const next = [...kept, ...incoming];
         return next.length ? next : [emptyModel()];
@@ -411,7 +423,7 @@ export function ProviderEditor({
               onChange={(event) => setExtraBody(event.target.value)}
             />
             <p className="mt-1.5 text-[11px] leading-5 text-muted">
-              深度合并进每次请求体，JSON 对象，可留空。
+              该提供方默认合并进每次请求体，JSON 对象，可留空。各模型可再覆盖同名键。
             </p>
           </div>
 
@@ -476,6 +488,20 @@ export function ProviderEditor({
                         onChange={(event) => patchModel(item.key, { max_tokens: event.target.value })}
                       />
                     </div>
+                  </div>
+                  <div className="mt-2">
+                    <FieldLabel htmlFor={`model-body-${item.key}`}>扩展请求体</FieldLabel>
+                    <textarea
+                      id={`model-body-${item.key}`}
+                      value={item.extra_body}
+                      placeholder={'{"reasoning":{"effort":"high"}}'}
+                      className={jsonFieldClass()}
+                      spellCheck={false}
+                      onChange={(event) => patchModel(item.key, { extra_body: event.target.value })}
+                    />
+                    <p className="mt-1.5 text-[11px] leading-5 text-muted">
+                      仅作用于该模型。深度合并进请求体，同名键覆盖提供方扩展请求体。JSON 对象，可留空。
+                    </p>
                   </div>
                 </div>
               ))}

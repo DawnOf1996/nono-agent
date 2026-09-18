@@ -46,6 +46,18 @@ class TestLoadSettings:
         s = load_settings(tmp_path, user_settings={})
         assert s.get("permissions.mode") == "accept_edits"
 
+    def test_patch_project_settings_merges(self, tmp_path):
+        from nono_agent.settings import patch_project_settings
+
+        (tmp_path / ".nono-agent").mkdir()
+        (tmp_path / ".nono-agent" / "settings.json").write_text(
+            json.dumps({"permissions": {"mode": "plan"}, "mcp": {"servers": {"a": {"enabled": False}}}})
+        )
+        patch_project_settings(tmp_path, {"mcp": {"servers": {"a": {"enabled": True}}}})
+        s = load_settings(tmp_path, user_settings={})
+        assert s.get("permissions.mode") == "plan"
+        assert s.get("mcp.servers.a.enabled") is True
+
 
 class TestSettingsPolicyBridge:
     def test_policy_from_settings(self):

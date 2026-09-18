@@ -76,6 +76,7 @@ def public_catalog(cwd: str) -> dict[str, Any]:
                         "name": item.name,
                         "context_window": item.context_window,
                         "max_tokens": item.max_tokens,
+                        "extra_body": item.extra_body,
                     }
                     for item in named.models
                 ],
@@ -111,12 +112,18 @@ def _parse_models(raw: list[dict[str, Any]]) -> list[ModelEntry]:
         if isinstance(name, str):
             name = name.strip() or None
         try:
+            extra_body = item.get("extra_body")
+            if extra_body is None:
+                extra_body = {}
+            elif not isinstance(extra_body, dict):
+                raise ValueError("extra_body must be a JSON object")
             models.append(
                 ModelEntry(
                     id=mid,
                     name=name,
                     context_window=item.get("context_window") or None,
                     max_tokens=item.get("max_tokens") or None,
+                    extra_body=extra_body,
                 )
             )
         except (ValueError, TypeError) as exc:

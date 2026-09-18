@@ -1,7 +1,7 @@
 """约定目录名 —— 用户运行时与项目配置共用 ``.nono-agent``。
 
-用户侧：``~/.nono-agent/{config.yaml,credentials,sessions/,memory/,settings.json,rules/,...}``
-项目侧：``<cwd>/.nono-agent/{config.yaml,settings.json,rules/,skills/,agents/,plugins/,hooks.json,mcp.json}``
+用户侧：``~/.nono-agent/{config.yaml,credentials,sessions/,memory/,settings.json,mcp.json,rules/,...}``
+项目侧：``<cwd>/.nono-agent/{config.yaml,settings.json,rules/,skills/,agents/,plugins/,hooks.json}``
 """
 
 from __future__ import annotations

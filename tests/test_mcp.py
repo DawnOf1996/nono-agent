@@ -153,6 +153,56 @@ class TestLoadMCPConfig:
         servers = load_mcp_config(cfg)
         assert servers["remote"].normalized_transport == "http"
 
+    def test_save_roundtrip(self, tmp_path: Path) -> None:
+        from nono_agent.mcp.config import dump_server_config, save_mcp_config
+
+        src = tmp_path / "mcp.json"
+        src.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "type": "http",
+                            "url": "https://example.com/mcp",
+                            "headers": {"Authorization": "Bearer abc"},
+                        }
+                    }
+                }
+            )
+        )
+        loaded = load_mcp_config(src)
+        dest = tmp_path / "out.json"
+        save_mcp_config(dest, loaded)
+        again = load_mcp_config(dest)
+        assert dump_server_config(again["remote"])["url"] == "https://example.com/mcp"
+        assert again["remote"].headers["Authorization"] == "Bearer abc"
+
+
+def _fake_runtimes(tmp_path: Path) -> Path:
+    root = tmp_path / "runtimes"
+    if sys.platform == "win32":
+        files = [
+            root / "python" / "Scripts" / "python.exe",
+            root / "node" / "node.exe",
+            root / "node" / "npm.cmd",
+            root / "node" / "npx.cmd",
+            root / "uv" / "uv.exe",
+            root / "uv" / "uvx.exe",
+        ]
+    else:
+        files = [
+            root / "python" / "bin" / "python",
+            root / "node" / "bin" / "node",
+            root / "node" / "bin" / "npm",
+            root / "node" / "bin" / "npx",
+            root / "uv" / "uv",
+            root / "uv" / "uvx",
+        ]
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"")
+    return root
+
 
 class TestLauncher:
     def test_user_env_overlays_default(self) -> None:
@@ -160,6 +210,22 @@ class TestLauncher:
         assert env["MY_KEY"] == "1"
         assert env["PYTHONPATH"] == "/allowed"
         assert "PATH" in env
+
+    def test_command_stem_and_explicit_path(self, tmp_path: Path) -> None:
+        from nono_agent.mcp.runtimes import command_stem, is_explicit_path
+
+        assert command_stem("uvx.exe") == "uvx"
+        assert command_stem("npx.cmd") == "npx"
+        assert command_stem("python3") == "python3"
+        assert not is_explicit_path("uvx")
+        assert is_explicit_path(str(tmp_path / "uvx"))
+
+    def test_hosted_env_pins_python_version(self, tmp_path: Path) -> None:
+        from nono_agent.mcp.runtimes import PYTHON_VERSION, apply_hosted_env
+
+        env = apply_hosted_env({"UV_PYTHON": "3.14", "PATH": ""}, root=tmp_path)
+        assert env["UV_PYTHON"] == PYTHON_VERSION
+        assert PYTHON_VERSION == "3.12"
 
     def test_resolve_http(self, tmp_path: Path) -> None:
         recipe = resolve_launch(
@@ -195,7 +261,8 @@ class TestLauncher:
         assert recipe.stderr_log is not None
         assert recipe.stderr_log.parent.exists()
 
-    def test_resolve_runtime_entrypoint_uses_path_names(self, tmp_path: Path) -> None:
+    def test_resolve_runtime_entrypoint_uses_hosted_python(self, tmp_path: Path) -> None:
+        hosted = _fake_runtimes(tmp_path)
         recipe = resolve_launch(
             MCPServerConfig(
                 name="demo",
@@ -204,19 +271,85 @@ class TestLauncher:
             ),
             tmp_path,
             data_dir=tmp_path / "mcp-data",
+            runtime_root=hosted,
         )
-        assert recipe.argv[0] == "python"
+        assert Path(recipe.argv[0]).name.lower().startswith("python")
+        assert Path(recipe.argv[0]).is_file()
+        assert str(hosted) in recipe.argv[0]
         assert recipe.argv[-1].endswith("server.py")
         assert "-u" in recipe.argv
+        assert "UV_CACHE_DIR" in recipe.env
 
-    def test_resolve_bare_npx_unchanged(self, tmp_path: Path) -> None:
+    def test_resolve_bare_uvx_uses_hosted_uv(self, tmp_path: Path) -> None:
+        hosted = _fake_runtimes(tmp_path)
+        recipe = resolve_launch(
+            MCPServerConfig(name="search", command="uvx", args=["minimax-coding-plan-mcp"]),
+            tmp_path,
+            data_dir=tmp_path / "mcp-data",
+            runtime_root=hosted,
+        )
+        assert Path(recipe.argv[0]).stem.lower() == "uvx"
+        assert str(hosted) in recipe.argv[0]
+        assert recipe.argv[1:] == ["minimax-coding-plan-mcp"]
+        assert recipe.env["UV_TOOL_DIR"].startswith(str(hosted))
+        assert recipe.env["UV_PYTHON"] == "3.12"
+        path_value = next(value for key, value in recipe.env.items() if key.upper() == "PATH")
+        assert str(hosted / "uv") in path_value
+
+    def test_resolve_bare_npx_uses_hosted_node(self, tmp_path: Path) -> None:
+        hosted = _fake_runtimes(tmp_path)
         recipe = resolve_launch(
             MCPServerConfig(name="fs", command="npx", args=["-y", "fs"]),
             tmp_path,
             data_dir=tmp_path / "mcp-data",
+            runtime_root=hosted,
         )
-        assert recipe.argv == ["npx", "-y", "fs"]
+        assert Path(recipe.argv[0]).stem.lower() == "npx"
+        assert str(hosted) in recipe.argv[0]
+        assert recipe.argv[1:] == ["-y", "fs"]
         assert "npm_config_prefix" not in recipe.env
+        assert recipe.env["npm_config_cache"].startswith(str(hosted))
+
+    def test_absolute_command_is_not_rewritten(self, tmp_path: Path) -> None:
+        hosted = _fake_runtimes(tmp_path)
+        custom = tmp_path / "custom-uvx.exe"
+        custom.write_bytes(b"")
+        recipe = resolve_launch(
+            MCPServerConfig(name="search", command=str(custom), args=["pkg"]),
+            tmp_path,
+            data_dir=tmp_path / "mcp-data",
+            runtime_root=hosted,
+        )
+        assert recipe.argv == [str(custom), "pkg"]
+        assert "UV_CACHE_DIR" not in recipe.env
+
+    def test_prepare_hosted_uvx_without_prefetch(self, tmp_path: Path) -> None:
+        from nono_agent.mcp.runtimes import first_package_arg, prepare_stdio_runtime
+
+        hosted = _fake_runtimes(tmp_path)
+        notes: list[str] = []
+        result = prepare_stdio_runtime(
+            "uvx",
+            ["minimax-coding-plan-mcp"],
+            root=hosted,
+            progress=lambda message, _percent: notes.append(message),
+            prefetch=False,
+        )
+        assert result["ok"] is True
+        assert result["hosted"] is True
+        assert result["kind"] == "uvx"
+        assert str(hosted) in str(result["executable"])
+        assert any("运行时" in item or "uvx" in item for item in notes)
+        assert first_package_arg(["-y", "@scope/pkg"]) == "@scope/pkg"
+        assert first_package_arg(["--from", "pkg", "python"]) == "pkg"
+        assert first_package_arg(["script.py"]) is None
+
+    def test_prepare_missing_absolute_command(self, tmp_path: Path) -> None:
+        from nono_agent.mcp.runtimes import MCPRuntimeSetupError, prepare_stdio_runtime
+
+        missing = tmp_path / "no-such-bin.exe"
+        with pytest.raises(MCPRuntimeSetupError, match="找不到命令"):
+            prepare_stdio_runtime(str(missing), [], prefetch=False)
 
     def test_env_file_then_env_overlay(self, tmp_path: Path) -> None:
         env_file = tmp_path / ".env"
@@ -224,7 +357,7 @@ class TestLauncher:
         recipe = resolve_launch(
             MCPServerConfig(
                 name="demo",
-                command="python",
+                command=sys.executable,
                 args=["server.py"],
                 env_file=str(env_file),
                 env={"OVERLAY": "config"},
@@ -276,27 +409,66 @@ class TestBridge:
             await client.close()
 
 
+def _user_mcp_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    home = tmp_path / "user-nono-agent"
+    home.mkdir(parents=True, exist_ok=True)
+
+    def _home() -> Path:
+        return home
+
+    monkeypatch.setattr("nono_agent.paths.user_home", _home)
+    monkeypatch.setattr("nono_agent.settings.sources.user_home", _home)
+    monkeypatch.setattr("nono_agent.mcp.launcher.user_home", _home)
+    return home
+
+
+def _write_user_mcp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, servers: dict[str, object]
+) -> Path:
+    home = _user_mcp_home(monkeypatch, tmp_path)
+    (home / "mcp.json").write_text(
+        json.dumps({"mcpServers": servers}), encoding="utf-8"
+    )
+    return home
+
+
+def _enable_workspace_mcp(tmp_path: Path, *names: str, extra: dict | None = None) -> None:
+    project = tmp_path / ".nono-agent"
+    project.mkdir(parents=True, exist_ok=True)
+    block: dict[str, object] = {name: {"enabled": True} for name in names}
+    if extra:
+        for name, patch in extra.items():
+            current = dict(block.get(name, {}))  # type: ignore[arg-type]
+            current.update(patch)
+            block[name] = current
+    (project / "settings.json").write_text(
+        json.dumps({"mcp": {"enabled": True, "servers": block}}),
+        encoding="utf-8",
+    )
+
+
+def _stdio_payload(script: Path) -> dict[str, object]:
+    return {"command": sys.executable, "args": ["-u", str(script)]}
+
+
 class TestRuntime:
     @pytest.mark.asyncio
     async def test_start_runtime_registers_and_isolates_failures(
-        self, mock_server_script: Path, tmp_path: Path
+        self,
+        mock_server_script: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        project = tmp_path / ".nono-agent"
-        project.mkdir()
-        (project / "mcp.json").write_text(
-            json.dumps(
-                {
-                    "servers": {
-                        "mock": {
-                            "command": sys.executable,
-                            "args": ["-u", str(mock_server_script)],
-                        },
-                        "broken": {"transport": "http"},
-                    }
-                }
-            )
+        _write_user_mcp(
+            monkeypatch,
+            tmp_path,
+            {
+                "mock": _stdio_payload(mock_server_script),
+                "broken": {"transport": "http"},
+            },
         )
-        settings = load_settings(tmp_path, user_settings={}, project_settings={})
+        _enable_workspace_mcp(tmp_path, "mock", "broken")
+        settings = load_settings(tmp_path, user_settings={}, project_settings=None)
         runtime = await start_mcp_runtime(
             tmp_path, settings=settings, data_dir=tmp_path / "mcp-data"
         )
@@ -315,21 +487,13 @@ class TestRuntime:
 
     @pytest.mark.asyncio
     async def test_disabled_does_not_spawn(
-        self, mock_server_script: Path, tmp_path: Path
+        self,
+        mock_server_script: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        project = tmp_path / ".nono-agent"
-        project.mkdir()
-        (project / "mcp.json").write_text(
-            json.dumps(
-                {
-                    "servers": {
-                        "mock": {
-                            "command": sys.executable,
-                            "args": ["-u", str(mock_server_script)],
-                        }
-                    }
-                }
-            )
+        _write_user_mcp(
+            monkeypatch, tmp_path, {"mock": _stdio_payload(mock_server_script)}
         )
         settings = load_settings(
             tmp_path,
@@ -342,22 +506,36 @@ class TestRuntime:
         assert runtime.clients == []
 
     @pytest.mark.asyncio
-    async def test_per_server_settings_disable(
-        self, mock_server_script: Path, tmp_path: Path
+    async def test_default_off_does_not_spawn(
+        self,
+        mock_server_script: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        project = tmp_path / ".nono-agent"
-        project.mkdir()
-        (project / "mcp.json").write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "mock": {
-                            "command": sys.executable,
-                            "args": ["-u", str(mock_server_script)],
-                        }
-                    }
-                }
-            )
+        _write_user_mcp(
+            monkeypatch, tmp_path, {"mock": _stdio_payload(mock_server_script)}
+        )
+        settings = load_settings(tmp_path, user_settings={}, project_settings={})
+        runtime = await start_mcp_runtime(
+            tmp_path, settings=settings, data_dir=tmp_path / "mcp-data"
+        )
+        try:
+            assert runtime.enabled
+            assert runtime.tools == []
+            assert runtime.statuses[0].enabled is False
+            assert runtime.statuses[0].running is False
+        finally:
+            await runtime.close()
+
+    @pytest.mark.asyncio
+    async def test_per_server_settings_disable(
+        self,
+        mock_server_script: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _write_user_mcp(
+            monkeypatch, tmp_path, {"mock": _stdio_payload(mock_server_script)}
         )
         settings = load_settings(
             tmp_path,
@@ -378,27 +556,19 @@ class TestRuntime:
 
     @pytest.mark.asyncio
     async def test_disabled_tools_are_not_registered(
-        self, mock_server_script: Path, tmp_path: Path
+        self,
+        mock_server_script: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        project = tmp_path / ".nono-agent"
-        project.mkdir()
-        (project / "mcp.json").write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "mock": {
-                            "command": sys.executable,
-                            "args": ["-u", str(mock_server_script)],
-                        }
-                    }
-                }
-            )
+        _write_user_mcp(
+            monkeypatch, tmp_path, {"mock": _stdio_payload(mock_server_script)}
         )
         settings = load_settings(
             tmp_path,
             user_settings={},
             project_settings={
-                "mcp": {"servers": {"mock": {"disabledTools": ["add"]}}}
+                "mcp": {"servers": {"mock": {"enabled": True, "disabledTools": ["add"]}}}
             },
         )
         runtime = await start_mcp_runtime(
@@ -426,6 +596,20 @@ class TestRuntime:
         )
         servers = collect_mcp_servers(tmp_path)
         assert "from-plugin" in servers
+
+    def test_collect_reads_user_not_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / ".nono-agent"
+        project.mkdir()
+        (project / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"project-only": {"command": "npx"}}}),
+            encoding="utf-8",
+        )
+        _write_user_mcp(monkeypatch, tmp_path, {"user-only": {"command": "uvx"}})
+        servers = collect_mcp_servers(tmp_path)
+        assert "user-only" in servers
+        assert "project-only" not in servers
 
 
 class TestStreamableHTTP:
@@ -504,26 +688,18 @@ class TestStreamableHTTP:
 class TestEngineWiring:
     @pytest.mark.asyncio
     async def test_engine_registers_mcp_tools(
-        self, mock_server_script: Path, tmp_path: Path
+        self,
+        mock_server_script: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from nono_agent.core.config import EngineConfig
         from nono_agent.core.engine import QueryEngine
 
-        project = tmp_path / ".nono-agent"
-        project.mkdir()
-        (project / "settings.json").write_text(json.dumps({"mcp": {"enabled": True}}))
-        (project / "mcp.json").write_text(
-            json.dumps(
-                {
-                    "servers": {
-                        "mock": {
-                            "command": sys.executable,
-                            "args": ["-u", str(mock_server_script)],
-                        }
-                    }
-                }
-            )
+        _write_user_mcp(
+            monkeypatch, tmp_path, {"mock": _stdio_payload(mock_server_script)}
         )
+        _enable_workspace_mcp(tmp_path, "mock")
         engine = QueryEngine(EngineConfig(cwd=str(tmp_path), model="claude-test"))
         async with engine:
             assert engine.tool_registry.has("mcp__mock__echo")
@@ -532,25 +708,18 @@ class TestEngineWiring:
 
     @pytest.mark.asyncio
     async def test_engine_respects_env_flag(
-        self, mock_server_script: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        mock_server_script: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from nono_agent.core.config import EngineConfig
         from nono_agent.core.engine import QueryEngine
 
-        project = tmp_path / ".nono-agent"
-        project.mkdir()
-        (project / "mcp.json").write_text(
-            json.dumps(
-                {
-                    "servers": {
-                        "mock": {
-                            "command": sys.executable,
-                            "args": ["-u", str(mock_server_script)],
-                        }
-                    }
-                }
-            )
+        _write_user_mcp(
+            monkeypatch, tmp_path, {"mock": _stdio_payload(mock_server_script)}
         )
+        _enable_workspace_mcp(tmp_path, "mock")
         monkeypatch.setenv("NONO_MCP_ENABLED", "0")
         engine = QueryEngine(EngineConfig(cwd=str(tmp_path), model="claude-test"))
         async with engine:
@@ -588,7 +757,15 @@ class TestSettingsMcpFlag:
         policy = resolve_server_policy(settings, "calc")
         assert policy.enabled is False
         assert policy.disabled_tools == frozenset({"divide", "add"})
-        assert resolve_server_policy(settings, "other").enabled is True
+        assert resolve_server_policy(settings, "other").enabled is False
+
+    def test_explicit_enable(self, tmp_path: Path) -> None:
+        settings = load_settings(
+            tmp_path,
+            user_settings={},
+            project_settings={"mcp": {"servers": {"calc": {"enabled": True}}}},
+        )
+        assert resolve_server_policy(settings, "calc").enabled is True
 
 
 async def _wait_port(port: int, timeout: float = 5.0) -> None:

@@ -49,6 +49,27 @@ def normalize_responses_input(messages: list[Message]) -> list[dict[str, Any]]:
             continue
         role = msg.message.get("role", msg.type)
         content = msg.message.get("content", [])
+        if isinstance(content, str):
+            text = content
+            if not text:
+                continue
+            if role == "assistant":
+                items.append(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    }
+                )
+            else:
+                items.append(
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}],
+                    }
+                )
+            continue
         if not isinstance(content, list):
             continue
 

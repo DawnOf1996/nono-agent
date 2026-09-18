@@ -53,7 +53,9 @@ async def main() -> None:
         if denied.status_code != 401:
             raise SystemExit(f"expected 401 without auth, got {denied.status_code}")
 
-        runtime = await start_mcp_runtime(ROOT)
+        runtime = await start_mcp_runtime(
+            ROOT, mcp_path=ROOT / ".nono-agent" / "mcp.json"
+        )
         try:
             if not runtime.enabled:
                 raise SystemExit("MCP runtime disabled by settings")

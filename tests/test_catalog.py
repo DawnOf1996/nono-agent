@@ -100,6 +100,43 @@ class TestMergeCatalogDicts:
         assert models["m2"]["name"] == "Two"
         assert "c" in providers
 
+    def test_model_extra_body_dicts_are_merged(self):
+        merged = merge_catalog_dicts(
+            {
+                "llm_provider": {
+                    "providers": {
+                        "a": {
+                            "display_name": "A",
+                            "api_key_env": "A_KEY",
+                            "api": "openai_responses",
+                            "models": [
+                                {
+                                    "id": "m1",
+                                    "extra_body": {"keep": True, "reasoning": {"effort": "low"}},
+                                }
+                            ],
+                        }
+                    }
+                }
+            },
+            {
+                "llm_provider": {
+                    "providers": {
+                        "a": {
+                            "models": [
+                                {"id": "m1", "extra_body": {"reasoning": {"effort": "high"}}},
+                            ],
+                        }
+                    }
+                }
+            },
+        )
+        models = {m["id"]: m for m in merged["llm_provider"]["providers"]["a"]["models"]}
+        assert models["m1"]["extra_body"] == {
+            "keep": True,
+            "reasoning": {"effort": "high"},
+        }
+
 
 class TestLoadCatalog:
     def test_user_and_project_merge(self, tmp_path):
@@ -156,6 +193,42 @@ class TestResolve:
         assert pc.max_tokens == 128_000
         assert pc.api_key == "sk-a"
         assert pc.base_url == "https://api.minimax.cn/v1"
+
+    def test_model_extra_body_merges_over_provider(self, tmp_path, monkeypatch):
+        from nono_agent.providers import catalog as catalog_mod
+
+        _write(
+            catalog_mod.USER_CONFIG_PATH,
+            """
+agent_default_model:
+  provider: a
+  model: m1
+llm_provider:
+  providers:
+    a:
+      display_name: A
+      api_key_env: A_API_KEY
+      api: openai_responses
+      extra_body:
+        reasoning_split: true
+        reasoning:
+          effort: low
+      models:
+        - id: m1
+          extra_body:
+            reasoning:
+              effort: high
+            thinking:
+              type: enabled
+""",
+        )
+        monkeypatch.setenv("A_API_KEY", "sk-a")
+        pc = load_catalog(tmp_path).resolve()
+        assert pc.extra_body == {
+            "reasoning_split": True,
+            "reasoning": {"effort": "high"},
+            "thinking": {"type": "enabled"},
+        }
 
     def test_model_only_uses_default_provider(self, tmp_path, monkeypatch):
         from nono_agent.providers import catalog as catalog_mod

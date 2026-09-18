@@ -1,11 +1,28 @@
 """pytest 全局夹具 —— 隔离真实用户配置与会话目录，保证测试可重复。"""
 
+from pathlib import Path
+
 import pytest
 
 from nono_agent.core import engine as engine_module
 from nono_agent.memory import store as memory_store_module
 from nono_agent.providers import catalog as catalog_module
 from nono_agent.session import transcript as transcript_module
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_home(tmp_path, monkeypatch):
+    """把 ``user_home()`` 指到临时目录，避免测试读到真实 ``~/.nono-agent``。"""
+    home = tmp_path / "isolated-user-nono-agent"
+    home.mkdir()
+
+    def _home() -> Path:
+        return home
+
+    monkeypatch.setattr("nono_agent.paths.user_home", _home)
+    monkeypatch.setattr("nono_agent.settings.sources.user_home", _home)
+    monkeypatch.setattr("nono_agent.mcp.launcher.user_home", _home)
+    yield
 
 
 @pytest.fixture(autouse=True)

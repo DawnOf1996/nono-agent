@@ -10,6 +10,10 @@ import type {
   SessionEvent,
   SessionInfo,
   SessionListItem,
+  McpServerInfo,
+  McpServerUpsert,
+  McpSnapshot,
+  SettingsTab,
   SlashCommandInfo,
   SlashCommandResult,
   Workspace,
@@ -112,6 +116,77 @@ export async function openCatalogConfig(): Promise<{ path: string; opened: boole
   );
 }
 
+export async function fetchMcp(cwd?: string | null): Promise<McpSnapshot> {
+  const query = cwd?.trim() ? `?cwd=${encodeURIComponent(cwd.trim())}` : "";
+  return readJson(await fetch(`/app/mcp${query}`));
+}
+
+export async function saveMcpServer(body: McpServerUpsert, cwd?: string | null): Promise<McpSnapshot> {
+  const query = cwd?.trim() ? `?cwd=${encodeURIComponent(cwd.trim())}` : "";
+  return readJson(
+    await fetch(`/app/mcp/servers${query}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function deleteMcpServer(serverId: string, cwd?: string | null): Promise<McpSnapshot> {
+  const query = cwd?.trim() ? `?cwd=${encodeURIComponent(cwd.trim())}` : "";
+  return readJson(
+    await fetch(`/app/mcp/servers/${encodeURIComponent(serverId)}${query}`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+export async function setMcpEnabled(cwd: string, id: string, enabled: boolean): Promise<McpSnapshot> {
+  return readJson(
+    await fetch("/app/mcp/enabled", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd, id, enabled }),
+    }),
+  );
+}
+
+export async function prepareMcpRuntime(
+  command: string,
+  args: string[],
+  onProgress?: (message: string, percent?: number) => void,
+): Promise<void> {
+  const response = await fetch("/app/mcp/runtimes/prepare", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify({ command, args }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(errorMessage(text, "准备运行时失败"));
+  }
+  for await (const frame of parseSse(response)) {
+    let data: { message?: string; percent?: number } = {};
+    if (frame.data) {
+      try {
+        data = JSON.parse(frame.data) as { message?: string; percent?: number };
+      } catch {
+        continue;
+      }
+    }
+    if (frame.event === "progress" && data.message) {
+      onProgress?.(data.message, data.percent);
+      continue;
+    }
+    if (frame.event === "error") {
+      throw new Error(data.message?.trim() || "准备运行时失败");
+    }
+    if (frame.event === "done" && data.message) {
+      onProgress?.(data.message, 100);
+    }
+  }
+}
+
 export async function fetchWorkspaces(): Promise<Workspace[]> {
   const data = await readJson<{ workspaces: Workspace[] }>(await fetch("/app/workspaces"));
   return data.workspaces;
@@ -181,9 +256,18 @@ export async function patchAppSession(
   );
 }
 
-export async function forkAppSession(sessionId: string): Promise<SessionListItem> {
+export async function forkAppSession(
+  sessionId: string,
+  boundarySeq?: number,
+): Promise<SessionListItem> {
   return readJson(
-    await fetch(`/app/sessions/${encodeURIComponent(sessionId)}/fork`, { method: "POST" }),
+    await fetch(`/app/sessions/${encodeURIComponent(sessionId)}/fork`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        typeof boundarySeq === "number" ? { boundary_seq: boundarySeq } : {},
+      ),
+    }),
   );
 }
 
@@ -365,11 +449,14 @@ export type {
   AskUserSignal,
   CatalogSnapshot,
   FsListing,
+  McpServerInfo,
+  McpSnapshot,
   PermissionMode,
   PermissionRequest,
   SessionEvent,
   SessionInfo,
   SessionListItem,
+  SettingsTab,
   SlashCommandInfo,
   Workspace,
 };
