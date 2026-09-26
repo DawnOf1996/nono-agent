@@ -1,16 +1,12 @@
-import { Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
-import type { FsFilePreview } from "@nono/protocol";
+import { ChevronDown, WrapText } from "lucide-react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
-import { fetchWorkspaceFile, workspaceFileRawUrl } from "@/api/client";
-import { MarkdownText } from "@/components/MarkdownText";
+import { Dropdown, DropdownItem } from "@/components/ui/dropdown";
+import { PreviewLoading } from "@/features/files/preview/Loading";
+import { ensureBuiltinPreviews, fileNameOf, formatBytes, getDocumentPreviews, previewCandidates, subscribeDocumentPreviews } from "@/features/files/preview";
+import { loadPreview, type LoadedPreview } from "@/features/files/preview/load";
+import type { PreviewLoading as PreviewLoadMode } from "@/features/files/preview/types";
 import { normalizeWorkspace } from "@/lib/workspace";
-
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
-}
 
 function relativePath(root: string, target: string): string {
   const base = normalizeWorkspace(root);
@@ -21,77 +17,115 @@ function relativePath(root: string, target: string): string {
   return full;
 }
 
-function isMarkdown(name: string): boolean {
-  const lower = name.toLowerCase();
-  return lower.endsWith(".md") || lower.endsWith(".markdown");
+function isAbort(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === "AbortError";
 }
 
-function fsError(cause: unknown): string {
+function readError(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : "无法读取文件";
   if (message === "Not Found") return "读不到文件接口，请重启本机服务后再试";
   return message;
 }
 
+ensureBuiltinPreviews();
+
 export function FilePreview({ root, path, revision }: { root: string; path: string; revision: number }) {
-  const [preview, setPreview] = useState<FsFilePreview | null>(null);
+  const definitions = useSyncExternalStore(subscribeDocumentPreviews, getDocumentPreviews, getDocumentPreviews);
+  const candidates = useMemo(() => previewCandidates(definitions, path), [definitions, path]);
+  const [rendererId, setRendererId] = useState<string | null>(null);
+  const [wrap, setWrap] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [loaded, setLoaded] = useState<(LoadedPreview & { loading: PreviewLoadMode }) | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const selected = candidates.find((item) => item.id === rendererId) ?? candidates[0];
+  const current = loaded !== null && selected !== undefined && loaded.loading === selected.loading ? loaded : null;
 
   useEffect(() => {
-    let live = true;
-    setPreview(null);
+    if (selected === undefined) return;
+    const controller = new AbortController();
+    const loading = selected.loading;
     setError(null);
-    void fetchWorkspaceFile(root, path)
-      .then((data) => {
-        if (live) setPreview(data);
+    void loadPreview(root, path, loading, revision, controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) setLoaded({ ...result, loading });
       })
       .catch((cause: unknown) => {
-        if (live) setError(fsError(cause));
+        if (controller.signal.aborted || isAbort(cause)) return;
+        setLoaded(null);
+        setError(readError(cause));
       });
-    return () => {
-      live = false;
-    };
-  }, [root, path, revision]);
+    return () => controller.abort();
+  }, [path, revision, root, selected]);
+
+  const Body = selected?.Body;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-bg">
-      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-2">
-        <span className="min-w-0 truncate text-[12px] text-faint" title={path}>
+      <div className="flex items-center gap-1 border-b border-line px-3 py-1.5">
+        <span className="min-w-0 flex-1 truncate text-[12px] text-faint" title={path}>
           {relativePath(root, path)}
         </span>
-        {preview ? <span className="shrink-0 text-[11px] text-faint">{formatBytes(preview.size)}</span> : null}
+        {current ? <span className="shrink-0 text-[11px] text-faint">{formatBytes(current.size)}</span> : null}
+        {selected && candidates.length > 1 ? (
+          <Dropdown
+            open={menuOpen}
+            onOpenChange={setMenuOpen}
+            align="right"
+            trigger={
+              <button
+                type="button"
+                className="flex h-7 max-w-28 items-center gap-1 rounded-md px-1.5 text-[12px] text-muted hover:bg-hover hover:text-ink"
+                aria-label="预览方式"
+                onClick={() => setMenuOpen((value) => !value)}
+              >
+                <span className="truncate">{selected.title}</span>
+                <ChevronDown className="size-3 shrink-0" />
+              </button>
+            }
+          >
+            {candidates.map((item) => (
+              <DropdownItem
+                key={item.id}
+                selected={item.id === selected.id}
+                className="text-[13px]"
+                onClick={() => {
+                  setRendererId(item.id);
+                  setMenuOpen(false);
+                }}
+              >
+                {item.title}
+              </DropdownItem>
+            ))}
+          </Dropdown>
+        ) : null}
+        {selected?.wrap ? (
+          <button
+            type="button"
+            className={`flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-hover hover:text-ink ${
+              wrap ? "text-ink" : "text-faint"
+            }`}
+            title={wrap ? "关闭自动换行" : "打开自动换行"}
+            aria-label={wrap ? "关闭自动换行" : "打开自动换行"}
+            aria-pressed={wrap}
+            onClick={() => setWrap((value) => !value)}
+          >
+            <WrapText className="size-3.5" />
+          </button>
+        ) : null}
       </div>
       {error ? (
         <p className="px-4 py-6 text-[13px] leading-6 text-danger">{error}</p>
-      ) : !preview ? (
-        <div className="flex flex-1 items-center justify-center gap-2 text-[13px] text-faint">
-          <Loader2 className="size-4 animate-spin" />
-          正在读取
-        </div>
-      ) : preview.kind === "image" ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
-          <img
-            src={workspaceFileRawUrl(root, path)}
-            alt={preview.name}
-            className="max-h-full max-w-full object-contain"
-          />
-        </div>
-      ) : preview.kind === "text" && preview.content !== null ? (
-        <div className="min-h-0 flex-1 overflow-auto">
-          {isMarkdown(preview.name) ? (
-            <div className="file-preview min-w-full px-4 py-4">
-              <MarkdownText text={preview.content} />
-            </div>
-          ) : (
-            <pre className="min-w-full whitespace-pre px-4 py-3 font-mono text-[12.5px] leading-6 text-ink">
-              {preview.content}
-            </pre>
-          )}
-        </div>
+      ) : !current || !Body || !selected ? (
+        <PreviewLoading />
       ) : (
-        <div className="flex flex-1 items-center justify-center px-6 text-center text-[13px] leading-6 text-muted">
-          {preview.kind === "too_large"
-            ? `这个文件有 ${formatBytes(preview.size)}，超过预览上限。`
-            : "这个文件不能以文本方式预览。"}
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <Body
+            root={root}
+            path={path}
+            name={fileNameOf(path)}
+            content={current.content}
+            wrap={wrap}
+          />
         </div>
       )}
     </div>

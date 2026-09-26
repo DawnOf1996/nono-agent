@@ -1,4 +1,4 @@
-"""本机目录浏览：列表、创建、用系统文件管理器打开。"""
+"""本机目录浏览：列表、预览读取、创建、用系统文件管理器打开。"""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class WriteMarkdownBody(BaseModel):
 _INVALID_FOLDER_CHARS = frozenset('<>:"/\\|?*')
 _MAX_MARKDOWN_CHARS = 2_000_000
 _MAX_PREVIEW_BYTES = 1_000_000
-_MAX_IMAGE_BYTES = 12_000_000
+_MAX_BINARY_BYTES = 12_000_000
 _IMAGE_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -265,7 +265,7 @@ async def read_workspace_file(root: str = Query(), path: str = Query()) -> dict[
         raise HTTPException(status_code=400, detail="无法读取这个文件") from exc
     suffix = target.suffix.lower()
     if suffix in _IMAGE_TYPES:
-        kind = "too_large" if size > _MAX_IMAGE_BYTES else "image"
+        kind = "too_large" if size > _MAX_BINARY_BYTES else "image"
         return _preview_payload(target, kind, None, size)
     if size > _MAX_PREVIEW_BYTES:
         return _preview_payload(target, "too_large", None, size)
@@ -293,9 +293,24 @@ async def raw_workspace_file(root: str = Query(), path: str = Query()) -> FileRe
         size = target.stat().st_size
     except OSError as exc:
         raise HTTPException(status_code=400, detail="无法读取这个文件") from exc
-    if size > _MAX_IMAGE_BYTES:
+    if size > _MAX_BINARY_BYTES:
         raise HTTPException(status_code=413, detail="文件过大，无法预览")
     return FileResponse(target, media_type=media, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/fs/bytes")
+async def workspace_file_bytes(root: str = Query(), path: str = Query()) -> FileResponse:
+    """返回工作区内文件的完整字节，供 PDF、HTML 等按字节预览。超限拒绝，不截断。"""
+    _workspace, target = _resolve_under_root(root, path)
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="这不是文件")
+    try:
+        size = target.stat().st_size
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="无法读取这个文件") from exc
+    if size > _MAX_BINARY_BYTES:
+        raise HTTPException(status_code=413, detail="文件过大，无法预览")
+    return FileResponse(target, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
 
 
 @router.post("/fs/mkdir")

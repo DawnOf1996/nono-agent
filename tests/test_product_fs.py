@@ -101,6 +101,7 @@ def test_workspace_entries_and_preview(tmp_path: Path) -> None:
     (root / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
     (root / "pic.png").write_bytes(b"\x89PNG\r\n")
     (root / "blob.bin").write_bytes(b"\x00\x01\x02")
+    (root / "doc.pdf").write_bytes(b"%PDF-1.4\n")
     secret = tmp_path / "secret.txt"
     secret.write_text("nope", encoding="utf-8")
     with _client(tmp_path) as client:
@@ -114,6 +115,9 @@ def test_workspace_entries_and_preview(tmp_path: Path) -> None:
         leaked = client.get("/app/fs/file", params={"root": str(root), "path": str(secret)})
         raw = client.get("/app/fs/raw", params={"root": str(root), "path": str(root / "pic.png")})
         raw_text = client.get("/app/fs/raw", params={"root": str(root), "path": str(root / "note.md")})
+        pdf_bytes = client.get("/app/fs/bytes", params={"root": str(root), "path": str(root / "doc.pdf")})
+        leaked_bytes = client.get("/app/fs/bytes", params={"root": str(root), "path": str(secret)})
+        dir_bytes = client.get("/app/fs/bytes", params={"root": str(root), "path": str(root / "src")})
     assert listing.status_code == 200
     names = {item["name"]: item["is_dir"] for item in listing.json()["entries"]}
     assert names["src"] is True
@@ -134,6 +138,10 @@ def test_workspace_entries_and_preview(tmp_path: Path) -> None:
     assert raw.status_code == 200
     assert raw.headers["content-type"].startswith("image/png")
     assert raw_text.status_code == 415
+    assert pdf_bytes.status_code == 200
+    assert pdf_bytes.content.startswith(b"%PDF")
+    assert leaked_bytes.status_code == 403
+    assert dir_bytes.status_code == 400
 
 
 def test_workspace_file_too_large(tmp_path: Path) -> None:
@@ -145,6 +153,15 @@ def test_workspace_file_too_large(tmp_path: Path) -> None:
     assert resp.status_code == 200
     assert resp.json()["kind"] == "too_large"
     assert resp.json()["content"] is None
+
+
+def test_workspace_bytes_too_large(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "big.pdf").write_bytes(b"a" * (12_000_000 + 1))
+    with _client(tmp_path) as client:
+        resp = client.get("/app/fs/bytes", params={"root": str(root), "path": str(root / "big.pdf")})
+    assert resp.status_code == 413
 
 
 def test_mkdir_conflict(tmp_path: Path) -> None:

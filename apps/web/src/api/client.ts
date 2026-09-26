@@ -408,9 +408,23 @@ export async function fetchWorkspaceEntries(root: string, path?: string | null):
   return readJson(await fetch(`/app/fs/entries?${params}`));
 }
 
-export async function fetchWorkspaceFile(root: string, path: string): Promise<FsFilePreview> {
+export async function fetchWorkspaceFile(
+  root: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<FsFilePreview> {
   const params = new URLSearchParams({ root, path });
-  return readJson(await fetch(`/app/fs/file?${params}`));
+  return readJson(await fetch(`/app/fs/file?${params}`, { signal }));
+}
+
+export async function fetchWorkspaceBytes(root: string, path: string, signal?: AbortSignal): Promise<Uint8Array> {
+  const params = new URLSearchParams({ root, path });
+  const response = await fetch(`/app/fs/bytes?${params}`, { signal });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(errorMessage(text, "无法读取文件"));
+  }
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 export function workspaceFileRawUrl(root: string, path: string): string {
