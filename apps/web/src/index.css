@@ -179,6 +179,15 @@ textarea {
   font-weight: 600;
 }
 
+.file-preview .prose-md {
+  overflow-wrap: break-word;
+}
+
+.file-preview .prose-md table {
+  width: max-content;
+  min-width: 100%;
+}
+
 .prose-md-muted {
   font-size: 13px;
   line-height: 1.6;

@@ -81,6 +81,72 @@ def test_write_markdown(tmp_path: Path) -> None:
     assert other.status_code == 400
 
 
+def test_list_directory_skips_files(tmp_path: Path) -> None:
+    (tmp_path / "keep").mkdir()
+    (tmp_path / "note.md").write_text("x", encoding="utf-8")
+    with _client(tmp_path) as client:
+        resp = client.get("/app/fs", params={"path": str(tmp_path)})
+    assert resp.status_code == 200
+    names = [item["name"] for item in resp.json()["entries"]]
+    assert "keep" in names
+    assert "note.md" not in names
+
+
+def test_workspace_entries_and_preview(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "note.md").write_text("hello", encoding="utf-8")
+    (root / ".gitignore").write_text("x\n", encoding="utf-8")
+    (root / "src").mkdir()
+    (root / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "pic.png").write_bytes(b"\x89PNG\r\n")
+    (root / "blob.bin").write_bytes(b"\x00\x01\x02")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope", encoding="utf-8")
+    with _client(tmp_path) as client:
+        listing = client.get("/app/fs/entries", params={"root": str(root)})
+        nested = client.get("/app/fs/entries", params={"root": str(root), "path": str(root / "src")})
+        outside = client.get("/app/fs/entries", params={"root": str(root), "path": str(tmp_path)})
+        escaped = client.get("/app/fs/entries", params={"root": str(root), "path": str(root / "..")})
+        preview = client.get("/app/fs/file", params={"root": str(root), "path": str(root / "note.md")})
+        image = client.get("/app/fs/file", params={"root": str(root), "path": str(root / "pic.png")})
+        binary = client.get("/app/fs/file", params={"root": str(root), "path": str(root / "blob.bin")})
+        leaked = client.get("/app/fs/file", params={"root": str(root), "path": str(secret)})
+        raw = client.get("/app/fs/raw", params={"root": str(root), "path": str(root / "pic.png")})
+        raw_text = client.get("/app/fs/raw", params={"root": str(root), "path": str(root / "note.md")})
+    assert listing.status_code == 200
+    names = {item["name"]: item["is_dir"] for item in listing.json()["entries"]}
+    assert names["src"] is True
+    assert names["note.md"] is False
+    assert names[".gitignore"] is False
+    assert [item["name"] for item in listing.json()["entries"] if item["is_dir"]] == ["src"]
+    assert nested.status_code == 200
+    assert nested.json()["entries"][0]["name"] == "a.py"
+    assert outside.status_code == 403
+    assert escaped.status_code == 403
+    assert preview.status_code == 200
+    assert preview.json()["kind"] == "text"
+    assert preview.json()["content"] == "hello"
+    assert image.json()["kind"] == "image"
+    assert image.json()["content"] is None
+    assert binary.json()["kind"] == "binary"
+    assert leaked.status_code == 403
+    assert raw.status_code == 200
+    assert raw.headers["content-type"].startswith("image/png")
+    assert raw_text.status_code == 415
+
+
+def test_workspace_file_too_large(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "big.txt").write_bytes(b"a" * (1_000_000 + 1))
+    with _client(tmp_path) as client:
+        resp = client.get("/app/fs/file", params={"root": str(root), "path": str(root / "big.txt")})
+    assert resp.status_code == 200
+    assert resp.json()["kind"] == "too_large"
+    assert resp.json()["content"] is None
+
+
 def test_mkdir_conflict(tmp_path: Path) -> None:
     existing = tmp_path / "taken"
     existing.mkdir()

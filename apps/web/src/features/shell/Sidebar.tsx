@@ -1,5 +1,5 @@
-import { Archive, ChevronRight, Folder, FolderOpen, GitFork, Loader2, MoreHorizontal, Pencil, Plus, Settings, ShieldAlert, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Archive, ChevronRight, Folder, FolderOpen, FolderPlus, GitFork, Loader2, MoreHorizontal, PanelLeftClose, Pencil, Plus, Settings, ShieldAlert, SquarePen, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { SessionListItem, Workspace } from "@nono/protocol";
 
@@ -551,7 +551,37 @@ function WorkspaceRow({
   );
 }
 
-export function Sidebar() {
+function RailButton({
+  title,
+  onClick,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex size-9 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-ink"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function Sidebar({
+  expanded,
+  onExpand,
+  onCollapse,
+}: {
+  expanded: boolean;
+  onExpand: () => void;
+  onCollapse: () => void;
+}) {
   const sessions = useChatStore((state) => state.sessions);
   const healthOk = useChatStore((state) => state.healthOk);
   const workspace = useChatStore((state) => state.workspace);
@@ -599,32 +629,75 @@ export function Sidebar() {
 
   const ungroupedOpen = !collapsed.has(UNGROUPED_ID);
 
+  function startNewSession() {
+    const listed = workspaces.some((item) => sameWorkspace(item.path, workspace));
+    if (!workspace.trim() || !listed) {
+      setPickerOpen(true);
+      return;
+    }
+    void newSession();
+  }
+
+  if (!expanded) {
+    return (
+      <aside className="flex h-full w-full flex-col items-center border-r border-line bg-sidebar">
+        <div className="flex h-12 w-full shrink-0 items-center justify-center border-b border-line">
+          <button
+            type="button"
+            className="rounded-[10px] hover:opacity-80"
+            title="展开菜单"
+            aria-label="展开菜单"
+            onClick={onExpand}
+          >
+            <img src="/logo.png" alt="" draggable={false} className="size-8 rounded-[10px]" />
+          </button>
+        </div>
+        <div className="flex flex-col items-center gap-1 px-1.5 pt-2">
+          <RailButton title="新会话" onClick={startNewSession}>
+            <SquarePen className="size-4" />
+          </RailButton>
+          <RailButton title="新建工作区" onClick={() => setPickerOpen(true)}>
+            <FolderPlus className="size-4" />
+          </RailButton>
+        </div>
+        <div className="mt-auto flex w-full justify-center border-t border-line p-1.5">
+          <RailButton title="设置" onClick={() => setSettingsOpen(true)}>
+            <Settings className="size-4" />
+          </RailButton>
+        </div>
+        <WorkspacePicker open={pickerOpen} onClose={() => setPickerOpen(false)} />
+      </aside>
+    );
+  }
+
   return (
-    <aside className="flex w-[260px] shrink-0 flex-col border-r border-line bg-sidebar">
-      <div className="flex items-center gap-2 px-4 py-4">
+    <aside className="flex h-full w-full min-w-0 flex-col border-r border-line bg-sidebar">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
         <img src="/logo.png" alt="" draggable={false} className="size-8 shrink-0 rounded-[10px]" />
-        <div className="flex min-w-0 items-center gap-1.5">
-          <div className="text-sm font-medium">NoNo Agent</div>
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <div className="truncate text-sm font-medium">NoNo Agent</div>
           <span
             className={`size-2 shrink-0 rounded-full ${healthOk ? "bg-[#22c55e]" : "bg-danger"}`}
             title={healthOk ? "服务在线" : "服务离线"}
             aria-label={healthOk ? "服务在线" : "服务离线"}
           />
         </div>
+        <button
+          type="button"
+          className="flex size-8 shrink-0 items-center justify-center rounded-lg text-faint hover:bg-hover hover:text-ink"
+          title="收起菜单"
+          aria-label="收起菜单"
+          onClick={onCollapse}
+        >
+          <PanelLeftClose className="size-4" />
+        </button>
       </div>
 
       <div className="px-3 pb-3">
         <Button
           variant="outline"
           className="h-9 w-full justify-start gap-2 rounded-full border-line-strong bg-bg"
-          onClick={() => {
-            const listed = workspaces.some((item) => sameWorkspace(item.path, workspace));
-            if (!workspace.trim() || !listed) {
-              setPickerOpen(true);
-              return;
-            }
-            void newSession();
-          }}
+          onClick={startNewSession}
         >
           <Plus className="size-4" />
           新会话

@@ -3,6 +3,7 @@ import type {
   AskUserSignal,
   CatalogSnapshot,
   ChatImageAttachment,
+  FsFilePreview,
   FsListing,
   PermissionRequest,
   PermissionMode,
@@ -17,6 +18,7 @@ import type {
   SlashCommandInfo,
   SlashCommandResult,
   Workspace,
+  WorkspaceListing,
 } from "@nono/protocol";
 
 import { parseSse } from "@/api/sse";
@@ -400,6 +402,22 @@ export async function fetchDirectory(path?: string | null): Promise<FsListing> {
   return readJson(await fetch(`/app/fs${query}`));
 }
 
+export async function fetchWorkspaceEntries(root: string, path?: string | null): Promise<WorkspaceListing> {
+  const params = new URLSearchParams({ root });
+  if (path) params.set("path", path);
+  return readJson(await fetch(`/app/fs/entries?${params}`));
+}
+
+export async function fetchWorkspaceFile(root: string, path: string): Promise<FsFilePreview> {
+  const params = new URLSearchParams({ root, path });
+  return readJson(await fetch(`/app/fs/file?${params}`));
+}
+
+export function workspaceFileRawUrl(root: string, path: string): string {
+  const params = new URLSearchParams({ root, path });
+  return `/app/fs/raw?${params}`;
+}
+
 export async function fetchCommands(): Promise<SlashCommandInfo[]> {
   const data = await readJson<{ commands: SlashCommandInfo[] }>(await fetch("/commands"));
   return data.commands;
@@ -462,6 +480,7 @@ export type {
   AppInfo,
   AskUserSignal,
   CatalogSnapshot,
+  FsFilePreview,
   FsListing,
   McpServerInfo,
   McpSnapshot,
@@ -473,4 +492,5 @@ export type {
   SettingsTab,
   SlashCommandInfo,
   Workspace,
+  WorkspaceListing,
 };

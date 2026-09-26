@@ -197,6 +197,23 @@ export type FsListing = {
   entries: FsEntry[];
 };
 
+export type WorkspaceListing = {
+  path: string;
+  root: string;
+  entries: FsEntry[];
+};
+
+export type FsFileKind = "text" | "image" | "binary" | "too_large";
+
+export type FsFilePreview = {
+  path: string;
+  name: string;
+  kind: FsFileKind;
+  content: string | null;
+  size: number;
+  truncated: boolean;
+};
+
 export type McpServerSource = "user" | "plugin";
 
 export type McpServerInfo = {

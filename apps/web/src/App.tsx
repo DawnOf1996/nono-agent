@@ -1,10 +1,9 @@
 import { useEffect } from "react";
 
-import { ChatPane } from "@/features/chat/ChatPane";
 import { PermissionDialog } from "@/features/permissions/PermissionDialog";
 import { NewTaskDialog } from "@/features/session/NewTaskDialog";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
-import { Sidebar } from "@/features/shell/Sidebar";
+import { Workbench } from "@/features/shell/Workbench";
 import { anyStreaming, useChatStore } from "@/store/chat";
 
 export function App() {
@@ -36,8 +35,7 @@ export function App() {
 
   return (
     <div className="flex h-full min-h-0 bg-bg">
-      <Sidebar />
-      <ChatPane />
+      <Workbench />
       <PermissionDialog />
       <NewTaskDialog />
       <SettingsPanel />
