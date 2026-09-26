@@ -54,6 +54,33 @@ def test_mkdir_rejects_invalid_name(tmp_path: Path) -> None:
     assert dot.status_code == 400
 
 
+def test_write_markdown(tmp_path: Path) -> None:
+    folder = tmp_path / "ws"
+    folder.mkdir()
+    with _client(tmp_path) as client:
+        resp = client.post(
+            "/app/fs/write",
+            json={"directory": str(folder), "name": "笔记", "content": "# 你好\n"},
+        )
+        again = client.post(
+            "/app/fs/write",
+            json={"directory": str(folder), "name": "笔记.md", "content": "x"},
+        )
+        nested = client.post(
+            "/app/fs/write",
+            json={"directory": str(folder), "name": "a/b.md", "content": "x"},
+        )
+        other = client.post(
+            "/app/fs/write",
+            json={"directory": str(folder), "name": "note.txt", "content": "x"},
+        )
+    assert resp.status_code == 200
+    assert (folder / "笔记.md").read_text(encoding="utf-8") == "# 你好\n"
+    assert again.status_code == 409
+    assert nested.status_code == 400
+    assert other.status_code == 400
+
+
 def test_mkdir_conflict(tmp_path: Path) -> None:
     existing = tmp_path / "taken"
     existing.mkdir()

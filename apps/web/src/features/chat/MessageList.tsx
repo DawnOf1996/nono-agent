@@ -1,10 +1,13 @@
-import { ChevronDown, Copy, GitFork } from "lucide-react";
+import { ChevronDown, Copy, FileDown, GitFork } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { writeMarkdownFile } from "@/api/client";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { MarkdownText } from "@/components/MarkdownText";
 import { ReasoningRow } from "@/features/chat/ReasoningRow";
 import { TurnRail, groupChatTurns } from "@/features/chat/TurnRail";
+import { WorkspacePicker } from "@/features/session/WorkspacePicker";
+import { suggestMarkdownFileName } from "@/lib/markdown-file";
 import type { ChatImage, ChatMessage } from "@/store/chat";
 import { useChatStore } from "@/store/chat";
 
@@ -38,7 +41,13 @@ function MessageImages({ images, messageId }: { images: ChatImage[]; messageId: 
 const NEAR_BOTTOM_PX = 96;
 
 /** memo：流式追加时只有最后一条消息在变，历史消息不该重新渲染。 */
-const MessageBlock = memo(function MessageBlock({ message }: { message: ChatMessage }) {
+const MessageBlock = memo(function MessageBlock({
+  message,
+  onExport,
+}: {
+  message: ChatMessage;
+  onExport?: (text: string) => void;
+}) {
   if (message.role === "system") {
     return (
       <div className="rounded-2xl border border-line bg-sidebar px-4 py-3 font-mono text-[13px] leading-6 whitespace-pre-wrap text-muted">
@@ -97,6 +106,14 @@ const MessageBlock = memo(function MessageBlock({ message }: { message: ChatMess
           >
             <Copy className="size-3.5" />
           </button>
+          <button
+            type="button"
+            className="text-faint hover:text-ink"
+            title="导出 Markdown"
+            onClick={() => onExport?.(answer)}
+          >
+            <FileDown className="size-3.5" />
+          </button>
           {typeof message.seq === "number" ? (
             <button
               type="button"
@@ -128,6 +145,11 @@ export function MessageList() {
   const streaming = useChatStore((state) => state.streaming);
   const historyReveal = useChatStore((state) => state.historyReveal);
   const historyLoading = useChatStore((state) => state.historyLoading);
+  const workspace = useChatStore((state) => state.workspace);
+  const [exportDraft, setExportDraft] = useState<{ text: string; name: string } | null>(null);
+  const openExport = useCallback((text: string) => {
+    setExportDraft({ text, name: suggestMarkdownFileName(text) });
+  }, []);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const sessionRef = useRef(sessionId);
@@ -261,12 +283,27 @@ export function MessageList() {
               className="chat-msg"
               data-turn-id={turnStartIds.has(message.id) ? message.id : undefined}
             >
-              <MessageBlock message={message} />
+              <MessageBlock message={message} onExport={openExport} />
             </div>
           ))}
         </div>
       </div>
       <TurnRail turns={turns} activeId={activeTurnId} onJump={jumpToTurn} />
+      <WorkspacePicker
+        open={exportDraft != null}
+        title="导出 Markdown"
+        confirmLabel="保存"
+        initialPath={workspace}
+        fileName={exportDraft?.name ?? ""}
+        onFileNameChange={(name) =>
+          setExportDraft((current) => (current ? { ...current, name } : current))
+        }
+        onConfirm={async (directory) => {
+          if (!exportDraft) return;
+          await writeMarkdownFile(directory, exportDraft.name, exportDraft.text);
+        }}
+        onClose={() => setExportDraft(null)}
+      />
       {showJump ? (
         <button
           type="button"

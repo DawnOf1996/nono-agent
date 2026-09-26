@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { createDirectory, fetchDirectory } from "@/api/client";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { FieldLabel, Input } from "@/components/ui/input";
 import { useChatStore } from "@/store/chat";
 import type { FsListing } from "@nono/protocol";
 
@@ -12,17 +12,34 @@ const INVALID_NAME = /[<>:"/\\|?*]/;
 export function WorkspacePicker({
   open,
   onClose,
+  title = "选择工作区目录",
+  confirmLabel = "打开",
+  initialPath,
+  fileName,
+  onFileNameChange,
+  onConfirm,
 }: {
   open: boolean;
   onClose: () => void;
+  title?: string;
+  confirmLabel?: string;
+  /** 打开时先进入这个目录；列不出来就退回磁盘列表。 */
+  initialPath?: string | null;
+  fileName?: string;
+  onFileNameChange?: (value: string) => void;
+  /** 给定时，确认只把当前目录交回去，不再登记为工作区。 */
+  onConfirm?: (path: string) => void | Promise<void>;
 }) {
   const addWorkspace = useChatStore((state) => state.addWorkspace);
   const [listing, setListing] = useState<FsListing | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [draftName, setDraftName] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
+  const initialPathRef = useRef(initialPath);
+  initialPathRef.current = initialPath;
 
   async function load(path?: string | null) {
     setError(null);
@@ -30,6 +47,15 @@ export function WorkspacePicker({
     try {
       setListing(await fetchDirectory(path));
     } catch (cause) {
+      if (path) {
+        try {
+          setListing(await fetchDirectory());
+          setError("打不开这个目录，已回到磁盘列表");
+          return;
+        } catch {
+          // 磁盘列表也失败时，用下面的错误
+        }
+      }
       setError(cause instanceof Error ? cause.message : "无法列出目录");
     }
   }
@@ -38,9 +64,10 @@ export function WorkspacePicker({
     if (!open) {
       setDraftName(null);
       setError(null);
+      setSaving(false);
       return;
     }
-    void load();
+    void load(initialPathRef.current);
   }, [open]);
 
   useEffect(() => {
@@ -113,7 +140,7 @@ export function WorkspacePicker({
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/25 p-6">
       <div className="flex h-[min(36rem,80vh)] w-full max-w-lg flex-col rounded-2xl bg-bg shadow-xl">
         <div className="px-5 pt-5">
-          <div className="text-[15px] font-medium">选择工作区目录</div>
+          <div className="text-[15px] font-medium">{title}</div>
           <div className="mt-3 flex items-center justify-between text-[13px] text-muted">
             <span className="min-w-0 truncate" title={listing?.path || "选择磁盘"}>
               {listing?.path || "选择磁盘"}
@@ -174,6 +201,19 @@ export function WorkspacePicker({
           {error ? <p className="px-3 py-2 text-xs text-danger">{error}</p> : null}
         </div>
 
+        {fileName !== undefined ? (
+          <div className="px-4 pt-2">
+            <FieldLabel htmlFor="export-markdown-name">文件名</FieldLabel>
+            <Input
+              id="export-markdown-name"
+              value={fileName}
+              placeholder="导出.md"
+              onChange={(event) => onFileNameChange?.(event.target.value)}
+            />
+            <p className="mt-1 text-[12px] text-faint">默认是当前工作区，也可以在上面换一个文件夹。</p>
+          </div>
+        ) : null}
+
         <div className="flex items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-center gap-2">
             <button
@@ -199,14 +239,25 @@ export function WorkspacePicker({
               取消
             </Button>
             <Button
-              disabled={!listing?.path}
+              disabled={!listing?.path || saving || (fileName !== undefined && !fileName.trim())}
               onClick={() => {
-                if (!listing?.path) return;
-                void addWorkspace(listing.path);
-                onClose();
+                if (!listing?.path || saving) return;
+                if (!onConfirm) {
+                  void addWorkspace(listing.path);
+                  onClose();
+                  return;
+                }
+                setSaving(true);
+                setError(null);
+                void Promise.resolve(onConfirm(listing.path))
+                  .then(() => onClose())
+                  .catch((cause: unknown) => {
+                    setError(cause instanceof Error ? cause.message : "保存失败");
+                  })
+                  .finally(() => setSaving(false));
               }}
             >
-              打开
+              {saving ? "保存中…" : confirmLabel}
             </Button>
           </div>
         </div>

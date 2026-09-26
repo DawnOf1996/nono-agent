@@ -24,7 +24,14 @@ class OpenPathBody(BaseModel):
     path: str
 
 
+class WriteMarkdownBody(BaseModel):
+    directory: str
+    name: str
+    content: str
+
+
 _INVALID_FOLDER_CHARS = frozenset('<>:"/\\|?*')
+_MAX_MARKDOWN_CHARS = 2_000_000
 
 
 def _valid_folder_name(name: str) -> bool:
@@ -35,6 +42,21 @@ def _valid_folder_name(name: str) -> bool:
     if name.endswith((" ", ".")):
         return False
     return True
+
+
+def _markdown_file_name(name: str) -> str:
+    """只允许在所选目录里写一个 .md 文件，拒绝路径穿越。"""
+    cleaned = name.strip()
+    if not cleaned or cleaned in {".", ".."}:
+        raise HTTPException(status_code=400, detail="请输入文件名")
+    if any(char in _INVALID_FOLDER_CHARS for char in cleaned) or cleaned.endswith((" ", ".")):
+        raise HTTPException(status_code=400, detail="文件名不能包含 \\ / : * ? \" < > |")
+    suffix = Path(cleaned).suffix.lower()
+    if suffix and suffix != ".md":
+        raise HTTPException(status_code=400, detail="只能导出 .md 文件")
+    if not suffix:
+        cleaned = f"{cleaned}.md"
+    return cleaned
 
 
 def _home() -> Path:
@@ -125,6 +147,26 @@ async def make_directory(body: MkdirBody) -> dict[str, Any]:
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"path": str(target), "parent": str(parent), "name": name}
+
+
+@router.post("/fs/write")
+async def write_markdown(body: WriteMarkdownBody) -> dict[str, Any]:
+    """把一段 Markdown 写到用户选中的目录。已存在则拒绝覆盖。"""
+    if len(body.content) > _MAX_MARKDOWN_CHARS:
+        raise HTTPException(status_code=400, detail="内容过长，无法导出")
+    directory = _resolve_dir(body.directory)
+    name = _markdown_file_name(body.name)
+    target = (directory / name).resolve()
+    if target.parent != directory:
+        raise HTTPException(status_code=400, detail="Invalid file name")
+    try:
+        with target.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(body.content)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail="文件已存在，请换一个文件名") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"path": str(target), "name": name}
 
 
 @router.post("/fs/open")

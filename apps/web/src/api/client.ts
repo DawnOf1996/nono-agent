@@ -419,6 +419,20 @@ export async function runSlashCommand(input: {
   );
 }
 
+export async function writeMarkdownFile(
+  directory: string,
+  name: string,
+  content: string,
+): Promise<{ path: string; name: string }> {
+  return readJson(
+    await fetch("/app/fs/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ directory, name, content }),
+    }),
+  );
+}
+
 export async function createDirectory(parent: string, name: string): Promise<{ path: string }> {
   return readJson(
     await fetch("/app/fs/mkdir", {
