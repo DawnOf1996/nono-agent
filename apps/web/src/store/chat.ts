@@ -12,9 +12,12 @@ import type {
   SessionListItem,
   SettingsTab,
   SlashCommandInfo,
+  TurnChanges,
   Workspace,
 } from "@nono/protocol";
 import { create } from "zustand";
+
+import { usePanelStore } from "@/features/files/panel-store";
 
 import {
   abortSession,
@@ -32,6 +35,7 @@ import {
   fetchPermissions,
   fetchSessionEvents,
   fetchSessionList,
+  fetchTurnChanges,
   fetchWorkspaces,
   forkAppSession,
   patchAppSession,
@@ -95,6 +99,8 @@ export type ChatMessage = {
   durationMs?: number;
   /** 事件流剪切点（含此 seq），用于从此条回复叉分出新会话。 */
   seq?: number;
+  /** 流式过程中收到的本轮文件变更摘要 id；历史消息按 seq 区间匹配。 */
+  changesId?: string;
 };
 
 export type TurnUsage = {
@@ -164,6 +170,9 @@ type ChatState = {
   commands: SlashCommandInfo[];
   historyReveal: boolean;
   historyLoading: boolean;
+  /** 各会话每轮的文件变更摘要（按时间先后）。 */
+  turnChanges: Record<string, TurnChanges[]>;
+  loadTurnChanges: (sessionId: string) => Promise<void>;
   setInput: (value: string) => void;
   setError: (message: string | null) => void;
   addAttachments: (items: PendingImage[]) => void;
@@ -437,6 +446,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   commands: [],
   historyReveal: false,
   historyLoading: false,
+  turnChanges: {},
+
+  loadTurnChanges: async (sessionId) => {
+    try {
+      const turns = await fetchTurnChanges(sessionId);
+      set((state) => ({ turnChanges: { ...state.turnChanges, [sessionId]: turns } }));
+    } catch {
+      // 旧版本机服务没有变更接口：不显示卡片
+    }
+  },
 
   setInput: (value) => set({ input: value }),
   setError: (message) =>
@@ -753,6 +772,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     });
     void get().refreshMcp();
+    void get().loadTurnChanges(sessionId);
     if (live) return;
 
     // 历史只写进该会话的运行态；期间它若开始新一轮输出就让位给流式内容。
@@ -1076,6 +1096,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set((state) => patchRun(state, runKey, { ask: signal }));
           continue;
         }
+        if (frame.event === "workspace_changes") {
+          const summary = JSON.parse(frame.data) as TurnChanges;
+          set((state) => {
+            const existing = (state.turnChanges[engineSessionId] ?? []).filter((item) => item.id !== summary.id);
+            return { turnChanges: { ...state.turnChanges, [engineSessionId]: [...existing, summary] } };
+          });
+          patchDraft((item) => ({ ...item, changesId: summary.id }));
+          usePanelStore.getState().bumpRevision();
+          continue;
+        }
         if (!frame.data) continue;
         const payload = JSON.parse(frame.data) as unknown;
         if (frame.event === "stream_event") {
@@ -1162,6 +1192,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ),
         }),
       );
+      usePanelStore.getState().bumpRevision();
       await get().refresh();
       if (sessionId) {
         const events = await fetchSessionEvents(sessionId).catch(() => null);

@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import shutil
 import string
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+from nono_app_server.product.textdiff import decode_text
 
 router = APIRouter()
 
@@ -31,8 +36,16 @@ class WriteMarkdownBody(BaseModel):
     content: str
 
 
+class SaveFileBody(BaseModel):
+    root: str
+    path: str
+    content: str
+    base_hash: str | None = None
+
+
 _INVALID_FOLDER_CHARS = frozenset('<>:"/\\|?*')
 _MAX_MARKDOWN_CHARS = 2_000_000
+_MAX_SAVE_CHARS = 4_000_000
 _MAX_PREVIEW_BYTES = 1_000_000
 _MAX_BINARY_BYTES = 12_000_000
 _IMAGE_TYPES = {
@@ -180,33 +193,17 @@ def _list_workspace_entries(root: Path, directory: Path) -> list[dict[str, Any]]
     return entries
 
 
-def _decode_text(data: bytes) -> str | None:
-    if b"\0" in data:
-        return None
-    try:
-        return data.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        pass
-    try:
-        text = data.decode("gb18030")
-    except UnicodeDecodeError:
-        return None
-    sample = text[:4000]
-    if not sample:
-        return text
-    weird = 0
-    for char in sample:
-        code = ord(char)
-        if char in "\n\r\t":
-            continue
-        if code < 32 or code == 0xFFFD:
-            weird += 1
-    if weird / len(sample) >= 0.02:
-        return None
-    return text
+def _content_hash(data: bytes) -> str:
+    return hashlib.sha1(data).hexdigest()
 
 
-def _preview_payload(path: Path, kind: str, content: str | None, size: int) -> dict[str, Any]:
+def _preview_payload(
+    path: Path,
+    kind: str,
+    content: str | None,
+    size: int,
+    content_hash: str | None = None,
+) -> dict[str, Any]:
     return {
         "path": str(path),
         "name": path.name,
@@ -214,7 +211,21 @@ def _preview_payload(path: Path, kind: str, content: str | None, size: int) -> d
         "content": content,
         "size": size,
         "truncated": False,
+        "hash": content_hash,
     }
+
+
+def _text_encoding(data: bytes) -> str | None:
+    """沿用文件原来的编码写回；判断不出文本编码时返回 None。"""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    if decode_text(data) is None:
+        return None
+    try:
+        data.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "gb18030"
 
 
 @router.get("/fs")
@@ -273,10 +284,57 @@ async def read_workspace_file(root: str = Query(), path: str = Query()) -> dict[
         data = target.read_bytes()
     except OSError as exc:
         raise HTTPException(status_code=400, detail="无法读取这个文件") from exc
-    text = _decode_text(data)
+    text = decode_text(data)
     if text is None:
         return _preview_payload(target, "binary", None, size)
-    return _preview_payload(target, "text", text, size)
+    return _preview_payload(target, "text", text, size, _content_hash(data))
+
+
+@router.put("/fs/file")
+async def save_workspace_file(body: SaveFileBody) -> dict[str, Any]:
+    """保存编辑后的文本文件。
+
+    保持原文件的编码、BOM 与换行风格；带 base_hash 时，磁盘内容已被别处改过就拒绝覆盖。
+    """
+    if len(body.content) > _MAX_SAVE_CHARS:
+        raise HTTPException(status_code=400, detail="内容过长，无法保存")
+    _workspace, target = _resolve_under_root(body.root, body.path)
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="这不是文件")
+    try:
+        current = target.read_bytes()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="无法读取这个文件") from exc
+    if body.base_hash and body.base_hash != _content_hash(current):
+        raise HTTPException(status_code=409, detail="文件已在磁盘上被修改")
+    encoding = _text_encoding(current) if current else "utf-8"
+    if encoding is None:
+        raise HTTPException(status_code=400, detail="不能以文本方式保存这个文件")
+    content = body.content.replace("\r\n", "\n")
+    if b"\r\n" in current:
+        content = content.replace("\n", "\r\n")
+    try:
+        data = content.encode(encoding)
+    except UnicodeEncodeError as exc:
+        raise HTTPException(status_code=400, detail=f"内容无法用 {encoding} 编码保存") from exc
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        try:
+            shutil.copymode(target, tmp_name)
+        except OSError:
+            pass
+        os.replace(tmp_name, target)
+    except OSError as exc:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail=f"保存失败：{exc}") from exc
+    return {"path": str(target), "size": len(data), "hash": _content_hash(data)}
 
 
 @router.get("/fs/raw")

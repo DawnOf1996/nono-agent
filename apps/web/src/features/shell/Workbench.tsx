@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { ChatPane } from "@/features/chat/ChatPane";
+import { usePanelStore } from "@/features/files/panel-store";
 import { WorkspacePanel } from "@/features/files/WorkspacePanel";
 import { columnWidths, loadLayoutPreference, MENU_RAIL_WIDTH, saveLayoutPreference } from "@/features/shell/layout";
 import { Sidebar } from "@/features/shell/Sidebar";
@@ -32,6 +33,12 @@ export function Workbench() {
   }, []);
 
   useEffect(() => () => stopDrag.current?.(), []);
+
+  const revealRequest = usePanelStore((state) => state.revealRequest);
+  const firstReveal = useRef(revealRequest);
+  useEffect(() => {
+    if (revealRequest !== firstReveal.current) setRightOpen(true);
+  }, [revealRequest]);
 
   function beginResize(side: "left" | "right", event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();

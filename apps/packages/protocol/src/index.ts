@@ -212,6 +212,135 @@ export type FsFilePreview = {
   content: string | null;
   size: number;
   truncated: boolean;
+  /** 文本文件内容的 SHA-1；保存时作为 base_hash 用来发现磁盘上的并发修改。 */
+  hash?: string | null;
+};
+
+export type FsSaveResult = {
+  path: string;
+  size: number;
+  hash: string;
+};
+
+/** 一个 unified diff hunk；每行保留 `+`、`-` 或空格前缀。 */
+export type DiffHunk = {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  header: string;
+  lines: string[];
+};
+
+export type FileChangeStatus = "added" | "modified" | "deleted" | "renamed";
+
+/** 一个文件的对比（git 工作树 / 暂存区 / 提交，或一轮对话的轮前轮后）。 */
+export type FileDiff = {
+  kind: "text" | "binary" | "oversized";
+  path: string;
+  old_path: string | null;
+  status: FileChangeStatus;
+  before: boolean;
+  after: boolean;
+  hunks: DiffHunk[];
+  added: number;
+  deleted: number;
+  coarse: boolean;
+  abs_path?: string | null;
+};
+
+export type GitLineStat = {
+  added: number;
+  deleted: number;
+  binary: boolean;
+};
+
+export type GitStatusEntry = {
+  /** 仓库内相对路径（正斜杠）。 */
+  path: string;
+  orig_path: string | null;
+  abs_path: string;
+  /** 暂存区一侧的状态字母，空格表示无改动。 */
+  index: string;
+  /** 工作区一侧的状态字母，`?` 表示未跟踪。 */
+  worktree: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  conflicted: boolean;
+  staged_stat: GitLineStat | null;
+  unstaged_stat: GitLineStat | null;
+};
+
+export type GitStatus = {
+  is_repo: boolean;
+  workspace: string;
+  repo: string | null;
+  repositories: string[];
+  branch: string | null;
+  head: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  entries: GitStatusEntry[];
+  truncated: boolean;
+};
+
+export type GitWorktree = {
+  path: string;
+  branch: string;
+  repo: string;
+  main: boolean;
+  locked: boolean;
+  changes: number;
+};
+
+export type GitLogEntry = {
+  hash: string;
+  hash_full: string;
+  subject: string;
+  author: string;
+  date: string;
+  refs: string;
+};
+
+export type GitCommitDetail = {
+  hash: string;
+  author: string;
+  date: string;
+  subject: string;
+  body: string;
+  files: FileDiff[];
+  total: number;
+};
+
+/** 一轮对话里改动的一个文件。 */
+export type TurnChangedFile = {
+  /** 工作区内的相对路径，工作区外为绝对路径。 */
+  path: string;
+  display: string;
+  abs_path: string;
+  status: FileChangeStatus;
+  added: number;
+  deleted: number;
+  source: "git" | "tool";
+  binary?: boolean;
+  oversized?: boolean;
+};
+
+/** 一轮对话的文件变更摘要；start_seq < 回复的 seq ≤ end_seq。 */
+export type TurnChanges = {
+  id: string;
+  session_id: string;
+  cwd: string;
+  started_at: number;
+  ended_at: number;
+  start_seq: number;
+  end_seq: number;
+  files: TurnChangedFile[];
+  total: number;
+  added: number;
+  deleted: number;
 };
 
 export type McpServerSource = "user" | "plugin";

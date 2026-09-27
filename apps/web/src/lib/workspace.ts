@@ -78,6 +78,27 @@ export function mergeWorkspaces(paths: Array<string | null | undefined>): string
   return result;
 }
 
+/** target 在 root 内时返回相对路径（反斜杠），否则原样返回。 */
+export function relativeTo(root: string, target: string): string {
+  const base = normalizeWorkspace(root);
+  const full = normalizeWorkspace(target);
+  if (full.toLowerCase().startsWith(`${base.toLowerCase()}\\`)) return full.slice(base.length + 1);
+  if (full.toLowerCase() === base.toLowerCase()) return full;
+  return full;
+}
+
+export function baseName(path: string): string {
+  const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
+/** 不含文件名的上级路径（正斜杠），没有上级时是空串。 */
+export function parentPath(path: string): string {
+  const parts = path.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
+  parts.pop();
+  return parts.join("/");
+}
+
 export function workspaceLabel(cwd: string): string {
   const normalized = cwd.replace(/[\\/]+$/, "");
   const parts = normalized.split(/[\\/]/).filter(Boolean);

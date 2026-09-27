@@ -5,6 +5,8 @@ import type { PreviewContent, PreviewLoading } from "@/features/files/preview/ty
 export type LoadedPreview = {
   content: PreviewContent;
   size: number;
+  /** 文本内容的哈希，保存时用来发现并发修改。 */
+  hash?: string | null;
 };
 
 function tooLarge(size: number): Error {
@@ -29,7 +31,7 @@ export async function loadPreview(
     const meta = await fetchWorkspaceFile(root, path, signal);
     if (meta.kind === "too_large") throw tooLarge(meta.size);
     if (meta.kind !== "text" || meta.content === null) throw new Error("这个文件不能以文本方式预览。");
-    return { content: { kind: "text", text: meta.content }, size: meta.size };
+    return { content: { kind: "text", text: meta.content }, size: meta.size, hash: meta.hash ?? null };
   }
   const data = await fetchWorkspaceBytes(root, path, signal);
   return { content: { kind: "bytes", data }, size: data.byteLength };

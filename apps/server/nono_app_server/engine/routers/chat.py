@@ -8,7 +8,7 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
 from nono_app_server.engine.deps import get_session_manager
@@ -25,16 +25,29 @@ router = APIRouter(tags=["engine"])
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
+    http_request: Request,
     manager: SessionManager = Depends(get_session_manager),
 ) -> Any:
-    """发送消息并以 SSE 流式返回响应。"""
+    """发送消息并以 SSE 流式返回响应。
+
+    挂了 turn_observer（产品层的每轮变更记录）时，轮开始前取基线，轮结束后
+    推一条 ``workspace_changes`` 事件；客户端中途断开则在后台收尾。
+    """
     session_id = request.session_id or str(uuid.uuid4())
     engine = await manager.get_or_create(session_id, model=request.model)
     if request.permission_mode:
         request_permission_mode(engine, request.permission_mode)
     manager.touch(session_id)
+    observer = getattr(http_request.app.state, "turn_observer", None)
 
     async def event_generator() -> Any:
+        turn = None
+        turn_finished = False
+        if observer is not None:
+            try:
+                turn = await observer.begin(session_id, engine, manager)
+            except Exception:
+                logger.exception("Turn observer failed to begin for session %s", session_id)
         submit = engine.submit_message(
             request.message,
             attachments=request.attachments,
@@ -76,6 +89,14 @@ async def chat(
                     break
 
                 await asyncio.sleep(0.01)
+            if turn is not None and observer is not None:
+                turn_finished = True
+                summary = await observer.finish(turn, manager)
+                if summary:
+                    yield {
+                        "event": "workspace_changes",
+                        "data": json.dumps(summary, ensure_ascii=False),
+                    }
         except Exception as exc:
             logger.exception("Error in chat stream for session %s", session_id)
             yield {
@@ -85,6 +106,8 @@ async def chat(
         finally:
             if not sdk_task.done():
                 sdk_task.cancel()
+            if turn is not None and observer is not None and not turn_finished:
+                observer.finish_later(turn, manager)
             yield {"event": "done", "data": ""}
 
     return EventSourceResponse(event_generator())

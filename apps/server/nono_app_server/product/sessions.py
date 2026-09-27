@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from nono_agent.session.events import last_turn_number
@@ -22,6 +22,7 @@ from nono_agent.session.transcript import (
 from nono_app_server.engine.deps import get_session_manager
 from nono_app_server.engine.session_manager import SessionManager
 from nono_app_server.engine.views import request_permission_mode, session_info
+from nono_app_server.product.changes import WorkspaceChangesService
 from nono_app_server.product.deps import get_store
 from nono_app_server.product.permissions import cancel_session_permissions
 from nono_app_server.product.store import AppStore
@@ -226,6 +227,7 @@ async def fork_app_session(
 @router.delete("/sessions/{session_id}")
 async def delete_app_session(
     session_id: str,
+    request: Request,
     store: AppStore = Depends(get_store),
     manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, str]:
@@ -235,4 +237,7 @@ async def delete_app_session(
     engine_id = row["engine_session_id"]
     await _close_engine(manager, engine_id)
     _purge_session_files(engine_id)
+    observer = getattr(request.app.state, "turn_observer", None)
+    if isinstance(observer, WorkspaceChangesService):
+        observer.forget_session(engine_id)
     return {"status": "deleted", "id": session_id}

@@ -1,3 +1,4 @@
+import type { TurnChanges } from "@nono/protocol";
 import { ChevronDown, Copy, FileDown, GitFork } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -5,6 +6,7 @@ import { writeMarkdownFile } from "@/api/client";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { MarkdownText } from "@/components/MarkdownText";
 import { ReasoningRow } from "@/features/chat/ReasoningRow";
+import { TurnChangesCard, turnForMessage } from "@/features/chat/TurnChangesCard";
 import { TurnRail, groupChatTurns } from "@/features/chat/TurnRail";
 import { WorkspacePicker } from "@/features/session/WorkspacePicker";
 import { suggestMarkdownFileName } from "@/lib/markdown-file";
@@ -43,9 +45,11 @@ const NEAR_BOTTOM_PX = 96;
 /** memo：流式追加时只有最后一条消息在变，历史消息不该重新渲染。 */
 const MessageBlock = memo(function MessageBlock({
   message,
+  changes,
   onExport,
 }: {
   message: ChatMessage;
+  changes?: TurnChanges;
   onExport?: (text: string) => void;
 }) {
   if (message.role === "system") {
@@ -96,6 +100,7 @@ const MessageBlock = memo(function MessageBlock({
       {message.streaming && !answer && !showThinking ? (
         <p className="text-sm text-faint">正在写入…</p>
       ) : null}
+      {changes ? <TurnChangesCard turn={changes} /> : null}
       {answer && !message.streaming ? (
         <div className="mt-2 flex items-center gap-2">
           <button
@@ -146,6 +151,7 @@ export function MessageList() {
   const historyReveal = useChatStore((state) => state.historyReveal);
   const historyLoading = useChatStore((state) => state.historyLoading);
   const workspace = useChatStore((state) => state.workspace);
+  const turnChanges = useChatStore((state) => (sessionId ? state.turnChanges[sessionId] : undefined));
   const [exportDraft, setExportDraft] = useState<{ text: string; name: string } | null>(null);
   const openExport = useCallback((text: string) => {
     setExportDraft({ text, name: suggestMarkdownFileName(text) });
@@ -283,7 +289,7 @@ export function MessageList() {
               className="chat-msg"
               data-turn-id={turnStartIds.has(message.id) ? message.id : undefined}
             >
-              <MessageBlock message={message} onExport={openExport} />
+              <MessageBlock message={message} changes={turnForMessage(turnChanges, message)} onExport={openExport} />
             </div>
           ))}
         </div>

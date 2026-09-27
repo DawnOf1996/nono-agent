@@ -3,8 +3,14 @@ import type {
   AskUserSignal,
   CatalogSnapshot,
   ChatImageAttachment,
+  FileDiff,
   FsFilePreview,
   FsListing,
+  FsSaveResult,
+  GitCommitDetail,
+  GitLogEntry,
+  GitStatus,
+  GitWorktree,
   PermissionRequest,
   PermissionMode,
   ProviderUpsert,
@@ -17,6 +23,7 @@ import type {
   SettingsTab,
   SlashCommandInfo,
   SlashCommandResult,
+  TurnChanges,
   Workspace,
   WorkspaceListing,
 } from "@nono/protocol";
@@ -425,6 +432,135 @@ export async function fetchWorkspaceBytes(root: string, path: string, signal?: A
     throw new Error(errorMessage(text, "无法读取文件"));
   }
   return new Uint8Array(await response.arrayBuffer());
+}
+
+export async function saveWorkspaceFile(
+  root: string,
+  path: string,
+  content: string,
+  baseHash?: string | null,
+): Promise<FsSaveResult> {
+  const response = await fetch("/app/fs/file", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root, path, content, base_hash: baseHash ?? null }),
+  });
+  if (response.status === 409) {
+    const text = await response.text();
+    throw new SaveConflictError(errorMessage(text, "文件已在磁盘上被修改"));
+  }
+  return readJson(response);
+}
+
+/** 保存时磁盘内容已不是打开时的版本。 */
+export class SaveConflictError extends Error {
+  readonly conflict = true;
+}
+
+function gitQuery(root: string, repo: string | null | undefined, extra?: Record<string, string>): string {
+  const params = new URLSearchParams({ root, ...extra });
+  if (repo) params.set("repo", repo);
+  return params.toString();
+}
+
+export async function fetchGitStatus(root: string, repo?: string | null, signal?: AbortSignal): Promise<GitStatus> {
+  return readJson(await fetch(`/app/git/status?${gitQuery(root, repo)}`, { signal }));
+}
+
+export async function fetchGitWorktrees(root: string): Promise<GitWorktree[]> {
+  const data = await readJson<{ worktrees: GitWorktree[] }>(await fetch(`/app/git/worktrees?${gitQuery(root, null)}`));
+  return data.worktrees;
+}
+
+export async function fetchGitDiff(
+  input: { root: string; repo?: string | null; path: string; staged: boolean; context?: number },
+  signal?: AbortSignal,
+): Promise<FileDiff> {
+  const query = gitQuery(input.root, input.repo, {
+    path: input.path,
+    staged: String(input.staged),
+    context: String(input.context ?? 3),
+  });
+  return readJson(await fetch(`/app/git/diff?${query}`, { signal }));
+}
+
+async function postGit(action: string, body: Record<string, unknown>): Promise<void> {
+  await readJson(
+    await fetch(`/app/git/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export function gitStage(root: string, repo: string | null, paths: string[] | null): Promise<void> {
+  return postGit("stage", { root, repo, paths });
+}
+
+export function gitUnstage(root: string, repo: string | null, paths: string[] | null): Promise<void> {
+  return postGit("unstage", { root, repo, paths });
+}
+
+export function gitDiscard(root: string, repo: string | null, paths: string[], untracked: string[]): Promise<void> {
+  return postGit("discard", { root, repo, paths, untracked });
+}
+
+export function gitCommit(root: string, repo: string | null, message: string, stageAll: boolean): Promise<void> {
+  return postGit("commit", { root, repo, message, stage_all: stageAll });
+}
+
+export async function fetchGitLog(root: string, repo: string | null, count: number, skip: number): Promise<GitLogEntry[]> {
+  const query = gitQuery(root, repo, { count: String(count), skip: String(skip) });
+  const data = await readJson<{ entries: GitLogEntry[] }>(await fetch(`/app/git/log?${query}`));
+  return data.entries;
+}
+
+export async function fetchGitCommit(
+  root: string,
+  repo: string | null,
+  hash: string,
+  signal?: AbortSignal,
+): Promise<GitCommitDetail> {
+  return readJson(await fetch(`/app/git/commit?${gitQuery(root, repo, { hash })}`, { signal }));
+}
+
+export async function fetchTurnChanges(sessionId: string): Promise<TurnChanges[]> {
+  const data = await readJson<{ turns: TurnChanges[] }>(
+    await fetch(`/app/changes/${encodeURIComponent(sessionId)}`),
+  );
+  return data.turns;
+}
+
+export async function fetchTurnDiff(
+  sessionId: string,
+  turnId: string,
+  index: number,
+  context = 3,
+  signal?: AbortSignal,
+): Promise<FileDiff> {
+  const params = new URLSearchParams({ index: String(index), context: String(context) });
+  return readJson(
+    await fetch(`/app/changes/${encodeURIComponent(sessionId)}/${encodeURIComponent(turnId)}/diff?${params}`, {
+      signal,
+    }),
+  );
+}
+
+export async function revertTurnFile(sessionId: string, turnId: string, index: number, force: boolean): Promise<void> {
+  const response = await fetch(
+    `/app/changes/${encodeURIComponent(sessionId)}/${encodeURIComponent(turnId)}/revert`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ index, force }),
+    },
+  );
+  if (response.status === 409) {
+    const text = await response.text();
+    throw new SaveConflictError(errorMessage(text, "文件在这一轮之后又被改过"));
+  }
+  await readJson(response);
 }
 
 export function workspaceFileRawUrl(root: string, path: string): string {
