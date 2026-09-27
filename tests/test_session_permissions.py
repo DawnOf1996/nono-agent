@@ -8,7 +8,7 @@ import pytest
 
 from nono_agent.core.config import EngineConfig
 from nono_app_server.engine.session_manager import SessionManager
-from nono_app_server.product import permissions as perms
+from nono_app_server.features.permissions import service as perms
 
 
 @pytest.fixture(autouse=True)

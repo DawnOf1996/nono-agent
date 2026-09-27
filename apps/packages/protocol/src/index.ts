@@ -64,6 +64,7 @@ export type AppInfo = {
   model: string;
   catalog_ready: boolean;
   catalog_error: string | null;
+  session_dir: string;
 };
 
 export type CatalogModel = {
@@ -188,6 +189,12 @@ export type FsEntry = {
   name: string;
   path: string;
   is_dir: boolean;
+  /** 这一行本身是软链接；is_dir 描述链接目标。 */
+  is_symlink?: boolean;
+  /** 软链接目标缺失或不可读。 */
+  broken?: boolean;
+  /** 以点开头的名字。 */
+  hidden?: boolean;
 };
 
 export type FsListing = {
@@ -201,6 +208,18 @@ export type WorkspaceListing = {
   path: string;
   root: string;
   entries: FsEntry[];
+  truncated?: boolean;
+};
+
+export type FsSearchMatch = {
+  /** 相对工作区根的路径，使用正斜杠。 */
+  path: string;
+  is_dir: boolean;
+};
+
+export type FsSearchResult = {
+  matches: FsSearchMatch[];
+  truncated: boolean;
 };
 
 export type FsFileKind = "text" | "image" | "binary" | "too_large";

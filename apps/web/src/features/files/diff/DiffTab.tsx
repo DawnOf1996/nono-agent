@@ -174,7 +174,36 @@ function DiffBody({
 export function DiffTab({ tabId, target, visible }: { tabId: string; target: DiffTarget; visible: boolean }) {
   if (target.source === "commit") return <CommitDiff target={target} visible={visible} />;
   if (target.source === "turn") return <TurnDiff tabId={tabId} target={target} visible={visible} />;
+  if (target.source === "op") return <OpDiff target={target} />;
   return <GitFileDiff tabId={tabId} target={target} visible={visible} />;
+}
+
+function OpDiff({ target }: { target: Extract<DiffTarget, { source: "op" }> }) {
+  const prefs = useDiffPrefs();
+  const openFile = usePanelStore((state) => state.openFile);
+  if (target.errorText) {
+    return <p className="px-4 py-6 text-[13px] leading-6 text-danger">{target.errorText}</p>;
+  }
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-2">
+        <span className="min-w-0 flex-1 truncate text-[12px] text-faint" title={target.diff.path}>
+          {target.diff.path}
+        </span>
+        <button
+          type="button"
+          className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted hover:bg-hover hover:text-ink"
+          onClick={() => openFile(target.diff.path)}
+        >
+          <FileText className="size-3.5" />
+          打开文件
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        <DiffView diff={target.diff} layout={prefs.layout} wrap={prefs.wrap} />
+      </div>
+    </div>
+  );
 }
 
 function GitFileDiff({

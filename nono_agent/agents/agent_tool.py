@@ -109,7 +109,11 @@ class AgentTool(ToolBase):
                 allowed_isolations=definition.allowed_isolations,
             )
 
-        result = await self._runner.run(definition, prompt)
+        result = await self._runner.run(
+            definition,
+            prompt,
+            session_id=getattr(context, "session_id", "") or "",
+        )
 
         if result.is_error:
             return ToolResult(

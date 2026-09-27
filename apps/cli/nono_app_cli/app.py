@@ -117,4 +117,7 @@ def create_cli_app() -> Any:
 
 def main() -> None:
     """``python -m nono_app_cli`` / ``nono`` 入口。"""
+    from nono_agent.session.transcript import load_session_dir_setting
+
+    load_session_dir_setting()
     create_cli_app()()

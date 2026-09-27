@@ -78,6 +78,20 @@ export function mergeWorkspaces(paths: Array<string | null | undefined>): string
   return result;
 }
 
+/** 拼进输入框的 @文件 引用。路径相对工作区，含空格时加引号。 */
+export function mentionToken(root: string, target: string): string {
+  const relative = relativeTo(root, target).replace(/\\/g, "/");
+  const body = /[\s"]/.test(relative) ? `"${relative.replace(/"/g, '\\"')}"` : relative;
+  return `@${body} `;
+}
+
+/** 把搜索返回的正斜杠相对路径接回工作区绝对路径。 */
+export function joinWorkspace(root: string, relative: string): string {
+  const base = root.replace(/[\\/]+$/, "");
+  const separator = base.includes("\\") ? "\\" : "/";
+  return `${base}${separator}${relative.replace(/\//g, separator)}`;
+}
+
 /** target 在 root 内时返回相对路径（反斜杠），否则原样返回。 */
 export function relativeTo(root: string, target: string): string {
   const base = normalizeWorkspace(root);

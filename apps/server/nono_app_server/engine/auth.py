@@ -18,9 +18,7 @@ def install_api_key_auth(app: FastAPI, api_key: str | None) -> None:
         if request.url.path == "/health":
             return await call_next(request)
         auth = request.headers.get("authorization", "")
-        token = (
-            auth[7:] if auth.startswith("Bearer ") else request.headers.get("x-api-key", "")
-        )
+        token = auth[7:] if auth.startswith("Bearer ") else request.headers.get("x-api-key", "")
         if token != api_key:
             return JSONResponse({"detail": "Invalid or missing API key"}, status_code=401)
         return await call_next(request)

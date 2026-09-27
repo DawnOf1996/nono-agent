@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from nono_agent.core import engine as engine_module
 from nono_agent.memory import store as memory_store_module
 from nono_agent.providers import catalog as catalog_module
 from nono_agent.session import transcript as transcript_module
@@ -38,9 +37,10 @@ def _isolate_user_config(tmp_path, monkeypatch):
 def _isolate_session_dir(tmp_path, monkeypatch):
     """把默认会话目录指向临时目录 —— 引擎默认写事件流，不能落到真实 HOME。"""
     session_dir = tmp_path / ".nono-agent" / "sessions"
-    monkeypatch.setattr(engine_module, "DEFAULT_SESSION_DIR", session_dir)
     monkeypatch.setattr(transcript_module, "DEFAULT_SESSION_DIR", session_dir)
+    transcript_module.use_session_dir(None)
     yield
+    transcript_module.use_session_dir(None)
 
 
 @pytest.fixture(autouse=True)

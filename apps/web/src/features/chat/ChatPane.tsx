@@ -1,4 +1,4 @@
-import { PanelRight } from "lucide-react";
+import { PanelBottom, PanelRight } from "lucide-react";
 
 import { Composer } from "@/features/chat/Composer";
 import { MessageList } from "@/features/chat/MessageList";
@@ -10,9 +10,13 @@ import { useChatStore } from "@/store/chat";
 export function ChatPane({
   rightOpen,
   onToggleRight,
+  bottomOpen,
+  onToggleBottom,
 }: {
   rightOpen: boolean;
   onToggleRight: () => void;
+  bottomOpen: boolean;
+  onToggleBottom: () => void;
 }) {
   const sessionId = useChatStore((state) => state.sessionId);
   const sessionTitles = useChatStore((state) => state.sessionTitles);
@@ -69,6 +73,18 @@ export function ChatPane({
               轨迹
             </button>
           </div>
+          <button
+            type="button"
+            className={`flex size-8 items-center justify-center rounded-lg hover:bg-hover hover:text-ink ${
+              bottomOpen ? "text-ink" : "text-faint"
+            }`}
+            title={bottomOpen ? "收起底部工作台" : "打开底部工作台"}
+            aria-label={bottomOpen ? "收起底部工作台" : "打开底部工作台"}
+            aria-pressed={bottomOpen}
+            onClick={onToggleBottom}
+          >
+            <PanelBottom className="size-4" />
+          </button>
           {rightOpen ? null : (
             <button
               type="button"

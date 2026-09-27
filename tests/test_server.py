@@ -141,10 +141,8 @@ class TestListPersistedSessions:
         from nono_agent.session.events import EVENT_TURN_START, EVENT_USER_MESSAGE, SessionEvent
         from nono_agent.session.header import make_header
         from nono_agent.session.transcript import LocalFileTranscriptWriter
-        from nono_app_server.engine import session_manager as server_module
 
         session_dir = tmp_path / "sessions"
-        monkeypatch.setattr(server_module, "DEFAULT_SESSION_DIR", session_dir)
         monkeypatch.setattr(transcript_module, "DEFAULT_SESSION_DIR", session_dir)
 
         writer = LocalFileTranscriptWriter(session_dir / "abc.jsonl")
@@ -178,10 +176,8 @@ class TestSessionEventChannel:
         from nono_agent.session import transcript as transcript_module
         from nono_agent.session.events import SessionEvent
         from nono_agent.session.transcript import LocalFileTranscriptWriter
-        from nono_app_server.engine import session_manager as server_module
 
         session_dir = tmp_path / "sessions"
-        monkeypatch.setattr(server_module, "DEFAULT_SESSION_DIR", session_dir)
         monkeypatch.setattr(transcript_module, "DEFAULT_SESSION_DIR", session_dir)
 
         writer = LocalFileTranscriptWriter(session_dir / "sid.jsonl")

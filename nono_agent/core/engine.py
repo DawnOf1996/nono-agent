@@ -68,10 +68,10 @@ from nono_agent.observability.metrics import (
     record_gauge,
 )
 from nono_agent.observability.token_tracker import TokenTracker
+from nono_agent.paths import resolve_session_cwd
 from nono_agent.permissions.denial import Denial, DenialTracker
 from nono_agent.permissions.policy import PermissionMode, PermissionPolicy
 from nono_agent.permissions.sandbox import IgnoreMatcher, PathSandbox
-from nono_agent.paths import resolve_session_cwd
 from nono_agent.pipeline.auto_compact import AutoCompactStage
 from nono_agent.pipeline.base import PreprocessPipeline
 from nono_agent.pipeline.microcompact import MicroCompactStage
@@ -124,9 +124,9 @@ from nono_agent.session.header import (
 from nono_agent.session.request_header import canonical_header, next_reason
 from nono_agent.session.store import MessageStore
 from nono_agent.session.transcript import (
-    DEFAULT_SESSION_DIR,
     LocalFileTranscriptWriter,
     TranscriptWriter,
+    active_session_dir,
 )
 from nono_agent.skills.loader import FileSystemSkillLoader
 from nono_agent.skills.models import Skill
@@ -1138,7 +1138,7 @@ class QueryEngine:
     @staticmethod
     def _create_writer_for(session_id: str) -> LocalFileTranscriptWriter:
         """为指定 session_id 创建默认本地事件流写入器（JSONL / zstd）。"""
-        return LocalFileTranscriptWriter(DEFAULT_SESSION_DIR / f"{session_id}.jsonl")
+        return LocalFileTranscriptWriter(active_session_dir() / f"{session_id}.jsonl")
 
     def _restore_turn_count(self, events: list[SessionEvent]) -> None:
         """从事件流恢复 ``_turn_count``，使 resume 后 ``turn/start`` 接着编号。"""

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { ChatPane } from "@/features/chat/ChatPane";
+import { BottomWorkbench } from "@/features/files/BottomWorkbench";
 import { usePanelStore } from "@/features/files/panel-store";
 import { WorkspacePanel } from "@/features/files/WorkspacePanel";
-import { columnWidths, loadLayoutPreference, MENU_RAIL_WIDTH, saveLayoutPreference } from "@/features/shell/layout";
+import { BOTTOM_MIN, columnWidths, loadLayoutPreference, MENU_RAIL_WIDTH, saveLayoutPreference } from "@/features/shell/layout";
 import { Sidebar } from "@/features/shell/Sidebar";
 
 export function Workbench() {
@@ -13,6 +14,8 @@ export function Workbench() {
   const [rightPreferred, setRightPreferred] = useState(initial.current.rightPreferred);
   const [leftOpen, setLeftOpen] = useState(initial.current.leftOpen);
   const [rightOpen, setRightOpen] = useState(initial.current.rightOpen);
+  const [bottomOpen, setBottomOpen] = useState(initial.current.bottomOpen);
+  const [bottomHeight, setBottomHeight] = useState(initial.current.bottomHeight);
   const [viewport, setViewport] = useState(() => window.innerWidth);
   const [resizing, setResizing] = useState<"left" | "right" | null>(null);
   const stopDrag = useRef<(() => void) | null>(null);
@@ -21,8 +24,8 @@ export function Workbench() {
   const menuOpen = leftOpen && left > 0;
 
   useEffect(() => {
-    saveLayoutPreference({ leftPreferred, rightPreferred, leftOpen, rightOpen });
-  }, [leftPreferred, rightPreferred, leftOpen, rightOpen]);
+    saveLayoutPreference({ leftPreferred, rightPreferred, leftOpen, rightOpen, bottomOpen, bottomHeight });
+  }, [leftPreferred, rightPreferred, leftOpen, rightOpen, bottomOpen, bottomHeight]);
 
   useEffect(() => {
     function onResize() {
@@ -35,10 +38,15 @@ export function Workbench() {
   useEffect(() => () => stopDrag.current?.(), []);
 
   const revealRequest = usePanelStore((state) => state.revealRequest);
+  const bottomRequest = usePanelStore((state) => state.bottomRequest);
   const firstReveal = useRef(revealRequest);
+  const firstBottom = useRef(bottomRequest);
   useEffect(() => {
     if (revealRequest !== firstReveal.current) setRightOpen(true);
   }, [revealRequest]);
+  useEffect(() => {
+    if (bottomRequest !== firstBottom.current) setBottomOpen(true);
+  }, [bottomRequest]);
 
   function beginResize(side: "left" | "right", event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -105,10 +113,44 @@ export function Workbench() {
           </div>
         ) : null}
       </div>
-      <ChatPane
-        rightOpen={rightOpen && right > 0}
-        onToggleRight={() => setRightOpen((open) => !open)}
-      />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <ChatPane
+          rightOpen={rightOpen && right > 0}
+          onToggleRight={() => setRightOpen((open) => !open)}
+          bottomOpen={bottomOpen}
+          onToggleBottom={() => setBottomOpen((open) => !open)}
+        />
+        {bottomOpen ? (
+          <div className="relative shrink-0 border-t border-line" style={{ height: bottomHeight }}>
+            <div
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="调整底部工作台高度"
+              aria-valuenow={bottomHeight}
+              className="group absolute inset-x-0 -top-1.5 z-20 h-3 cursor-row-resize touch-none"
+              onPointerDown={(event) => {
+                event.preventDefault();
+                const startY = event.clientY;
+                const startHeight = bottomHeight;
+                const limit = Math.max(BOTTOM_MIN, window.innerHeight - 280);
+                function move(ev: PointerEvent) {
+                  const next = Math.min(limit, Math.max(BOTTOM_MIN, startHeight + (startY - ev.clientY)));
+                  setBottomHeight(next);
+                }
+                function end() {
+                  window.removeEventListener("pointermove", move);
+                  window.removeEventListener("pointerup", end);
+                }
+                window.addEventListener("pointermove", move);
+                window.addEventListener("pointerup", end);
+              }}
+            >
+              <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-transparent group-hover:bg-ink/30" />
+            </div>
+            <BottomWorkbench />
+          </div>
+        ) : null}
+      </div>
       <div
         className={`relative h-full shrink-0 ${rightOpen && right > 0 ? "" : "hidden"}`}
         style={{ width: right }}

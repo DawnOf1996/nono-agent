@@ -6,7 +6,8 @@ import { Dropdown, DropdownItem } from "@/components/ui/dropdown";
 import type { CodeEditorHandle } from "@/features/files/editor/CodeEditor";
 import { usePanelStore } from "@/features/files/panel-store";
 import { PreviewLoading } from "@/features/files/preview/Loading";
-import { ensureBuiltinPreviews, fileNameOf, formatBytes, getDocumentPreviews, previewCandidates, subscribeDocumentPreviews } from "@/features/files/preview";
+import { ensureBuiltinPreviews, fileNameOf, formatBytes, getDocumentPreviews, PLAIN_PREVIEW_ID, previewCandidates, subscribeDocumentPreviews } from "@/features/files/preview";
+import { getSidebarPrefs, subscribeSidebarPrefs, type SidebarPrefs } from "@/features/settings/sidebar-prefs";
 import { loadPreview, type LoadedPreview } from "@/features/files/preview/load";
 import type { PreviewLoading as PreviewLoadMode } from "@/features/files/preview/types";
 import { relativeTo } from "@/lib/workspace";
@@ -28,6 +29,15 @@ function readError(cause: unknown): string {
 
 ensureBuiltinPreviews();
 
+function previewEnabled(id: string, previewers: SidebarPrefs["previewers"]): boolean {
+  if (id === PLAIN_PREVIEW_ID) return true;
+  const key = id.split("/").pop();
+  if (key === "markdown" || key === "html" || key === "image" || key === "pdf" || key === "code" || key === "sheet" || key === "docx" || key === "pptx") {
+    return previewers[key];
+  }
+  return true;
+}
+
 export function FilePreview({
   root,
   path,
@@ -40,7 +50,11 @@ export function FilePreview({
   tabId: string;
 }) {
   const definitions = useSyncExternalStore(subscribeDocumentPreviews, getDocumentPreviews, getDocumentPreviews);
-  const candidates = useMemo(() => previewCandidates(definitions, path), [definitions, path]);
+  const previewers = useSyncExternalStore(subscribeSidebarPrefs, getSidebarPrefs, getSidebarPrefs).previewers;
+  const candidates = useMemo(
+    () => previewCandidates(definitions, path).filter((item) => previewEnabled(item.id, previewers)),
+    [definitions, path, previewers],
+  );
   const [rendererId, setRendererId] = useState<string | null>(null);
   const [wrap, setWrap] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);

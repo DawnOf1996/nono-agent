@@ -12,7 +12,7 @@ from nono_agent.core.config import EngineConfig  # noqa: E402
 from nono_agent.mcp.config import load_user_mcp_config  # noqa: E402
 from nono_app_server.config import SidecarSettings  # noqa: E402
 from nono_app_server.engine import create_server_app  # noqa: E402
-from nono_app_server.product.router import mount_product_routes  # noqa: E402
+from nono_app_server.features.router import mount_product_routes  # noqa: E402
 
 
 def _settings(cwd: Path) -> SidecarSettings:
@@ -94,7 +94,7 @@ class TestAppMcp:
             return {"ok": True, "hosted": True, "kind": "uvx", "executable": "uvx"}
 
         monkeypatch.setattr(
-            "nono_app_server.product.mcp.prepare_stdio_runtime",
+            "nono_app_server.features.mcp.api.prepare_stdio_runtime",
             fake_prepare,
         )
         with _client(tmp_path) as client:

@@ -2,6 +2,8 @@ const LEFT_WIDTH_KEY = "nono.layout.leftWidth";
 const RIGHT_WIDTH_KEY = "nono.layout.rightWidth";
 const LEFT_OPEN_KEY = "nono.layout.leftOpen";
 const RIGHT_OPEN_KEY = "nono.layout.rightOpen";
+const BOTTOM_OPEN_KEY = "nono.layout.bottomOpen";
+const BOTTOM_HEIGHT_KEY = "nono.layout.bottomHeight";
 
 /** 菜单最多占屏幕宽度的 20%。 */
 export const MENU_MAX_RATIO = 0.2;
@@ -12,6 +14,8 @@ const RIGHT_DEFAULT = 320;
 const LEFT_MIN = 180;
 const RIGHT_MIN = 240;
 const CENTER_MIN = 280;
+export const BOTTOM_MIN = 160;
+const BOTTOM_DEFAULT = 260;
 
 function readNumber(key: string, fallback: number): number {
   try {
@@ -40,6 +44,8 @@ export function loadLayoutPreference() {
     rightPreferred: readNumber(RIGHT_WIDTH_KEY, RIGHT_DEFAULT),
     leftOpen: readOpen(LEFT_OPEN_KEY, true),
     rightOpen: readOpen(RIGHT_OPEN_KEY, true),
+    bottomOpen: readOpen(BOTTOM_OPEN_KEY, false),
+    bottomHeight: readNumber(BOTTOM_HEIGHT_KEY, BOTTOM_DEFAULT),
   };
 }
 
@@ -48,12 +54,16 @@ export function saveLayoutPreference(pref: {
   rightPreferred: number;
   leftOpen: boolean;
   rightOpen: boolean;
+  bottomOpen: boolean;
+  bottomHeight: number;
 }) {
   try {
     localStorage.setItem(LEFT_WIDTH_KEY, String(Math.round(pref.leftPreferred)));
     localStorage.setItem(RIGHT_WIDTH_KEY, String(Math.round(pref.rightPreferred)));
     localStorage.setItem(LEFT_OPEN_KEY, pref.leftOpen ? "1" : "0");
     localStorage.setItem(RIGHT_OPEN_KEY, pref.rightOpen ? "1" : "0");
+    localStorage.setItem(BOTTOM_OPEN_KEY, pref.bottomOpen ? "1" : "0");
+    localStorage.setItem(BOTTOM_HEIGHT_KEY, String(Math.round(pref.bottomHeight)));
   } catch {
     // private mode / blocked storage
   }

@@ -188,6 +188,29 @@ textarea {
   min-width: 100%;
 }
 
+.file-preview .prose-md details {
+  margin: 0.8em 0;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  padding: 0.35em 0.75em;
+}
+
+.file-preview .prose-md summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.terminal-host .xterm {
+  height: 100%;
+}
+
+.file-preview .mermaid-diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
 .prose-md-muted {
   font-size: 13px;
   line-height: 1.6;

@@ -7,6 +7,7 @@ import type {
   FsFilePreview,
   FsListing,
   FsSaveResult,
+  FsSearchResult,
   GitCommitDetail,
   GitLogEntry,
   GitStatus,
@@ -64,6 +65,16 @@ export async function fetchHealth(): Promise<{ status: string; sessions: number 
 
 export async function fetchAppInfo(): Promise<AppInfo> {
   return readJson(await fetch("/app/info"));
+}
+
+export async function updateSessionDir(path: string): Promise<{ session_dir: string; moved: number }> {
+  return readJson(
+    await fetch("/app/session-dir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  );
 }
 
 export async function fetchCatalog(): Promise<CatalogSnapshot> {
@@ -265,6 +276,28 @@ export async function patchAppSession(
   );
 }
 
+export async function fetchSideSessions(parentId: string): Promise<SessionListItem[]> {
+  const params = new URLSearchParams({ side_of: parentId });
+  const data = await readJson<{ sessions: SessionListItem[] }>(await fetch(`/app/sessions?${params}`));
+  return data.sessions;
+}
+
+export async function openSideSession(parentId: string, interruptText?: string): Promise<SessionListItem> {
+  return readJson(
+    await fetch(`/app/sessions/${encodeURIComponent(parentId)}/side`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ interrupt_text: interruptText?.trim() || null }),
+    }),
+  );
+}
+
+export async function promoteSideSession(sessionId: string): Promise<SessionListItem> {
+  return readJson(
+    await fetch(`/app/sessions/${encodeURIComponent(sessionId)}/promote`, { method: "POST" }),
+  );
+}
+
 export async function forkAppSession(
   sessionId: string,
   boundarySeq?: number,
@@ -413,6 +446,32 @@ export async function fetchWorkspaceEntries(root: string, path?: string | null):
   const params = new URLSearchParams({ root });
   if (path) params.set("path", path);
   return readJson(await fetch(`/app/fs/entries?${params}`));
+}
+
+export async function searchWorkspaceFiles(root: string, query: string, signal?: AbortSignal): Promise<FsSearchResult> {
+  const params = new URLSearchParams({ root, q: query });
+  return readJson(await fetch(`/app/fs/search?${params}`, { signal }));
+}
+
+export async function uploadWorkspaceFiles(
+  root: string,
+  directory: string,
+  files: File[],
+): Promise<{ count: number }> {
+  const form = new FormData();
+  form.set("root", root);
+  form.set("directory", directory);
+  for (const file of files) {
+    const relative = file.webkitRelativePath || file.name;
+    form.append("files", file, file.name);
+    form.append("relpaths", relative);
+  }
+  return readJson(
+    await fetch("/app/fs/upload", {
+      method: "POST",
+      body: form,
+    }),
+  );
 }
 
 export async function fetchWorkspaceFile(
@@ -609,6 +668,73 @@ export async function createDirectory(parent: string, name: string): Promise<{ p
       body: JSON.stringify({ parent, name }),
     }),
   );
+}
+
+export type TerminalShell = { id: string; label: string };
+
+export type WorkspaceJob = {
+  id: string;
+  session_id: string;
+  kind: string;
+  title: string;
+  status: string;
+  output: string;
+  exit_code: number | null;
+  parent_id: string | null;
+  started_at: number;
+};
+
+export async function fetchJobs(sessionId: string): Promise<WorkspaceJob[]> {
+  const params = new URLSearchParams({ session_id: sessionId });
+  const data = await readJson<{ jobs: WorkspaceJob[] }>(await fetch(`/app/jobs?${params}`));
+  return data.jobs;
+}
+
+export async function* watchJobs(
+  sessionId: string,
+  signal: AbortSignal,
+): AsyncGenerator<WorkspaceJob[]> {
+  const params = new URLSearchParams({ session_id: sessionId });
+  const response = await fetch(`/app/jobs/stream?${params}`, {
+    headers: { Accept: "text/event-stream" },
+    signal,
+  });
+  if (!response.ok) throw new Error(await response.text());
+  for await (const frame of parseSse(response)) {
+    if (frame.event !== "jobs" || !frame.data) continue;
+    const payload = JSON.parse(frame.data) as { jobs?: WorkspaceJob[] };
+    yield payload.jobs ?? [];
+  }
+}
+
+export async function killJob(sessionId: string, jobId: string): Promise<void> {
+  const params = new URLSearchParams({ session_id: sessionId });
+  await readJson(await fetch(`/app/jobs/${encodeURIComponent(jobId)}/kill?${params}`, { method: "POST" }));
+}
+
+export async function fetchTerminalShells(): Promise<TerminalShell[]> {
+  const data = await readJson<{ shells: TerminalShell[] }>(await fetch("/app/terminal/shells"));
+  return data.shells;
+}
+
+export async function startTerminal(input: {
+  root: string;
+  cwd?: string;
+  shell?: string;
+  cols?: number;
+  rows?: number;
+}): Promise<{ id: string; shell: string; label: string; cwd: string }> {
+  return readJson(
+    await fetch("/app/terminal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function stopTerminal(sessionId: string): Promise<void> {
+  await readJson(await fetch(`/app/terminal/${encodeURIComponent(sessionId)}`, { method: "DELETE" }));
 }
 
 export async function openWorkspaceFolder(path: string): Promise<void> {

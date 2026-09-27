@@ -1,12 +1,31 @@
 # apps/server
 
-桌面端 Python sidecar。引擎 HTTP/SSE API 在 `nono_app_server.engine`，产品层 `/app` 在 `nono_app_server.product`。
+桌面端 Python sidecar。引擎 HTTP/SSE API 在 `nono_app_server.engine`，产品功能在 `nono_app_server.features`（挂到 `/app`），跨功能工具在 `nono_app_server.common`。
 
 ```text
 nono_app_server/
   app.py                 FastAPI 组装（引擎 + /app）
   main.py                进程入口（本机绑定 + uvicorn）
   config.py              环境变量 + YAML → EngineConfig
+  common/                跨功能共用
+    deps.py              sidecar / 引擎配置 / SQLite 依赖
+    store.py             工作区与会话列表
+    paths.py             工作区路径解析与越界检查
+    textdiff.py          unified diff 解析与文本对比
+    gitcmd.py            调用系统 git
+  features/              按功能划分的 /app API
+    router.py            挂载 /app
+    files/               文件服务：api 路由、service 读写、util 文件名与哈希
+    terminal/            持久终端：api + service
+    git/                 仓库状态、diff、暂存、提交、历史
+    changes/             每轮文件变更（git 私有快照 + 文件工具前像）
+    sessions/            会话列表（映射引擎 session_id）
+    workspaces/          工作区列表
+    permissions/         桌面权限确认
+    catalog/             模型目录
+    mcp/                 MCP 清单
+    jobs/                任务板
+    info/                GET /app/info
   engine/                Agent 引擎 HTTP / SSE
     app.py               create_server_app / run_server
     auth.py              API Key 中间件
@@ -19,20 +38,6 @@ nono_app_server/
       chat.py            POST /chat、/abort
       sessions.py        会话 CRUD / 事件流 / AskUser
       commands.py        斜杠指令
-  product/               桌面 sidecar 产品 API（/app）
-    router.py            挂载 /app
-    info.py              GET /app/info
-    catalog.py           模型目录读写
-    permissions.py       桌面权限确认
-    filesystem.py        本机目录浏览、工作区文件预览与保存
-    git.py               /app/git：仓库 / worktree 状态、diff、暂存、提交、历史
-    gitcmd.py            调用系统 git 的公共封装
-    changes.py           每轮文件变更记录（git 私有快照 + 文件工具前像）
-    changes_routes.py    /app/changes：每轮变更摘要、对比、还原
-    textdiff.py          unified diff 解析与文本对比
-    store.py             SQLite 工作区 / 会话列表
-    workspaces.py        /app/workspaces
-    sessions.py          /app/sessions（映射引擎 session_id）
 ```
 
 ## 运行

@@ -81,7 +81,7 @@ export function WorkspacePicker({
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      event.stopPropagation();
+      event.stopImmediatePropagation();
       if (draftName !== null) {
         setDraftName(null);
         setError(null);
@@ -89,8 +89,8 @@ export function WorkspacePicker({
       }
       onClose();
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [open, draftName, onClose]);
 
   if (!open) return null;

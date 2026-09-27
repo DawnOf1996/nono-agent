@@ -147,7 +147,7 @@ class TestEngineBindsHeader:
         project.mkdir()
         other.mkdir()
         sessions.mkdir()
-        monkeypatch.setattr("nono_agent.core.engine.DEFAULT_SESSION_DIR", sessions)
+        monkeypatch.setattr("nono_agent.session.transcript.DEFAULT_SESSION_DIR", sessions)
 
         engine1 = create_test_engine(
             responses=[{"text": "hi", "tool_calls": []}],

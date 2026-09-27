@@ -3,7 +3,7 @@ import { ImageBody } from "@/features/files/preview/ImageBody";
 import { MarkdownBody } from "@/features/files/preview/MarkdownBody";
 import { TextBody } from "@/features/files/preview/TextBody";
 import { CODE_EXTENSIONS } from "@/features/files/preview/languages";
-import { CodePreview, PdfPreview } from "@/features/files/preview/deferred";
+import { CodePreview, DocxPreview, PdfPreview, PptxPreview, SheetPreview } from "@/features/files/preview/deferred";
 import { PLAIN_PREVIEW_ID, getDocumentPreviews, registerDocumentPreview } from "@/features/files/preview/registry";
 
 let ready = false;
@@ -38,6 +38,30 @@ export function ensureBuiltinPreviews(): void {
     title: "图片",
     loading: "url",
     Body: ImageBody,
+  });
+  registerDocumentPreview({
+    id: "@nono/preview/sheet",
+    extensions: ["csv", "tsv", "xlsx", "xls", "xlsm", "ods"],
+    priority: "builtin",
+    title: "表格",
+    loading: "bytes",
+    Body: SheetPreview,
+  });
+  registerDocumentPreview({
+    id: "@nono/preview/docx",
+    extensions: ["docx"],
+    priority: "builtin",
+    title: "Word",
+    loading: "bytes",
+    Body: DocxPreview,
+  });
+  registerDocumentPreview({
+    id: "@nono/preview/pptx",
+    extensions: ["pptx"],
+    priority: "builtin",
+    title: "PowerPoint",
+    loading: "bytes",
+    Body: PptxPreview,
   });
   registerDocumentPreview({
     id: "@nono/preview/pdf",

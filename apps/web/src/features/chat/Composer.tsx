@@ -37,6 +37,7 @@ export function Composer() {
   const [preview, setPreview] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const areaRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const slashQuery = input.startsWith("/") ? input.slice(1).split(/\s/)[0] ?? "" : "";
   const slashOpen = input.startsWith("/");
@@ -73,6 +74,28 @@ export function Composer() {
 
   const ingestRef = useRef(ingestFiles);
   ingestRef.current = ingestFiles;
+
+  useEffect(() => {
+    function onInsert(event: Event) {
+      const text = (event as CustomEvent<string>).detail;
+      if (!text) return;
+      const area = areaRef.current;
+      const current = useChatStore.getState().input;
+      const start = area?.selectionStart ?? current.length;
+      const end = area?.selectionEnd ?? current.length;
+      const prefix = current.slice(0, start);
+      const gap = prefix.length > 0 && !/[\s\n]$/.test(prefix) ? " " : "";
+      const inserted = gap + text;
+      setInput(prefix + inserted + current.slice(end));
+      const caret = start + inserted.length;
+      window.requestAnimationFrame(() => {
+        area?.focus();
+        area?.setSelectionRange(caret, caret);
+      });
+    }
+    window.addEventListener("nono-insert-input", onInsert);
+    return () => window.removeEventListener("nono-insert-input", onInsert);
+  }, [setInput]);
 
   useEffect(() => {
     function onWindowPaste(event: globalThis.ClipboardEvent) {
@@ -161,6 +184,7 @@ export function Composer() {
             </div>
           ) : null}
           <Textarea
+            ref={areaRef}
             rows={2}
             value={input}
             placeholder="描述你想做的事，可粘贴截图或添加图片"

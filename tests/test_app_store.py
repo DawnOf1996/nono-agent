@@ -9,10 +9,10 @@ import pytest
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 
 from nono_agent.core.config import EngineConfig  # noqa: E402
+from nono_app_server.common.store import AppStore  # noqa: E402
 from nono_app_server.config import SidecarSettings  # noqa: E402
 from nono_app_server.engine import create_server_app  # noqa: E402
-from nono_app_server.product.router import mount_product_routes  # noqa: E402
-from nono_app_server.product.store import AppStore  # noqa: E402
+from nono_app_server.features.router import mount_product_routes  # noqa: E402
 
 
 def _settings(cwd: Path) -> SidecarSettings:
@@ -69,6 +69,30 @@ class TestAppStore:
         assert row["engine_session_id"] == "engine-1"
         assert row["workspace_id"] == workspace["id"]
         assert store.get_session_by_engine_id("engine-1")["id"] == row["id"]
+
+    def test_side_session_stays_out_of_the_main_list(self, tmp_path: Path):
+        store = AppStore(tmp_path / "app.db")
+        workspace = store.upsert_workspace(str(tmp_path))
+        parent = store.create_session(
+            workspace_id=workspace["id"],
+            engine_session_id="parent",
+            title="主会话",
+        )
+        side = store.create_session(
+            workspace_id=workspace["id"],
+            engine_session_id="side",
+            title="侧边对话",
+        )
+        assert store.set_side_of(side["id"], parent["id"])["side_of"] == parent["id"]
+        listed = [item["id"] for item in store.list_sessions()]
+        assert parent["id"] in listed
+        assert side["id"] not in listed
+        hidden = store.list_sessions(side_of=parent["id"])
+        assert [item["id"] for item in hidden] == [side["id"]]
+        promoted = store.set_side_of(side["id"], None)
+        assert promoted is not None
+        assert promoted["side_of"] in {None, ""}
+        assert side["id"] in [item["id"] for item in store.list_sessions()]
 
     def test_delete_workspace_moves_sessions_to_ungrouped(self, tmp_path: Path):
         store = AppStore(tmp_path / "app.db")
@@ -209,7 +233,6 @@ class TestProductMappingApi:
     def test_fork_session_at_boundary_seq(self, tmp_path: Path):
         import asyncio
 
-        from nono_agent.core import engine as engine_module
         from nono_agent.session.events import (
             EVENT_ASSISTANT_MESSAGE,
             EVENT_TURN_END,
@@ -220,6 +243,7 @@ class TestProductMappingApi:
         from nono_agent.session.transcript import (
             JSONL_ZSTD_SUFFIX,
             LocalFileTranscriptWriter,
+            active_session_dir,
         )
 
         with _client(tmp_path) as client:
@@ -255,8 +279,7 @@ class TestProductMappingApi:
             copy = forked.json()
             assert copy["turn_count"] == 1
             child_path = (
-                engine_module.DEFAULT_SESSION_DIR
-                / f"{copy['engine_session_id']}{JSONL_ZSTD_SUFFIX}"
+                active_session_dir() / f"{copy['engine_session_id']}{JSONL_ZSTD_SUFFIX}"
             )
             child = LocalFileTranscriptWriter(child_path)
             child_events = asyncio.run(child.read_events())

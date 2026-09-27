@@ -221,7 +221,8 @@ export function GitLens({ root, visible, onShowSession }: { root: string; visibl
   const revision = usePanelStore((state) => state.revision);
   const tabs = usePanelStore((state) => state.tabs);
   const active = usePanelStore((state) => state.active);
-  const openDiff = usePanelStore((state) => state.openDiff);
+  const setChangePreview = usePanelStore((state) => state.setChangePreview);
+  const changePreview = usePanelStore((state) => state.changePreview);
   const openFile = usePanelStore((state) => state.openFile);
   const bumpRevision = usePanelStore((state) => state.bumpRevision);
   const setGitCount = usePanelStore((state) => state.setGitCount);
@@ -378,12 +379,16 @@ export function GitLens({ root, visible, onShowSession }: { root: string; visibl
   const activeDiff = tabs.find((tab) => tab.id === active);
 
   function selected(entry: GitStatusEntry, isStaged: boolean): boolean {
+    const preview = changePreview?.target;
+    if (preview?.source === "git") {
+      return sameWorkspace(preview.absPath, entry.abs_path) && preview.staged === isStaged;
+    }
     if (!activeDiff || activeDiff.kind !== "diff" || activeDiff.target.source !== "git") return false;
     return sameWorkspace(activeDiff.target.absPath, entry.abs_path) && activeDiff.target.staged === isStaged;
   }
 
   function showDiff(entry: GitStatusEntry, isStaged: boolean) {
-    openDiff(
+    setChangePreview(
       {
         source: "git",
         root,
@@ -605,7 +610,7 @@ export function GitLens({ root, visible, onShowSession }: { root: string; visibl
                 title={`${entry.hash} ${entry.subject}`}
                 className="flex w-full min-w-0 items-start gap-1.5 rounded-md py-1 pl-6 pr-1.5 text-left hover:bg-hover"
                 onClick={() =>
-                  openDiff(
+                  setChangePreview(
                     { source: "commit", root, repo: repoPath, hash: entry.hash_full, subject: entry.subject },
                     entry.subject || entry.hash,
                   )

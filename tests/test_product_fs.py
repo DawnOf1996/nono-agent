@@ -11,7 +11,7 @@ fastapi_testclient = pytest.importorskip("fastapi.testclient")
 from nono_agent.core.config import EngineConfig  # noqa: E402
 from nono_app_server.config import SidecarSettings  # noqa: E402
 from nono_app_server.engine import create_server_app  # noqa: E402
-from nono_app_server.product.router import mount_product_routes  # noqa: E402
+from nono_app_server.features.router import mount_product_routes  # noqa: E402
 
 
 def _client(tmp_path: Path):
@@ -170,3 +170,125 @@ def test_mkdir_conflict(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         resp = client.post("/app/fs/mkdir", json={"parent": str(tmp_path), "name": "taken"})
     assert resp.status_code == 409
+
+
+def _symlink(link: Path, target: Path, *, directory: bool) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except OSError as exc:
+        pytest.skip(f"当前环境不能创建软链接: {exc}")
+
+
+def test_workspace_entries_keep_symlinks(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    real = root / "real"
+    real.mkdir()
+    (real / "a.txt").write_text("a", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("nope", encoding="utf-8")
+    _symlink(root / "link", real, directory=True)
+    _symlink(root / "gone", root / "missing", directory=False)
+    _symlink(root / "out", outside, directory=False)
+    with _client(tmp_path) as client:
+        listing = client.get("/app/fs/entries", params={"root": str(root)})
+        nested = client.get(
+            "/app/fs/entries", params={"root": str(root), "path": str(root / "link")}
+        )
+    assert listing.status_code == 200
+    rows = {item["name"]: item for item in listing.json()["entries"]}
+    assert rows["link"]["is_symlink"] is True
+    assert rows["link"]["is_dir"] is True
+    assert rows["link"]["broken"] is False
+    assert rows["gone"]["is_symlink"] is True
+    assert rows["gone"]["broken"] is True
+    assert rows["gone"]["is_dir"] is False
+    assert rows["out"]["is_symlink"] is True
+    assert rows["out"]["broken"] is False
+    assert nested.status_code == 200
+    assert nested.json()["entries"][0]["name"] == "a.txt"
+
+
+def test_workspace_search_skips_noise_and_symlink_dirs(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "src").mkdir()
+    (root / "src" / "KeepMe.ts").write_text("x", encoding="utf-8")
+    modules = root / "node_modules" / "pkg"
+    modules.mkdir(parents=True)
+    (modules / "KeepMe.ts").write_text("x", encoding="utf-8")
+    with _client(tmp_path) as client:
+        found = client.get("/app/fs/search", params={"root": str(root), "q": "keepme"})
+        empty = client.get("/app/fs/search", params={"root": str(root), "q": "   "})
+    assert found.status_code == 200
+    paths = [item["path"] for item in found.json()["matches"]]
+    assert paths == ["src/KeepMe.ts"]
+    assert found.json()["truncated"] is False
+    assert empty.json() == {"matches": [], "truncated": False}
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / "KeepMe.ts").write_text("x", encoding="utf-8")
+    _symlink(root / "alias", linked, directory=True)
+    with _client(tmp_path) as client:
+        again = client.get("/app/fs/search", params={"root": str(root), "q": "keepme"})
+    assert [item["path"] for item in again.json()["matches"]] == ["src/KeepMe.ts"]
+
+
+def test_workspace_upload_and_reject_escape(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "src").mkdir()
+    with _client(tmp_path) as client:
+        ok = client.post(
+            "/app/fs/upload",
+            data={
+                "root": str(root),
+                "directory": str(root / "src"),
+                "relpaths": ["nested/note.txt", "plain.txt"],
+            },
+            files=[
+                ("files", ("note.txt", b"hello", "text/plain")),
+                ("files", ("plain.txt", b"x", "text/plain")),
+            ],
+        )
+        escaped = client.post(
+            "/app/fs/upload",
+            data={"root": str(root), "directory": str(root), "relpaths": ["../secret.txt"]},
+            files=[("files", ("secret.txt", b"nope", "text/plain"))],
+        )
+    assert ok.status_code == 200
+    assert ok.json()["count"] == 2
+    assert (root / "src" / "nested" / "note.txt").read_bytes() == b"hello"
+    assert (root / "src" / "plain.txt").read_bytes() == b"x"
+    assert escaped.status_code == 400
+    assert not (tmp_path / "secret.txt").exists()
+
+
+async def test_watch_reports_directory_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import nono_app_server.features.files.api as filesystem
+
+    monkeypatch.setattr(filesystem, "_WATCH_POLL_S", 0.01)
+    root = tmp_path / "ws"
+    root.mkdir()
+
+    class Request:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def is_disconnected(self) -> bool:
+            self.calls += 1
+            return self.calls > 4
+
+    response = await filesystem.watch_workspace_directories(
+        filesystem.WatchBody(root=str(root), paths=[str(root), str(tmp_path / "missing")]),
+        Request(),  # type: ignore[arg-type]
+    )
+    chunks = response.body_iterator
+    assert await anext(chunks) == ": ok\n\n"
+    (root / "created.txt").write_text("hi", encoding="utf-8")
+    change = await anext(chunks)
+    await chunks.aclose()
+    assert "event: change" in change
+    assert str(root).replace("\\", "\\\\") in change

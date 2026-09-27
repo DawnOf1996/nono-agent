@@ -1,4 +1,4 @@
-"""引擎 HTTP API：会话管理 + SSE。产品层在 `nono_app_server.product` 挂 /app 路由。"""
+"""引擎 HTTP API：会话管理 + SSE。产品功能在 `nono_app_server.features`，挂到 /app。"""
 
 from nono_agent.session.transcript import DEFAULT_SESSION_DIR
 from nono_app_server.engine.app import create_server_app, run_server

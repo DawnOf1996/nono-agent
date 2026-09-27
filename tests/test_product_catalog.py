@@ -16,10 +16,12 @@ from nono_agent.providers.catalog import (
     NamedProvider,
     save_user_catalog,
 )
-from nono_app_server.product.catalog import (
+from nono_app_server.features.catalog.schemas import (
     DefaultModelBody,
     DiscoverModelsBody,
     ProviderUpsert,
+)
+from nono_app_server.features.catalog.service import (
     delete_provider,
     discover_remote_models,
     public_catalog,
@@ -238,7 +240,10 @@ class TestDiscoverRemoteModels:
                 assert headers["Authorization"] == "Bearer sk-form"
                 return DummyResponse()
 
-        with patch("nono_app_server.product.catalog.httpx.Client", return_value=DummyClient()):
+        with patch(
+            "nono_app_server.features.catalog.service.httpx.Client",
+            return_value=DummyClient(),
+        ):
             models = discover_remote_models(
                 DiscoverModelsBody(
                     base_url="https://gateway.example/v1",
@@ -265,7 +270,10 @@ class TestDiscoverRemoteModels:
             def get(self, url: str, headers: dict | None = None) -> httpx.Response:
                 return response
 
-        with patch("nono_app_server.product.catalog.httpx.Client", return_value=DummyClient()):
+        with patch(
+            "nono_app_server.features.catalog.service.httpx.Client",
+            return_value=DummyClient(),
+        ):
             with pytest.raises(ValueError, match="HTTP 401"):
                 discover_remote_models(
                     DiscoverModelsBody(

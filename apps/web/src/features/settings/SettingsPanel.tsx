@@ -2,7 +2,7 @@ import { Bot, Boxes, Cable, Puzzle, Settings2, SlidersHorizontal, X } from "luci
 import { useEffect, useState, type ReactNode } from "react";
 import type { SettingsTab } from "@nono/protocol";
 
-import { openCatalogConfig } from "@/api/client";
+import { openCatalogConfig, updateSessionDir } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { ConnectorSettings } from "@/features/settings/ConnectorSettings";
 import { PresetPicker, ProviderList } from "@/features/settings/ModelSettings";
@@ -13,6 +13,8 @@ import {
   ProviderEditor,
   type ProviderDraft,
 } from "@/features/settings/ProviderEditor";
+import { SidebarCards } from "@/features/settings/SidebarCards";
+import { WorkspacePicker } from "@/features/session/WorkspacePicker";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chat";
 
@@ -148,8 +150,8 @@ export function SettingsPanel() {
           </ul>
         </nav>
 
-        <section className="flex min-w-0 flex-1 flex-col px-6 py-4">
-          <div className="mb-4 flex items-center justify-end gap-2">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col px-6 py-4">
+          <div className="mb-4 flex shrink-0 items-center justify-end gap-2">
             <Button variant="outline" size="sm" className="rounded-full" onClick={() => void openConfig()}>
               打开配置文件
             </Button>
@@ -157,8 +159,9 @@ export function SettingsPanel() {
               <X className="size-4" />
             </Button>
           </div>
-          {configError ? <p className="mb-3 text-xs text-danger">{configError}</p> : null}
+          {configError ? <p className="mb-3 shrink-0 text-xs text-danger">{configError}</p> : null}
 
+          <div className="min-h-0 flex-1 overflow-auto">
           {tab === "models" && modelView === "list" ? (
             <ProviderList
               providers={providers}
@@ -201,7 +204,9 @@ export function SettingsPanel() {
             />
           ) : null}
 
-          {tab === "general" ? <GeneralPane configPath={catalog?.config_path} info={info} /> : null}
+          {tab === "general" ? (
+            <GeneralPane configPath={catalog?.config_path} info={info} />
+          ) : null}
           {tab === "connectors" ? <ConnectorSettings /> : null}
           {tab === "plugins" ? (
             <ComingSoon title="插件" detail="后续会在这里管理本地插件。" />
@@ -209,6 +214,7 @@ export function SettingsPanel() {
           {tab === "agents" ? (
             <ComingSoon title="Agent 预设" detail="后续会在这里保存常用的系统提示词与工具组合。" />
           ) : null}
+          </div>
         </section>
       </div>
     </div>
@@ -220,8 +226,22 @@ function GeneralPane({
   info,
 }: {
   configPath?: string | null;
-  info: { version?: string; engine?: string } | null;
+  info: { version?: string; engine?: string; session_dir?: string } | null;
 }) {
+  const [path, setPath] = useState(info?.session_dir ?? "");
+  const [picking, setPicking] = useState(false);
+
+  useEffect(() => {
+    if (info?.session_dir) setPath(info.session_dir);
+  }, [info?.session_dir]);
+
+  async function chooseDirectory(next: string) {
+    const result = await updateSessionDir(next);
+    setPath(result.session_dir);
+    const current = useChatStore.getState().info;
+    if (current) useChatStore.setState({ info: { ...current, session_dir: result.session_dir } });
+  }
+
   return (
     <div>
       <h3 className="text-[15px] font-medium">通用设置</h3>
@@ -234,6 +254,21 @@ function GeneralPane({
           </dd>
         </div>
         <div className="rounded-2xl border border-line px-4 py-3">
+          <dt className="flex items-center justify-between gap-2 text-xs text-muted">
+            对话文件
+            <button
+              type="button"
+              className="text-[12px] text-ink hover:underline"
+              onClick={() => setPicking(true)}
+            >
+              更改
+            </button>
+          </dt>
+          <dd className="mt-1 break-all font-mono text-[12px] text-ink">
+            {path || "~/.nono-agent/sessions"}
+          </dd>
+        </div>
+        <div className="rounded-2xl border border-line px-4 py-3">
           <dt className="text-xs text-muted">版本</dt>
           <dd className="mt-1 text-[13px]">
             {info?.engine ?? "nono-agent"}
@@ -241,6 +276,15 @@ function GeneralPane({
           </dd>
         </div>
       </dl>
+      <SidebarCards />
+      <WorkspacePicker
+        open={picking}
+        onClose={() => setPicking(false)}
+        title="选择对话文件目录"
+        confirmLabel="迁移到这里"
+        initialPath={path || "~/.nono-agent/sessions"}
+        onConfirm={chooseDirectory}
+      />
     </div>
   );
 }

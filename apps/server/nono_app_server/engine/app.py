@@ -11,7 +11,6 @@ from typing import Any
 from nono_agent.commands import CommandRegistry
 from nono_agent.commands.builtin import create_builtin_commands
 from nono_agent.core.config import EngineConfig
-from nono_agent.session.transcript import DEFAULT_SESSION_DIR
 from nono_agent.tools.context import PermissionChecker
 from nono_app_server.engine.auth import install_api_key_auth
 from nono_app_server.engine.routers import register_engine_routes
@@ -22,7 +21,7 @@ from nono_app_server.engine.session_manager import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DEFAULT_SESSION_DIR", "create_server_app", "run_server"]
+__all__ = ["create_server_app", "run_server"]
 
 
 def create_server_app(

@@ -13,7 +13,7 @@ function pdfAsset(folder: string): string {
   return `${prefix}pdfjs/${folder}/`;
 }
 
-function PdfCanvas({ pdf, pageNumber }: { pdf: PDFDocumentProxy; pageNumber: number }) {
+function PdfCanvas({ pdf, pageNumber, scale }: { pdf: PDFDocumentProxy; pageNumber: number; scale: number }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -27,7 +27,7 @@ function PdfCanvas({ pdf, pageNumber }: { pdf: PDFDocumentProxy; pageNumber: num
     let generation = 0;
 
     const paint = () => {
-      const width = Math.max(1, Math.floor(wrap.clientWidth));
+      const width = Math.max(1, Math.floor(wrap.clientWidth * scale));
       if (width === lastWidth) return;
       lastWidth = width;
       const current = ++generation;
@@ -67,7 +67,7 @@ function PdfCanvas({ pdf, pageNumber }: { pdf: PDFDocumentProxy; pageNumber: num
       renderTask?.cancel();
       observer.disconnect();
     };
-  }, [pageNumber, pdf]);
+  }, [pageNumber, pdf, scale]);
 
   return (
     <div ref={wrapRef} className="w-full">
@@ -76,7 +76,7 @@ function PdfCanvas({ pdf, pageNumber }: { pdf: PDFDocumentProxy; pageNumber: num
   );
 }
 
-function PdfPage({ pdf, pageNumber }: { pdf: PDFDocumentProxy; pageNumber: number }) {
+function PdfPage({ pdf, pageNumber, scale }: { pdf: PDFDocumentProxy; pageNumber: number; scale: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(pageNumber <= 2);
 
@@ -95,7 +95,7 @@ function PdfPage({ pdf, pageNumber }: { pdf: PDFDocumentProxy; pageNumber: numbe
 
   return (
     <div ref={ref} className={visible ? "" : "min-h-[70vh]"}>
-      {visible ? <PdfCanvas pdf={pdf} pageNumber={pageNumber} /> : null}
+      {visible ? <PdfCanvas pdf={pdf} pageNumber={pageNumber} scale={scale} /> : null}
     </div>
   );
 }
@@ -104,6 +104,20 @@ export function PdfBody({ content }: DocumentPreviewProps) {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<string | null>(null);
   const data = content.kind === "bytes" ? content.data : null;
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    function onWheel(event: WheelEvent) {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      setScale((current) => Math.min(4, Math.max(0.5, event.deltaY < 0 ? current * 1.1 : current / 1.1)));
+    }
+    frame.addEventListener("wheel", onWheel, { passive: false });
+    return () => frame.removeEventListener("wheel", onWheel);
+  }, [pdf]);
 
   useEffect(() => {
     if (data === null) return;
@@ -138,10 +152,24 @@ export function PdfBody({ content }: DocumentPreviewProps) {
   if (error) return <p className="px-4 py-6 text-[13px] leading-6 text-danger">{error}</p>;
   if (!pdf) return <PreviewLoading label="正在打开 PDF" />;
   return (
-    <div className="flex h-full flex-col gap-3 overflow-auto bg-sidebar p-3">
-      {Array.from({ length: pdf.numPages }, (_, index) => (
-        <PdfPage key={index + 1} pdf={pdf} pageNumber={index + 1} />
-      ))}
+    <div ref={frameRef} className="flex h-full flex-col bg-sidebar">
+      <div className="flex h-9 shrink-0 items-center justify-end gap-1 border-b border-line bg-bg px-2 text-[12px]">
+        <button type="button" className="size-6 rounded hover:bg-hover" aria-label="缩小" onClick={() => setScale((value) => Math.max(0.5, value / 1.2))}>
+          −
+        </button>
+        <span className="w-10 text-center tabular-nums text-muted">{Math.round(scale * 100)}%</span>
+        <button type="button" className="size-6 rounded hover:bg-hover" aria-label="放大" onClick={() => setScale((value) => Math.min(4, value * 1.2))}>
+          +
+        </button>
+        <button type="button" className="h-6 rounded px-1.5 text-muted hover:bg-hover hover:text-ink" onClick={() => setScale(1)}>
+          适应
+        </button>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3">
+        {Array.from({ length: pdf.numPages }, (_, index) => (
+          <PdfPage key={index + 1} pdf={pdf} pageNumber={index + 1} scale={scale} />
+        ))}
+      </div>
     </div>
   );
 }

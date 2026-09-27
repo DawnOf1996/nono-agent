@@ -44,6 +44,19 @@ def project_settings_path(cwd: str | Path) -> Path:
     return project_dir(cwd) / "settings.json"
 
 
+def patch_user_settings(patch: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+    """把补丁深合并进用户级 ``settings.json`` 并写回。"""
+    dest = path or (user_home() / "settings.json")
+    current = _read_json(dest)
+    merged = deep_merge(current, patch)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return merged
+
+
 def load_project_settings(cwd: str | Path) -> dict[str, Any]:
     """加载项目级设置（``.nono-agent/settings.json``，从 cwd 向上查找第一个）。"""
     current = Path(cwd).resolve()

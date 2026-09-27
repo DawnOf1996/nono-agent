@@ -17,17 +17,17 @@ from nono_agent.core.config import EngineConfig  # noqa: E402
 from nono_agent.core.types import AssistantMessage  # noqa: E402
 from nono_agent.hooks.middleware import MiddlewareChain  # noqa: E402
 from nono_agent.session.transcript import LocalFileTranscriptWriter  # noqa: E402
-from nono_app_server.config import SidecarSettings  # noqa: E402
-from nono_app_server.engine import create_server_app  # noqa: E402
-from nono_app_server.product import git as git_module  # noqa: E402
-from nono_app_server.product.changes import WorkspaceChangesService  # noqa: E402
-from nono_app_server.product.router import mount_product_routes  # noqa: E402
-from nono_app_server.product.textdiff import (  # noqa: E402
+from nono_app_server.common.textdiff import (  # noqa: E402
     count_changes,
     diff_contents,
     diff_texts,
     parse_unified_diff,
 )
+from nono_app_server.config import SidecarSettings  # noqa: E402
+from nono_app_server.engine import create_server_app  # noqa: E402
+from nono_app_server.features.changes.service import WorkspaceChangesService  # noqa: E402
+from nono_app_server.features.git import service as git_module  # noqa: E402
+from nono_app_server.features.router import mount_product_routes  # noqa: E402
 from tests.helpers import MockTool, create_test_engine  # noqa: E402
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
@@ -352,7 +352,9 @@ def test_turn_changes_without_git_use_tool_captures(
     workspace = tmp_path / "plain"
     workspace.mkdir()
     (workspace / "doc.md").write_text("one\ntwo\n", encoding="utf-8")
-    monkeypatch.setattr("nono_app_server.product.changes.git_available", lambda: False)
+    monkeypatch.setattr(
+        "nono_app_server.features.changes.service.git_available", lambda: False
+    )
     service = WorkspaceChangesService(tmp_path / "store")
     engine = _engine(workspace)
 

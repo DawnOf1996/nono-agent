@@ -49,6 +49,9 @@ const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const sidecar = process.env.NONO_SIDECAR_URL || "http://127.0.0.1:8000";
 
 export default defineConfig({
+  define: {
+    __NONO_SIDECAR_HTTP__: JSON.stringify(sidecar),
+  },
   plugins: [react(), tailwindcss(), pdfjsAssets()],
   resolve: {
     alias: {
@@ -68,7 +71,7 @@ export default defineConfig({
       "/command": sidecar,
       "/commands": sidecar,
       "/abort": sidecar,
-      "/app": sidecar,
+      "/app": { target: sidecar, ws: true },
     },
   },
 });

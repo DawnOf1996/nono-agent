@@ -13,8 +13,8 @@ from nono_agent.core.engine import QueryEngine
 from nono_agent.paths import resolve_session_cwd
 from nono_agent.providers.catalog import load_catalog
 from nono_agent.session.transcript import (
-    DEFAULT_SESSION_DIR,
     LocalFileTranscriptWriter,
+    active_session_dir,
     existing_transcript_path,
     peek_session_header,
 )
@@ -230,7 +230,7 @@ class SessionManager:
         engine = self.sessions.get(session_id)
         if engine is not None and engine.transcript_writer is not None:
             return engine.transcript_writer
-        session_file = existing_transcript_path(DEFAULT_SESSION_DIR, session_id)
+        session_file = existing_transcript_path(active_session_dir(), session_id)
         if session_file is None:
             return None
         return LocalFileTranscriptWriter(session_file)

@@ -1,15 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { fetchWorkspaceBytes } from "@/api/client";
 import { PreviewLoading } from "@/features/files/preview/Loading";
 import { createHtmlDocument } from "@/features/files/preview/html/document";
 import { packHtml, resolvePreviewRelative } from "@/features/files/preview/html/pack";
 import type { DocumentPreviewProps } from "@/features/files/preview/types";
+import { getSidebarPrefs, subscribeSidebarPrefs } from "@/features/settings/sidebar-prefs";
 
 export function HtmlBody({ root, path, content }: DocumentPreviewProps) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const data = content.kind === "bytes" ? content.data : null;
+  const { htmlNoSandbox, htmlUnsafe } = useSyncExternalStore(subscribeSidebarPrefs, getSidebarPrefs, getSidebarPrefs);
+  const sandbox = htmlNoSandbox ? undefined : htmlUnsafe ? "allow-scripts allow-same-origin allow-forms allow-popups" : "allow-scripts";
 
   useEffect(() => {
     if (data === null) return;
@@ -54,5 +57,5 @@ export function HtmlBody({ root, path, content }: DocumentPreviewProps) {
   if (data === null) return null;
   if (error) return <p className="px-4 py-6 text-[13px] leading-6 text-danger">{error}</p>;
   if (!url) return <PreviewLoading label="正在准备页面" />;
-  return <iframe className="h-full w-full border-0 bg-white" src={url} sandbox="allow-scripts" title="HTML 预览" />;
+  return <iframe className="h-full w-full border-0 bg-white" src={url} sandbox={sandbox} title="HTML 预览" />;
 }

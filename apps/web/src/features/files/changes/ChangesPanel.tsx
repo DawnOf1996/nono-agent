@@ -1,3 +1,4 @@
+import { ChangePreview } from "@/features/files/changes/ChangePreview";
 import { GitLens } from "@/features/files/changes/GitLens";
 import { SessionLens } from "@/features/files/changes/SessionLens";
 import { usePanelStore, type ChangesLens } from "@/features/files/panel-store";
@@ -36,6 +37,7 @@ export function ChangesPanel({ root, visible }: { root: string; visible: boolean
         <GitLens root={root} visible={visible && lens === "git"} onShowSession={() => setLens("session")} />
       </div>
       {lens === "session" ? <SessionLens /> : null}
+      <ChangePreview />
     </div>
   );
 }

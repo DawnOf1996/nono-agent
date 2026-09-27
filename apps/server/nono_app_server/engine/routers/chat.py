@@ -54,9 +54,7 @@ async def chat(
         )
         queue = manager.ask_signal.setdefault(session_id, asyncio.Queue())
         sdk_queue: asyncio.Queue[Any] = asyncio.Queue()
-        sdk_task: asyncio.Task[None] = asyncio.create_task(
-            drain_to_queue(submit, sdk_queue)
-        )
+        sdk_task: asyncio.Task[None] = asyncio.create_task(drain_to_queue(submit, sdk_queue))
         try:
             while True:
                 try:

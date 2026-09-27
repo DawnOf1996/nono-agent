@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shutil
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -37,8 +39,11 @@ from nono_agent.session.header import (
 
 logger = logging.getLogger(__name__)
 
-# 默认会话文件存储目录
+# 默认会话文件存储目录。运行中的实际目录见 active_session_dir()。
 DEFAULT_SESSION_DIR = user_home() / "sessions"
+
+# 用户在设置里指定的目录。None 表示沿用 DEFAULT_SESSION_DIR（测试会改那个常量）。
+_configured_session_dir: Path | None = None
 
 # 会话元信息侧车文件后缀（与事件流同目录、同 session_id）
 HEADER_SUFFIX = ".header.json"
@@ -65,6 +70,97 @@ SESSION_DIR_MODE = 0o700
 # ------------------------------------------------------------------
 # 路径 / 编解码
 # ------------------------------------------------------------------
+
+def active_session_dir() -> Path:
+    """当前会话目录。未单独配置时就是 DEFAULT_SESSION_DIR。"""
+    return _configured_session_dir if _configured_session_dir is not None else DEFAULT_SESSION_DIR
+
+
+def use_session_dir(path: Path | None) -> None:
+    """切换进程内使用的会话目录。None 表示回到 DEFAULT_SESSION_DIR。"""
+    global _configured_session_dir
+    _configured_session_dir = path
+
+
+def load_session_dir_setting() -> Path:
+    """从用户设置读会话目录。没配过就用默认目录。"""
+    from nono_agent.settings.sources import load_user_settings
+
+    raw = load_user_settings().get("session_dir")
+    if isinstance(raw, str) and raw.strip():
+        path = Path(raw).expanduser().resolve()
+        use_session_dir(path)
+        return path
+    use_session_dir(None)
+    return DEFAULT_SESSION_DIR
+
+
+def relocate_session_files(old: Path, new: Path) -> int:
+    """把旧目录里的会话文件迁到新目录。
+
+    只搬事件流和元信息（``.jsonl`` / ``.jsonl.zst`` / ``.header.json``）。
+    新目录里已有同名文件时整次放弃，已经搬走的会移回去。
+    """
+    source = old.expanduser().resolve()
+    target = new.expanduser().resolve()
+    if _same_path(source, target):
+        return 0
+    if source.exists() and not source.is_dir():
+        raise ValueError("当前会话目录不是文件夹")
+    if target.exists() and not target.is_dir():
+        raise ValueError("新的保存路径已经是一个文件")
+    if source.exists() and (_inside(source, target) or _inside(target, source)):
+        raise ValueError("新目录不能放在当前会话目录里面，也不能把当前目录包进去")
+    files = _session_files(source)
+    collisions = [path.name for path in files if (target / path.name).exists()]
+    if collisions:
+        shown = "、".join(collisions[:3])
+        raise FileExistsError(f"新目录里已经有同名会话文件：{shown}")
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        target.chmod(SESSION_DIR_MODE)
+    except OSError:
+        pass
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for path in files:
+            dest = target / path.name
+            shutil.move(str(path), str(dest))
+            moved.append((path, dest))
+    except OSError:
+        for src, dest in reversed(moved):
+            if dest.exists() and not src.exists():
+                shutil.move(str(dest), str(src))
+        raise
+    return len(moved)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
+def _inside(parent: Path, child: Path) -> bool:
+    parent_key = os.path.normcase(str(parent))
+    child_key = os.path.normcase(str(child))
+    if child_key == parent_key:
+        return False
+    prefix = parent_key if parent_key.endswith(os.sep) else parent_key + os.sep
+    return child_key.startswith(prefix)
+
+
+def _session_files(directory: Path) -> list[Path]:
+    if not directory.is_dir():
+        return []
+    files: list[Path] = []
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
+        name = path.name
+        if name.endswith(".header.json") or name.endswith(".jsonl.zst") or name.endswith(".jsonl"):
+            files.append(path)
+    files.sort(key=lambda item: item.name)
+    return files
+
 
 def transcript_session_id(path: Path) -> str:
     """从事件流文件名取出 session_id（兼容 ``.jsonl`` / ``.jsonl.zst``）。"""
@@ -185,7 +281,7 @@ def list_session_files(session_dir: Path | None = None) -> list[dict[str, Any]]:
     Returns:
         每个会话一项的字典列表，按 session_id 排序。
     """
-    directory = Path(session_dir) if session_dir is not None else DEFAULT_SESSION_DIR
+    directory = Path(session_dir) if session_dir is not None else active_session_dir()
     if not directory.is_dir():
         return []
 
@@ -246,7 +342,7 @@ def peek_session_header(
     Returns:
         解析出的 SessionHeader；文件不存在或不是对象时为 None。
     """
-    directory = Path(session_dir) if session_dir is not None else DEFAULT_SESSION_DIR
+    directory = Path(session_dir) if session_dir is not None else active_session_dir()
     path = directory / f"{session_id}{HEADER_SUFFIX}"
     if not path.is_file():
         return None
@@ -425,6 +521,10 @@ class LocalFileTranscriptWriter:
             and resolved.name.endswith(JSONL_SUFFIX)
             and not resolved.name.endswith(JSONL_ZSTD_SUFFIX)
         )
+
+    def retarget(self, directory: Path) -> None:
+        """把后续读写改到新目录下的同名文件。调用前文件应已经迁走，且没有正在进行的写入。"""
+        self._session_file = directory / self._session_file.name
 
     @property
     def session_file(self) -> Path:

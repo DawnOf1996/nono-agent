@@ -33,11 +33,8 @@ const GUTTER_TONE = {
   context: "text-faint",
 } as const;
 
-const INLINE_TONE = {
-  add: "bg-[#a9e0bb]",
-  del: "bg-[#f3b6b6]",
-  context: "",
-} as const;
+/** 整行仍是增绿、删红；配对后真正改掉的那一段用蓝色。 */
+const INLINE_CHANGE = "bg-[#b7d4ff]";
 
 async function highlightSide(rows: readonly DiffRow[], side: "old" | "new", language: string): Promise<SideTokens> {
   const source = rows.flatMap((row) => {
@@ -128,7 +125,7 @@ function LineText({
         <span
           key={`${tokenIndex}-${from}`}
           style={style}
-          className={inChange ? cn("rounded-[2px]", INLINE_TONE[kind]) : undefined}
+          className={inChange ? cn("rounded-[2px]", INLINE_CHANGE) : undefined}
         >
           {token.content.slice(from - start, to - start)}
         </span>,
