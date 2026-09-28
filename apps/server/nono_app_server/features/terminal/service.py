@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sys
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import (
     dataclass,
     field,
@@ -208,11 +211,83 @@ def _read_loop(session: TerminalSession, loop: asyncio.AbstractEventLoop) -> Non
     loop.call_soon_threadsafe(session.finish, code)
 
 
+_spawn_lock = threading.Lock()
+
+
+def _meipass() -> str | None:
+    if not getattr(sys, "frozen", False):
+        return None
+    bundle = getattr(sys, "_MEIPASS", None)
+    return str(bundle) if bundle else None
+
+
+def _child_env() -> dict[str, str] | None:
+    """去掉传给 shell 的打包目录和 _PYI_*，避免 Git Bash 加载到包里的 DLL。"""
+    bundle = _meipass()
+    if bundle is None:
+        return None
+    env = dict(os.environ)
+    norm = os.path.normcase(os.path.abspath(bundle))
+    kept: list[str] = []
+    for item in env.get("PATH", "").split(os.pathsep):
+        if not item:
+            continue
+        try:
+            if os.path.normcase(os.path.abspath(item)) == norm:
+                continue
+        except OSError:
+            continue
+        kept.append(item)
+    env["PATH"] = os.pathsep.join(kept)
+    for key in list(env):
+        if key.startswith("_PYI") or key in {"_MEIPASS", "_MEIPASS2"}:
+            del env[key]
+    return env
+
+
+@contextmanager
+def _bundle_dll_search_suspended() -> Iterator[None]:
+    """PyInstaller 用 SetDllDirectoryW 把 DLL 搜索指到 _MEIPASS，子进程会继承。"""
+    bundle = _meipass()
+    if os.name != "nt" or bundle is None:
+        yield
+        return
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetDllDirectoryW.argtypes = [ctypes.c_wchar_p]
+    kernel32.SetDllDirectoryW.restype = ctypes.c_int
+    kernel32.SetDllDirectoryW(None)
+    try:
+        yield
+    finally:
+        kernel32.SetDllDirectoryW(bundle)
+
+
+def _require_conpty_host() -> None:
+    if _meipass() is None:
+        return
+    import winpty
+
+    directory = Path(winpty.__file__).resolve().parent
+    host = directory / "OpenConsole.exe"
+    dll = directory / "conpty.dll"
+    if host.is_file() and dll.is_file():
+        return
+    raise OSError(f"缺少 ConPTY 宿主，需要 {dll.name} 与 {host.name} 在同一目录: {directory}")
+
+
 def _spawn(spec: ShellSpec, cwd: str, cols: int, rows: int) -> Any:
     if os.name == "nt":
         from winpty import PtyProcess
 
-        return PtyProcess.spawn(spec.argv, cwd=cwd, dimensions=(rows, cols))
+        kwargs: dict[str, Any] = {"cwd": cwd, "dimensions": (rows, cols)}
+        env = _child_env()
+        if env is not None:
+            kwargs["env"] = env
+        with _spawn_lock, _bundle_dll_search_suspended():
+            _require_conpty_host()
+            return PtyProcess.spawn(spec.argv, **kwargs)
     import pty
     import subprocess
 

@@ -53,6 +53,14 @@ for name in METADATA:
     except PackageNotFoundError:
         pass
 
+# pywinpty 的 _winpty.pyd 用 LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR 加载同目录的 conpty.dll，
+# 而 conpty.dll 再启动旁边的 OpenConsole.exe。这两个 exe 不在导入表里，必须显式放进 winpty/。
+_WINPTY_FILES = {winpty_binaries!r}
+for src, dest in _WINPTY_FILES:
+    binaries.append((src, dest))
+if _WINPTY_FILES:
+    hiddenimports.append("winpty")
+
 # 去重并保持顺序
 hiddenimports = list(dict.fromkeys(item for item in hiddenimports if item))
 datas = list(dict.fromkeys(datas))
@@ -132,6 +140,41 @@ METADATA = (
     "httpx",
 )
 
+# 必须和 _winpty.pyd 落在同一目录，conpty.dll 只在自己旁边找 OpenConsole.exe。
+_WINPTY_BINARIES = (
+    "conpty.dll",
+    "winpty.dll",
+    "OpenConsole.exe",
+    "winpty-agent.exe",
+)
+
+
+def _winpty_binaries() -> list[tuple[str, str]]:
+    if os.name != "nt":
+        return []
+    import winpty
+
+    directory = Path(winpty.__file__).resolve().parent
+    missing = [name for name in _WINPTY_BINARIES if not (directory / name).is_file()]
+    if missing:
+        raise SystemExit(
+            f"pywinpty 缺少打包文件: {', '.join(missing)} ({directory})"
+        )
+    return [(str(directory / name), "winpty") for name in _WINPTY_BINARIES]
+
+
+def _require_winpty_layout(dist_root: Path) -> None:
+    if os.name != "nt":
+        return
+    dlls = list(dist_root.rglob("conpty.dll"))
+    hosts = list(dist_root.rglob("OpenConsole.exe"))
+    agents = list(dist_root.rglob("winpty-agent.exe"))
+    paired = any(dll.parent == host.parent for dll in dlls for host in hosts)
+    if not paired or not agents:
+        raise SystemExit(
+            "sidecar 里 conpty.dll 与 OpenConsole.exe 不在同一目录，打包后的终端无法启动"
+        )
+
 
 def main() -> None:
     if not ENTRY.is_file():
@@ -140,7 +183,12 @@ def main() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     DIST.mkdir(parents=True, exist_ok=True)
     SPEC.write_text(
-        SPEC_TEMPLATE.format(root=str(ROOT), packages=PACKAGES, metadata=METADATA),
+        SPEC_TEMPLATE.format(
+            root=str(ROOT),
+            packages=PACKAGES,
+            metadata=METADATA,
+            winpty_binaries=_winpty_binaries(),
+        ),
         encoding="utf-8",
     )
 
@@ -161,6 +209,7 @@ def main() -> None:
     )
     if not exe.is_file():
         raise SystemExit(f"sidecar exe missing after build: {exe}")
+    _require_winpty_layout(exe.parent)
     print(f"sidecar ready: {exe}")
 
 

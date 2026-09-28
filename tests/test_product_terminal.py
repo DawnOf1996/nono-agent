@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,68 @@ def _client(tmp_path: Path):
 def _stop_terminals():
     yield
     shutdown_terminals()
+
+
+def test_child_env_strips_frozen_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nono_app_server.features.terminal import service
+
+    bundle = tmp_path / "internal"
+    other = tmp_path / "bin"
+    bundle.mkdir()
+    other.mkdir()
+    monkeypatch.setattr(service.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(service.sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(bundle), str(other)]))
+    monkeypatch.setenv("_MEIPASS2", str(bundle))
+    monkeypatch.setenv("_PYI_APPLICATION_HOME_DIR", str(bundle))
+    monkeypatch.setenv("SYSTEMROOT", str(tmp_path))
+
+    env = service._child_env()
+
+    assert env is not None
+    assert os.path.normcase(str(bundle)) not in {
+        os.path.normcase(item) for item in env["PATH"].split(os.pathsep)
+    }
+    assert str(other) in env["PATH"].split(os.pathsep)
+    assert "_MEIPASS2" not in env
+    assert "_PYI_APPLICATION_HOME_DIR" not in env
+    assert env["SYSTEMROOT"] == str(tmp_path)
+    assert os.environ["_MEIPASS2"] == str(bundle)
+
+
+def _build_sidecar():
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "build_sidecar.py"
+    spec = importlib.util.spec_from_file_location("build_sidecar", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_winpty_layout_requires_host_beside_dll(tmp_path: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("ConPTY host is Windows-only")
+    module = _build_sidecar()
+    folder = tmp_path / "_internal" / "winpty"
+    folder.mkdir(parents=True)
+    for name in ("conpty.dll", "OpenConsole.exe", "winpty-agent.exe"):
+        (folder / name).write_bytes(b"")
+    module._require_winpty_layout(tmp_path)
+
+    (folder / "OpenConsole.exe").unlink()
+    (tmp_path / "OpenConsole.exe").write_bytes(b"")
+    with pytest.raises(SystemExit):
+        module._require_winpty_layout(tmp_path)
+
+
+def test_child_env_unset_when_not_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nono_app_server.features.terminal import service
+
+    monkeypatch.delattr(service.sys, "frozen", raising=False)
+    monkeypatch.delattr(service.sys, "_MEIPASS", raising=False)
+    assert service._child_env() is None
 
 
 def test_git_bash_found_from_mingw64_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
