@@ -440,7 +440,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   permissions: [],
   newTaskOpen: false,
   settingsOpen: false,
-  settingsTab: "models",
+  settingsTab: "general",
   view: "chat",
   usage: null,
   commands: [],
@@ -610,7 +610,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setSettingsOpen: (open, tab) =>
     set({
       settingsOpen: open,
-      settingsTab: open ? (tab ?? "models") : get().settingsTab,
+      settingsTab: open ? (tab ?? "general") : get().settingsTab,
     }),
   setView: (view) => set({ view }),
 

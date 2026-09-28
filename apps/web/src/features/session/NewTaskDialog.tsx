@@ -33,7 +33,7 @@ export function NewTaskDialog() {
 
   function openModelSettings() {
     setNewTaskOpen(false);
-    setSettingsOpen(true);
+    setSettingsOpen(true, "models");
   }
 
   return (
