@@ -21,6 +21,7 @@ type DropdownProps = {
   placement?: "top" | "bottom";
   matchTriggerWidth?: boolean;
   panelClassName?: string;
+  className?: string;
 };
 
 export function Dropdown({
@@ -32,39 +33,69 @@ export function Dropdown({
   placement = "bottom",
   matchTriggerWidth = false,
   panelClassName,
+  className,
 }: DropdownProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const placedRef = useRef("");
   const [style, setStyle] = useState<CSSProperties>({});
 
   useLayoutEffect(() => {
     if (!open || !rootRef.current) return;
 
     function place() {
-      const rect = rootRef.current?.getBoundingClientRect();
-      if (!rect) return;
+      const anchor = rootRef.current?.getBoundingClientRect();
+      const panel = panelRef.current;
+      if (!anchor || !panel) return;
       const gap = 6;
-      const spaceBelow = window.innerHeight - rect.bottom - gap - 8;
-      const spaceAbove = rect.top - gap - 8;
+      const margin = 8;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const panelWidth = panel.offsetWidth;
+      const panelHeight = Math.min(panel.scrollHeight, 280);
+      const spaceBelow = viewportHeight - anchor.bottom - gap - margin;
+      const spaceAbove = anchor.top - gap - margin;
       const placeTop =
-        placement === "top" || (placement === "bottom" && spaceBelow < 160 && spaceAbove > spaceBelow);
+        placement === "top"
+          ? panelHeight <= spaceAbove || spaceAbove >= spaceBelow
+          : panelHeight > spaceBelow && spaceAbove > spaceBelow;
+      const roomRight = viewportWidth - anchor.left - margin;
+      const roomLeft = anchor.right - margin;
+      const alignRight =
+        align === "right"
+          ? panelWidth <= roomLeft || roomLeft >= roomRight
+          : panelWidth > roomRight && roomLeft > roomRight;
       const next: CSSProperties = {
         position: "fixed",
         zIndex: 80,
         maxHeight: Math.min(280, Math.max(120, placeTop ? spaceAbove : spaceBelow)),
       };
-      if (placeTop) next.bottom = window.innerHeight - rect.top + gap;
-      else next.top = rect.bottom + gap;
-      if (align === "right") next.right = window.innerWidth - rect.right;
-      else next.left = rect.left;
-      if (matchTriggerWidth) next.width = rect.width;
+      if (placeTop) next.bottom = viewportHeight - anchor.top + gap;
+      else next.top = anchor.bottom + gap;
+      if (alignRight) {
+        const right = Math.max(margin, viewportWidth - anchor.right);
+        if (viewportWidth - right - panelWidth < margin) next.left = margin;
+        else next.right = right;
+      } else if (anchor.left + panelWidth > viewportWidth - margin) {
+        next.left = Math.max(margin, viewportWidth - margin - panelWidth);
+      } else {
+        next.left = Math.max(margin, anchor.left);
+      }
+      if (matchTriggerWidth) next.width = anchor.width;
+      const key = `${next.top}|${next.bottom}|${next.left}|${next.right}|${next.maxHeight}|${next.width}`;
+      if (placedRef.current === key) return;
+      placedRef.current = key;
       setStyle(next);
     }
 
     place();
+    const observer = new ResizeObserver(place);
+    if (panelRef.current) observer.observe(panelRef.current);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     return () => {
+      placedRef.current = "";
+      observer.disconnect();
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
@@ -93,7 +124,7 @@ export function Dropdown({
   }, [open, onOpenChange]);
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className={cn("relative", className)}>
       {trigger}
       {open
         ? createPortal(

@@ -1,8 +1,9 @@
-import { Compass, FileDiff, FileText, Folder, FolderTree, GitCompare, Globe, ListTodo, MessagesSquare, PanelRightClose, Plus, TerminalSquare, X } from "lucide-react";
-import { lazy, Suspense, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { FileDiff, FileText, FolderTree, GitCompare, Globe, ListTodo, MessagesSquare, PanelRightClose, Plus, TerminalSquare, X } from "lucide-react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import type { FsEntry } from "@nono/protocol";
 
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Dropdown, DropdownItem } from "@/components/ui/dropdown";
 import { deleteAppSession, fetchSideSessions, fetchTerminalShells, openSideSession, startTerminal, stopTerminal } from "@/api/client";
 import { BrowserPane } from "@/features/files/BrowserPane";
 import { ChangesPanel } from "@/features/files/changes/ChangesPanel";
@@ -42,7 +43,6 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   const messages = useChatStore((state) => state.messages);
   const setRoot = usePanelStore((state) => state.setRoot);
   const activate = usePanelStore((state) => state.activate);
-  const showHome = usePanelStore((state) => state.showHome);
   const openPin = usePanelStore((state) => state.openPin);
   const closePin = usePanelStore((state) => state.closePin);
   const openFile = usePanelStore((state) => state.openFile);
@@ -62,6 +62,9 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   const [pendingClose, setPendingClose] = useState<PanelTab | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [treeWidth, setTreeWidth] = useState(240);
+  const [plusPinned, setPlusPinned] = useState(false);
+  const tablistRef = useRef<HTMLDivElement>(null);
+  const plusRef = useRef<HTMLButtonElement>(null);
   const mergedExplorer = prefs.explorerMode === "merged";
 
   useEffect(() => {
@@ -95,15 +98,34 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
 
   const activeTab = tabs.find((tab) => tab.id === active) ?? null;
   const activeFile = activeTab?.kind === "file" ? activeTab : null;
-  const otherTabsOpen =
-    pins.files || pins.changes || pins.tasks || visibleTabs.length > 0;
 
-  function leaveHome() {
-    if (pins.files) activate(TREE_TAB);
-    else if (pins.changes) activate(CHANGES_TAB);
-    else if (pins.tasks) activate(TASKS_TAB);
-    else if (visibleTabs[0]) activate(visibleTabs[0].id);
-  }
+  useLayoutEffect(() => {
+    const list = tablistRef.current;
+    const plus = plusRef.current;
+    if (!list || !plus) return;
+
+    function measure() {
+      const scroller = tablistRef.current;
+      const button = plusRef.current;
+      if (!scroller || !button) return;
+      const plusWidth = button.offsetWidth;
+      const gap = Number.parseFloat(getComputedStyle(scroller).columnGap) || 0;
+      const inside = scroller.contains(button);
+      if (inside) {
+        setPlusPinned(scroller.scrollWidth > scroller.clientWidth + 1);
+        return;
+      }
+      const host = button.parentElement;
+      const margin = host ? Number.parseFloat(getComputedStyle(host).marginLeft) || 0 : 0;
+      const gained = plusWidth + margin;
+      setPlusPinned(scroller.scrollWidth + gap + plusWidth > scroller.clientWidth + gained + 1);
+    }
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [plusPinned, visibleTabs, pins, prefs, gitCount, taskCount]);
 
   async function openPortalItem(id: PanelPin | "sidechat" | "terminal" | "browser") {
     if (id === "files" || id === "changes" || id === "tasks") {
@@ -176,9 +198,10 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
     <aside className="flex h-full min-h-0 w-full min-w-0 flex-col border-l border-line bg-bg">
       <header className="flex h-12 shrink-0 items-center border-b border-line pl-2 pr-1">
         <div
+          ref={tablistRef}
           role="tablist"
           aria-label="工作区"
-          className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+          className="scrollbar-none flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto"
           onWheel={(event) => {
             if (event.deltaY !== 0) event.currentTarget.scrollLeft += event.deltaY;
           }}
@@ -255,28 +278,27 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
               onClose={() => requestClose(tab)}
             />
           ))}
-          {active === START_TAB ? (
-            <TabButton
-              selected
-              icon={<Compass className="size-3.5" />}
-              label="开始"
-              title="打开一个面板"
-              onSelect={showHome}
-              onClose={otherTabsOpen ? leaveHome : undefined}
+          {plusPinned ? null : (
+            <AddTabMenu
+              pinned={false}
+              plusRef={plusRef}
+              prefs={prefs}
+              canSideChat={Boolean(parentSession)}
+              canTerminal={Boolean(root)}
+              onOpen={(id) => void openPortalItem(id)}
             />
-          ) : null}
+          )}
         </div>
-        {active === START_TAB ? null : (
-          <button
-            type="button"
-            className="ml-1 flex size-7 shrink-0 items-center justify-center rounded-md border border-line text-muted hover:bg-hover hover:text-ink"
-            title="新建标签"
-            aria-label="新建标签"
-            onClick={showHome}
-          >
-            <Plus className="size-3.5" />
-          </button>
-        )}
+        {plusPinned ? (
+          <AddTabMenu
+            pinned
+            plusRef={plusRef}
+            prefs={prefs}
+            canSideChat={Boolean(parentSession)}
+            canTerminal={Boolean(root)}
+            onOpen={(id) => void openPortalItem(id)}
+          />
+        ) : null}
         <button
           type="button"
           className="flex size-8 shrink-0 items-center justify-center rounded-lg text-faint hover:bg-hover hover:text-ink"
@@ -289,13 +311,6 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
       </header>
       {notice ? <p className="border-b border-line px-3 py-1.5 text-[12px] text-danger">{notice}</p> : null}
       <div className="flex min-h-0 flex-1 flex-col">
-        {active === START_TAB ? (
-          <WorkspaceHome
-            prefs={prefs}
-            disabled={{ sidechat: !parentSession, terminal: !root }}
-            onOpen={(id) => void openPortalItem(id)}
-          />
-        ) : null}
         {root && pins.files ? (
           <>
             <div className={active === TREE_TAB ? "flex min-h-0 flex-1" : "hidden"}>
@@ -430,53 +445,99 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   );
 }
 
-function WorkspaceHome({
+type PortalId = PanelPin | "sidechat" | "terminal" | "browser";
+
+function AddTabMenu({
+  pinned,
+  plusRef,
   prefs,
-  disabled,
+  canSideChat,
+  canTerminal,
   onOpen,
 }: {
+  pinned: boolean;
+  plusRef: RefObject<HTMLButtonElement | null>;
   prefs: { files: boolean; changes: boolean; tasks: boolean; sidechat: boolean; terminal: boolean; browser: boolean };
-  disabled: { sidechat: boolean; terminal: boolean };
-  onOpen: (id: PanelPin | "sidechat" | "terminal" | "browser") => void;
+  canSideChat: boolean;
+  canTerminal: boolean;
+  onOpen: (id: PortalId) => void;
 }) {
+  const [open, setOpen] = useState(false);
   const items: Array<{
-    id: PanelPin | "sidechat" | "terminal" | "browser";
+    id: PortalId;
     label: string;
+    detail: string;
     icon: ReactNode;
     hidden?: boolean;
     disabled?: boolean;
   }> = [
-    { id: "files", label: "文件", icon: <Folder className="size-4" />, hidden: !prefs.files },
-    { id: "changes", label: "文件变动", icon: <GitCompare className="size-4" />, hidden: !prefs.changes },
-    { id: "tasks", label: "任务管理", icon: <ListTodo className="size-4" />, hidden: !prefs.tasks },
+    { id: "files", label: "文件", detail: "资源管理器和文件预览", icon: <FolderTree className="size-3.5" />, hidden: !prefs.files },
+    { id: "changes", label: "文件变动", detail: "Git 状态和本轮改动", icon: <GitCompare className="size-3.5" />, hidden: !prefs.changes },
+    { id: "tasks", label: "任务管理", detail: "子代理和正在执行的命令", icon: <ListTodo className="size-3.5" />, hidden: !prefs.tasks },
     {
       id: "sidechat",
       label: "侧边对话",
-      icon: <MessagesSquare className="size-4" />,
+      detail: canSideChat ? "继承主会话的独立线程" : "先开始一段对话",
+      icon: <MessagesSquare className="size-3.5" />,
       hidden: !prefs.sidechat,
-      disabled: disabled.sidechat,
+      disabled: !canSideChat,
     },
-    { id: "terminal", label: "终端", icon: <TerminalSquare className="size-4" />, hidden: !prefs.terminal, disabled: disabled.terminal },
-    { id: "browser", label: "浏览器", icon: <Globe className="size-4" />, hidden: !prefs.browser },
+    {
+      id: "terminal",
+      label: "终端",
+      detail: canTerminal ? "工作区里的 shell" : "先打开一个工作区",
+      icon: <TerminalSquare className="size-3.5" />,
+      hidden: !prefs.terminal,
+      disabled: !canTerminal,
+    },
+    { id: "browser", label: "浏览器", detail: "内嵌网页标签", icon: <Globe className="size-3.5" />, hidden: !prefs.browser },
   ];
+  const visible = items.filter((item) => !item.hidden);
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 pb-16">
-      <Compass className="mb-8 size-10 text-faint" strokeWidth={1.25} />
-      <div className="flex w-full max-w-[280px] flex-col gap-3">
-        {items.filter((item) => !item.hidden).map((item) => (
-          <button
+    <Dropdown
+      open={open}
+      onOpenChange={setOpen}
+      align={pinned ? "right" : "left"}
+      panelClassName="w-[240px]"
+      className={pinned ? "ml-1 shrink-0" : "shrink-0"}
+      trigger={
+        <button
+          ref={plusRef}
+          type="button"
+          className="flex size-7 items-center justify-center rounded-md border border-line text-muted hover:bg-hover hover:text-ink"
+          title="新建标签"
+          aria-label="新建标签"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <Plus className="size-3.5" />
+        </button>
+      }
+    >
+      {visible.length === 0 ? (
+        <div className="px-2.5 py-2 text-[12px] text-muted">没有可打开的面板</div>
+      ) : (
+        visible.map((item) => (
+          <DropdownItem
             key={item.id}
-            type="button"
             disabled={item.disabled}
-            className="flex h-11 items-center gap-3 rounded-2xl border border-line px-4 text-[14px] text-ink hover:bg-hover disabled:opacity-40"
-            onClick={() => onOpen(item.id)}
+            className="disabled:pointer-events-none disabled:opacity-40"
+            onClick={() => {
+              setOpen(false);
+              onOpen(item.id);
+            }}
           >
-            <span className="text-muted">{item.icon}</span>
-            {item.label}
-          </button>
-        ))}
-      </div>
-    </div>
+            <span className="mt-0.5 shrink-0 text-muted">{item.icon}</span>
+            <span className="min-w-0">
+              <span className="block truncate text-[12px] text-ink">{item.label}</span>
+              <span className="mt-0.5 block truncate text-[11px] leading-4 text-faint">{item.detail}</span>
+            </span>
+          </DropdownItem>
+        ))
+      )}
+    </Dropdown>
   );
 }
 
