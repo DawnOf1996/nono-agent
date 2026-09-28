@@ -1,9 +1,17 @@
 ﻿# 把 web + Python sidecar + Electron 打成 Windows 桌面版。
 # 用法（仓库根）: .\scripts\pack-desktop.cmd
 # 或: powershell -ExecutionPolicy Bypass -File .\scripts\pack-desktop.ps1
+#
+# 版本号 x.y.z
+#   x、y：改 apps\desktop\package.json 的 version 前两段，第三段忽略。
+#   z：本次打包的本地时间 yyyyMMddHH。例如 2026-09-28 13 时 → 0.2.2026092813。
+#   安装包文件名使用这个版本。同一小时内再次打包，版本号相同。
+#   NSIS 用 32 位整数解析产品版本，到分钟的 yyyyMMddHHmm 会溢出，所以 z 精确到小时。
+#   exe 属性里的四段数字版本是 x.y.MMdd.HHmm（每段 ≤ 65535），供 Windows 资源使用。
+#
 # 产物:
 #   apps\desktop\release\win-unpacked\NoNo.exe
-#   apps\desktop\release\NoNo-0.2.1-setup.exe
+#   apps\desktop\release\NoNo-<x.y.yyyyMMddHH>-setup.exe
 
 [CmdletBinding()]
 param(
@@ -38,6 +46,60 @@ function Copy-Tree([string]$From, [string]$To) {
 function Assert-LastExit([string]$Label) {
     if ($LASTEXITCODE -ne 0) {
         throw "$Label 失败，exit=$LASTEXITCODE"
+    }
+}
+
+# x.y 来自 desktop/package.json；z 与 Windows 四段版本由当前本地时间生成。
+function Get-DesktopPackVersion([string]$PackageJson) {
+    $pkg = Get-Content -Raw -Encoding UTF8 $PackageJson | ConvertFrom-Json
+    $raw = [string]$pkg.version
+    if ($raw -notmatch '^(\d+)\.(\d+)(?:\.\d+)?$') {
+        throw "apps/desktop/package.json 的 version 须为 x.y 或 x.y.z（只读取 x.y），当前为 '$raw'。"
+    }
+    $major = [int64]$Matches[1]
+    $minor = [int64]$Matches[2]
+    if ($major -gt 65535 -or $minor -gt 65535) {
+        throw "version 的 x、y 必须在 0 到 65535 之间，当前为 $major.$minor。"
+    }
+
+    $now = Get-Date
+    $revision = $now.ToString("yyyyMMddHH")
+    if ([int64]$revision -gt 2147483647) {
+        throw "打包时间版本 $revision 超过 NSIS 产品版本上限 2147483647。"
+    }
+    $monthDay = [int]$now.ToString("MMdd")
+    $hourMinute = [int]$now.ToString("HHmm")
+
+    [pscustomobject]@{
+        Major      = $major
+        Minor      = $minor
+        Revision   = $revision
+        Version    = "$major.$minor.$revision"
+        WinVersion = "$major.$minor.$monthDay.$hourMinute"
+        StampText  = $now.ToString("yyyy-MM-dd HH") + " 时"
+    }
+}
+
+# 只在 electron-builder 运行期间改 package.json，调用方负责恢复原文。
+function Write-DesktopPackVersion([string]$PackageJson, [string]$Version, [string]$WinVersion) {
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    $scriptPath = Join-Path $env:TEMP ("nono-stamp-desktop-version-{0}.js" -f [guid]::NewGuid().ToString("n"))
+    $js = @'
+const fs = require("fs");
+const file = process.argv[2];
+const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+pkg.version = process.argv[3];
+pkg.shortVersionWindows = process.argv[4];
+pkg.build = pkg.build || {};
+pkg.build.buildVersion = process.argv[4];
+fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
+'@
+    try {
+        [System.IO.File]::WriteAllText($scriptPath, $js, $utf8NoBom)
+        & node $scriptPath $PackageJson $Version $WinVersion
+        Assert-LastExit "写入桌面版本号"
+    } finally {
+        Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -129,7 +191,12 @@ if (Test-Path $resources) {
 Copy-Tree $sidecarDir (Join-Path $resources "sidecar")
 Copy-Tree $webDist (Join-Path $resources "web")
 
+$desktopVersion = $null
 if (-not $SkipElectron) {
+    $pkgPath = Join-Path $desktop "package.json"
+    $spec = Get-DesktopPackVersion $pkgPath
+    $desktopVersion = $spec.Version
+    Write-Host "==> 桌面版本 $desktopVersion（前两段 $($spec.Major).$($spec.Minor) 来自 package.json，末段为打包时间 $($spec.StampText)）"
     Write-Host "==> electron-builder 打 Windows 安装包"
     if (-not $env:ELECTRON_MIRROR) {
         $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
@@ -137,11 +204,15 @@ if (-not $SkipElectron) {
     if (-not $env:ELECTRON_BUILDER_BINARIES_MIRROR) {
         $env:ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-builder-binaries/"
     }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    $originalPkg = [System.IO.File]::ReadAllText($pkgPath)
     Push-Location $desktop
     try {
+        Write-DesktopPackVersion $pkgPath $spec.Version $spec.WinVersion
         pnpm exec electron-builder --win
         Assert-LastExit "electron-builder"
     } finally {
+        [System.IO.File]::WriteAllText($pkgPath, $originalPkg, $utf8NoBom)
         Pop-Location
     }
 }
@@ -151,6 +222,9 @@ $setup = Get-ChildItem -Path (Join-Path $desktop "release") -Filter "NoNo-*-setu
 
 Write-Host ""
 Write-Host "打包完成。"
+if ($desktopVersion) {
+    Write-Host "版本号: $desktopVersion"
+}
 if (Test-Path $unpacked) {
     Write-Host "可直接运行: $unpacked"
 }

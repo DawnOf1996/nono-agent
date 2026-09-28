@@ -95,6 +95,8 @@ cd apps && $env:NONO_SIDECAR_URL="http://127.0.0.1:8010"; pnpm dev:web
 powershell -ExecutionPolicy Bypass -File .\scripts\pack-desktop.ps1
 ```
 
+版本号是 `x.y.z`。`x` 和 `y` 改 `apps/desktop/package.json` 里 `version` 的前两段（当前 `0.2`）；第三段只是占位，打包不会用。`z` 由脚本按本机时间写成 `yyyyMMddHH`，例如 2026-09-28 13 时得到 `0.2.2026092813`。同一小时内再打包，版本号相同。单独跑 `pnpm dist:desktop` 不会生成这个 `z`。
+
 脚本会依次：
 
 1. `uv sync --extra dev` 同步 Python 依赖
@@ -108,7 +110,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\pack-desktop.ps1
 | 文件 | 说明 |
 |------|------|
 | `apps/desktop/release/win-unpacked/NoNo.exe` | 免安装，解压目录里直接双击 |
-| `apps/desktop/release/NoNo-0.2.1-setup.exe` | NSIS 安装包 |
+| `apps/desktop/release/NoNo-<x.y.yyyyMMddHH>-setup.exe` | NSIS 安装包，例如 `NoNo-0.2.2026092813-setup.exe` |
 
 运行时 Electron 会拉起本机 sidecar，sidecar 托管前端并提供 `/health`、`/chat` 等 API。模型配置仍读 `~/.nono-agent/`（与开发态相同）。
 
