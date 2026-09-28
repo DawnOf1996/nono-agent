@@ -23,6 +23,41 @@ import { useChatStore } from "@/store/chat";
 
 const DiffTab = lazy(() => import("@/features/files/diff/DiffTab").then((module) => ({ default: module.DiffTab })));
 
+function TreeResize({
+  label,
+  width,
+  sign,
+  onWidth,
+}: {
+  label: string;
+  width: number;
+  sign: 1 | -1;
+  onWidth: (next: number) => void;
+}) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      className="w-px shrink-0 cursor-col-resize bg-line hover:bg-ink/30"
+      onPointerDown={(event) => {
+        event.preventDefault();
+        const startX = event.clientX;
+        const start = width;
+        function move(ev: PointerEvent) {
+          onWidth(Math.min(480, Math.max(160, start + sign * (ev.clientX - startX))));
+        }
+        function end() {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", end);
+        }
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", end);
+      }}
+    />
+  );
+}
+
 export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   const workspace = useChatStore((state) => state.workspace);
   const root = workspace.trim();
@@ -66,6 +101,7 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   const tablistRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLButtonElement>(null);
   const mergedExplorer = prefs.explorerMode === "merged";
+  const treeBeside = mergedExplorer || sideFile !== null;
 
   useEffect(() => {
     setRoot(root);
@@ -314,9 +350,23 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
         {root && pins.files ? (
           <>
             <div className={active === TREE_TAB ? "flex min-h-0 flex-1" : "hidden"}>
+              {!mergedExplorer && sideFile ? (
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                  <FilePreview
+                    root={root}
+                    path={sideFile.path}
+                    revision={revision}
+                    tabId={`side:${sideFile.path}`}
+                    onClose={clearSide}
+                  />
+                </div>
+              ) : null}
+              {!mergedExplorer && sideFile ? (
+                <TreeResize label="调整文件树宽度" width={treeWidth} sign={-1} onWidth={setTreeWidth} />
+              ) : null}
               <div
-                className={mergedExplorer ? "flex min-h-0 shrink-0 flex-col" : "flex min-h-0 min-w-0 flex-1 flex-col"}
-                style={mergedExplorer ? { width: treeWidth } : undefined}
+                className={treeBeside ? "flex min-h-0 shrink-0 flex-col" : "flex min-h-0 min-w-0 flex-1 flex-col"}
+                style={treeBeside ? { width: treeWidth } : undefined}
               >
                 <FileTree
                   key={normalizeWorkspace(root)}
@@ -324,33 +374,15 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
                   revision={revision}
                   activePath={mergedExplorer ? embeddedFile?.path ?? null : sideFile?.path ?? activeFile?.path ?? null}
                   onOpenFile={(entry: FsEntry) =>
-                    mergedExplorer ? setEmbeddedFile(entry.path, entry.name) : openFile(entry.path, entry.name)
+                    mergedExplorer ? setEmbeddedFile(entry.path, entry.name) : openBeside(entry.path, entry.name)
                   }
+                  onOpenInTab={(entry: FsEntry) => openFile(entry.path, entry.name)}
                   onOpenBeside={(entry: FsEntry) => openBeside(entry.path, entry.name)}
                 />
               </div>
               {mergedExplorer ? (
                 <>
-                  <div
-                    role="separator"
-                    aria-orientation="vertical"
-                    aria-label="调整文件树宽度"
-                    className="w-px shrink-0 cursor-col-resize bg-line hover:bg-ink/30"
-                    onPointerDown={(event) => {
-                      event.preventDefault();
-                      const startX = event.clientX;
-                      const start = treeWidth;
-                      function move(ev: PointerEvent) {
-                        setTreeWidth(Math.min(480, Math.max(160, start + ev.clientX - startX)));
-                      }
-                      function end() {
-                        window.removeEventListener("pointermove", move);
-                        window.removeEventListener("pointerup", end);
-                      }
-                      window.addEventListener("pointermove", move);
-                      window.addEventListener("pointerup", end);
-                    }}
-                  />
+                  <TreeResize label="调整文件树宽度" width={treeWidth} sign={1} onWidth={setTreeWidth} />
                   <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                     {embeddedFile ? (
                       <FilePreview root={root} path={embeddedFile.path} revision={revision} tabId={`embedded:${embeddedFile.path}`} />
@@ -359,22 +391,6 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
                     )}
                   </div>
                 </>
-              ) : null}
-              {!mergedExplorer && sideFile ? (
-                <div className="flex min-h-0 min-w-0 flex-1 flex-col border-l border-line">
-                  <div className="flex h-8 shrink-0 items-center justify-end border-b border-line px-1">
-                    <button
-                      type="button"
-                      className="flex size-7 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-ink"
-                      title="关闭侧边预览"
-                      aria-label="关闭侧边预览"
-                      onClick={clearSide}
-                    >
-                      <X className="size-3.5" />
-                    </button>
-                  </div>
-                  <FilePreview root={root} path={sideFile.path} revision={revision} tabId={`side:${sideFile.path}`} />
-                </div>
               ) : null}
             </div>
           </>

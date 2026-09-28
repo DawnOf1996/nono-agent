@@ -1,8 +1,12 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import { PreviewLoading } from "@/features/files/preview/Loading";
 import { parseDelimited, SheetTable } from "@/features/files/preview/SheetTable";
 import type { DocumentPreviewProps } from "@/features/files/preview/types";
+
+const XlsxBody = lazy(() => import("@/features/files/preview/XlsxBody").then((module) => ({ default: module.XlsxBody })));
+
+const STYLED_SHEETS = new Set(["xlsx", "xlsm"]);
 
 function extensionOf(path: string): string {
   const name = path.split(/[\\/]/).pop() ?? "";
@@ -20,12 +24,14 @@ function delimiterOf(path: string, text: string): string {
 
 type Grid = { name: string; rows: string[][] };
 
-export function SheetBody({ path, content }: DocumentPreviewProps) {
+export function SheetBody({ path, content, ...rest }: DocumentPreviewProps) {
+  const styled = content.kind === "bytes" && STYLED_SHEETS.has(extensionOf(path));
   const [sheets, setSheets] = useState<Grid[] | null>(null);
   const [active, setActive] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (styled) return;
     let live = true;
     setError(null);
     setSheets(null);
@@ -57,7 +63,15 @@ export function SheetBody({ path, content }: DocumentPreviewProps) {
     return () => {
       live = false;
     };
-  }, [content, path]);
+  }, [content, path, styled]);
+
+  if (styled) {
+    return (
+      <Suspense fallback={<PreviewLoading label="正在读取表格" />}>
+        <XlsxBody path={path} content={content} {...rest} />
+      </Suspense>
+    );
+  }
 
   if (error) return <p className="px-4 py-6 text-[13px] leading-6 text-danger">{error}</p>;
   if (!sheets) return <PreviewLoading label="正在读取表格" />;

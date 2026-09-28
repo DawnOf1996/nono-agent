@@ -39,6 +39,7 @@ export function Workbench() {
 
   const revealRequest = usePanelStore((state) => state.revealRequest);
   const bottomRequest = usePanelStore((state) => state.bottomRequest);
+  const sidePath = usePanelStore((state) => state.sideFile?.path ?? null);
   const firstReveal = useRef(revealRequest);
   const firstBottom = useRef(bottomRequest);
   useEffect(() => {
@@ -47,6 +48,11 @@ export function Workbench() {
   useEffect(() => {
     if (bottomRequest !== firstBottom.current) setBottomOpen(true);
   }, [bottomRequest]);
+  useEffect(() => {
+    if (!sidePath) return;
+    setRightOpen(true);
+    setRightPreferred((width) => (width < 680 ? 680 : width));
+  }, [sidePath]);
 
   function beginResize(side: "left" | "right", event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();

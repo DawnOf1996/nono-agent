@@ -85,7 +85,7 @@ type PanelState = {
   dirty: Record<string, boolean>;
   gitCount: number;
   taskCount: number;
-  /** 文件树右侧并排打开的文件；切走「文件」页后仍保留，回到文件页时还在。 */
+  /** 贴在文件树左侧的预览；文件树留在最右。切走「文件」页后仍保留。 */
   sideFile: { path: string; title: string } | null;
   /** 变更页底部的 diff 预览，还没展开成独立标签。 */
   changePreview: { target: DiffTarget; title: string } | null;

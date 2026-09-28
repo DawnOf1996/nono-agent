@@ -294,12 +294,14 @@ export function FileTree({
   revision,
   activePath,
   onOpenFile,
+  onOpenInTab,
   onOpenBeside,
 }: {
   root: string;
   revision: number;
   activePath: string | null;
   onOpenFile: (entry: FsEntry) => void;
+  onOpenInTab: (entry: FsEntry) => void;
   onOpenBeside: (entry: FsEntry) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -524,7 +526,7 @@ export function FileTree({
           onClose={() => setMenu(null)}
           onOpen={(entry) => {
             setMenu(null);
-            onOpenFile(entry);
+            onOpenInTab(entry);
           }}
           onOpenBeside={(entry) => {
             setMenu(null);

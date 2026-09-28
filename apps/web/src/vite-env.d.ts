@@ -1,11 +1,5 @@
 /// <reference types="vite/client" />
 
-declare module "mammoth/mammoth.browser.js" {
-  export function convertToHtml(input: { arrayBuffer: ArrayBuffer }): Promise<{ value: string }>;
-  const mammoth: { convertToHtml: typeof convertToHtml };
-  export default mammoth;
-}
-
 type NonoDesktop = {
   platform: string;
   isDesktop?: boolean;

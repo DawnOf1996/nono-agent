@@ -1,4 +1,4 @@
-import { ChevronDown, Eye, Loader2, Pencil, RotateCcw, Save, WrapText } from "lucide-react";
+import { ChevronDown, Eye, Loader2, Pencil, RotateCcw, Save, WrapText, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SaveConflictError, saveWorkspaceFile } from "@/api/client";
@@ -43,11 +43,13 @@ export function FilePreview({
   path,
   revision,
   tabId,
+  onClose,
 }: {
   root: string;
   path: string;
   revision: number;
   tabId: string;
+  onClose?: () => void;
 }) {
   const definitions = useSyncExternalStore(subscribeDocumentPreviews, getDocumentPreviews, getDocumentPreviews);
   const previewers = useSyncExternalStore(subscribeSidebarPrefs, getSidebarPrefs, getSidebarPrefs).previewers;
@@ -279,6 +281,17 @@ export function FilePreview({
               编辑
             </button>
           )
+        ) : null}
+        {onClose ? (
+          <button
+            type="button"
+            className="flex size-7 shrink-0 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-ink"
+            title="关闭侧边预览"
+            aria-label="关闭侧边预览"
+            onClick={onClose}
+          >
+            <X className="size-3.5" />
+          </button>
         ) : null}
       </div>
       {saveState === "conflict" ? (

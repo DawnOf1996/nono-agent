@@ -147,7 +147,7 @@ def test_workspace_entries_and_preview(tmp_path: Path) -> None:
 def test_workspace_file_too_large(tmp_path: Path) -> None:
     root = tmp_path / "ws"
     root.mkdir()
-    (root / "big.txt").write_bytes(b"a" * (1_000_000 + 1))
+    (root / "big.txt").write_bytes(b"a" * (5_000_000 + 1))
     with _client(tmp_path) as client:
         resp = client.get("/app/fs/file", params={"root": str(root), "path": str(root / "big.txt")})
     assert resp.status_code == 200
@@ -158,7 +158,7 @@ def test_workspace_file_too_large(tmp_path: Path) -> None:
 def test_workspace_bytes_too_large(tmp_path: Path) -> None:
     root = tmp_path / "ws"
     root.mkdir()
-    (root / "big.pdf").write_bytes(b"a" * (12_000_000 + 1))
+    (root / "big.pdf").write_bytes(b"a" * (50_000_000 + 1))
     with _client(tmp_path) as client:
         resp = client.get("/app/fs/bytes", params={"root": str(root), "path": str(root / "big.pdf")})
     assert resp.status_code == 413
