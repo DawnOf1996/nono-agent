@@ -144,6 +144,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      additionalArguments: [`--nono-app-version=${app.getVersion()}`],
     },
   });
   win.on("close", (event) => {

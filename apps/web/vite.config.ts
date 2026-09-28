@@ -48,9 +48,15 @@ const rootDir = path.dirname(fileURLToPath(import.meta.url));
 
 const sidecar = process.env.NONO_SIDECAR_URL || "http://127.0.0.1:8000";
 
+const desktopPackage = JSON.parse(
+  fs.readFileSync(path.resolve(rootDir, "../desktop/package.json"), "utf8"),
+) as { version?: string };
+const appVersion = desktopPackage.version ?? "";
+
 export default defineConfig({
   define: {
     __NONO_SIDECAR_HTTP__: JSON.stringify(sidecar),
+    __NONO_APP_VERSION__: JSON.stringify(appVersion),
   },
   plugins: [react(), tailwindcss(), pdfjsAssets()],
   resolve: {

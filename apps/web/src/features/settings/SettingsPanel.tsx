@@ -221,12 +221,17 @@ export function SettingsPanel() {
   );
 }
 
+function appVersionLabel(): string {
+  const version = window.nonoDesktop?.version || __NONO_APP_VERSION__;
+  return version ? `NoNo ${version}` : "NoNo";
+}
+
 function GeneralPane({
   configPath,
   info,
 }: {
   configPath?: string | null;
-  info: { version?: string; engine?: string; session_dir?: string } | null;
+  info: { session_dir?: string } | null;
 }) {
   const [path, setPath] = useState(info?.session_dir ?? "");
   const [picking, setPicking] = useState(false);
@@ -270,10 +275,7 @@ function GeneralPane({
         </div>
         <div className="rounded-2xl border border-line px-4 py-3">
           <dt className="text-xs text-muted">版本</dt>
-          <dd className="mt-1 text-[13px]">
-            {info?.engine ?? "nono-agent"}
-            {info?.version ? ` · sidecar ${info.version}` : ""}
-          </dd>
+          <dd className="mt-1 text-[13px]">{appVersionLabel()}</dd>
         </div>
       </dl>
       <SidebarCards />
