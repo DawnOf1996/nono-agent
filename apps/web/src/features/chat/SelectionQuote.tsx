@@ -97,15 +97,15 @@ export function SelectionQuote({ containerRef }: { containerRef: RefObject<HTMLE
       selecting = false;
     }
 
-    function onSelectionChange() {
+    const onSelectionChange = () => {
       if (selecting) return;
       setAnchor((current) => (current && !selectionAnchor(root) ? null : current));
-    }
+    };
 
-    function onScroll() {
+    const onScroll = () => {
       if (selecting) return;
       setAnchor((current) => (current ? selectionAnchor(root) : current));
-    }
+    };
 
     document.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointerup", onPointerUp);

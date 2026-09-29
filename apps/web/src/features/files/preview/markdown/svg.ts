@@ -97,7 +97,9 @@ export function prepareChatSvg(markup: string, idPrefix: string): string {
   if (parsed.querySelector("parsererror") !== null) return "";
   const root = parsed.documentElement;
   if (root.localName.toLowerCase() !== "svg") return "";
-  const graphic = document.importNode(root, true) as SVGSVGElement;
+  const imported = document.importNode(root, true);
+  if (!(imported instanceof SVGSVGElement)) return "";
+  const graphic = imported;
   uniquifyIds(graphic, idPrefix);
   withReadableFont(graphic);
 
