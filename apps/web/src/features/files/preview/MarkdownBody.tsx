@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import { Children, isValidElement, useMemo, type ReactNode } from "react";
+import { useMemo } from "react";
 import Markdown from "react-markdown";
 import type { Components } from "react-markdown";
 import rehypeRaw from "rehype-raw";
@@ -10,7 +10,8 @@ import { httpUrl } from "@/features/files/BrowserPane";
 import { usePanelStore } from "@/features/files/panel-store";
 import { MdToc } from "@/features/files/preview/markdown/MdToc";
 import { previewImageSrc } from "@/features/files/preview/markdown/media";
-import { MermaidDiagram } from "@/features/files/preview/markdown/MermaidDiagram";
+import { SvgFigure, svgBlockSource } from "@/components/SvgFigure";
+import { MermaidDiagram, mermaidBlockSource } from "@/features/files/preview/markdown/MermaidDiagram";
 import { segmentReadmeHtml } from "@/features/files/preview/markdown/segments";
 import type { DocumentPreviewProps } from "@/features/files/preview/types";
 
@@ -27,19 +28,13 @@ const schema = {
   },
 };
 
-function mermaidSource(children: ReactNode): string | null {
-  const child = Children.toArray(children)[0];
-  if (!isValidElement<{ className?: string; children?: ReactNode }>(child)) return null;
-  const className = child.props.className ?? "";
-  if (!/\blanguage-mermaid\b/.test(className)) return null;
-  return String(child.props.children ?? "").replace(/\n$/, "");
-}
-
 function previewComponents(root: string, filePath: string): Components {
   return {
     pre: ({ children }) => {
-      const source = mermaidSource(children);
-      if (source !== null) return <MermaidDiagram code={source} />;
+      const mermaid = mermaidBlockSource(children);
+      if (mermaid !== null) return <MermaidDiagram code={mermaid} />;
+      const svg = svgBlockSource(children);
+      if (svg !== null) return <SvgFigure markup={svg} />;
       return <pre>{children}</pre>;
     },
     img: ({ src, alt }) => {

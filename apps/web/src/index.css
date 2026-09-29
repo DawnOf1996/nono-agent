@@ -22,6 +22,7 @@ html,
 body,
 #root {
   height: 100%;
+  overflow: hidden;
 }
 
 body {
@@ -201,6 +202,19 @@ textarea {
   white-space: pre;
 }
 
+.prose-md .code-fence pre {
+  margin: 0;
+  overflow: auto;
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 14px 14px;
+}
+
+.prose-md .code-fence pre code {
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+
 .prose-md table {
   width: 100%;
   margin: 0.85em 0;
@@ -246,11 +260,24 @@ textarea {
   height: 100%;
 }
 
-.file-preview .mermaid-diagram svg {
+.mermaid-diagram svg,
+.svg-figure svg {
   display: block;
   max-width: 100%;
   height: auto;
   margin: 0 auto;
+}
+
+.svg-figure svg {
+  width: 100%;
+  text-rendering: optimizeLegibility;
+}
+
+.svg-zoom svg {
+  display: block;
+  width: auto;
+  max-width: none;
+  height: auto;
 }
 
 .prose-md-muted {
@@ -271,6 +298,11 @@ textarea {
 .prose-md-muted pre,
 .prose-md-muted code {
   background: color-mix(in srgb, var(--color-card) 80%, transparent);
+}
+
+.prose-md-muted .code-fence pre,
+.prose-md-muted .code-fence pre code {
+  background: transparent;
 }
 
 @keyframes chat-message-in {

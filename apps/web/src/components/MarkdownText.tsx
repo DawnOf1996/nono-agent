@@ -3,14 +3,35 @@ import type { Components } from "react-markdown";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { CodeFence } from "@/components/CodeFence";
+import { SvgFigure, svgBlockSource } from "@/components/SvgFigure";
+import { MermaidDiagram, mermaidBlockSource } from "@/features/files/preview/markdown/MermaidDiagram";
+import {
+  isUnclosedMermaidFence,
+  isUnclosedSvgFence,
+  normalizeGluedHeadingTables,
+  normalizeGluedMermaidFences,
+} from "@/lib/mermaid-fence";
+
 const remarkPlugins = [remarkGfm];
 
-const components: Components = {
+const linkComponents: Components = {
   a: ({ href, children }) => (
     <a href={href} target="_blank" rel="noreferrer">
       {children}
     </a>
   ),
+};
+
+const components: Components = {
+  ...linkComponents,
+  pre: ({ children }) => {
+    const mermaid = mermaidBlockSource(children);
+    if (mermaid !== null) return <MermaidDiagram code={mermaid} />;
+    const svg = svgBlockSource(children);
+    if (svg !== null) return <SvgFigure markup={svg} />;
+    return <CodeFence>{children}</CodeFence>;
+  },
 };
 
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
@@ -79,9 +100,15 @@ export function splitMarkdownBlocks(text: string): string[] {
   return blocks;
 }
 
-const MarkdownChunk = memo(function MarkdownChunk({ source }: { source: string }) {
+const MarkdownChunk = memo(function MarkdownChunk({
+  source,
+  deferMermaid = false,
+}: {
+  source: string;
+  deferMermaid?: boolean;
+}) {
   return (
-    <Markdown remarkPlugins={remarkPlugins} components={components}>
+    <Markdown remarkPlugins={remarkPlugins} components={deferMermaid ? linkComponents : components}>
       {source}
     </Markdown>
   );
@@ -98,14 +125,24 @@ export const MarkdownText = memo(function MarkdownText({
   streaming?: boolean;
 }) {
   // react-markdown 不包外层元素，分块后仍是 .prose-md 的直接子节点，样式与整篇渲染一致。
-  const blocks = useMemo(() => (streaming ? splitMarkdownBlocks(text) : null), [streaming, text]);
+  const prepared = useMemo(
+    () => normalizeGluedHeadingTables(normalizeGluedMermaidFences(text)),
+    [text],
+  );
+  const blocks = useMemo(() => (streaming ? splitMarkdownBlocks(prepared) : null), [streaming, prepared]);
 
   return (
     <div className={tone === "muted" ? "prose-md prose-md-muted" : "prose-md"}>
       {blocks ? (
-        blocks.map((source, index) => <MarkdownChunk key={index} source={source} />)
+        blocks.map((source, index) => (
+          <MarkdownChunk
+            key={index}
+            source={source}
+            deferMermaid={isUnclosedMermaidFence(source) || isUnclosedSvgFence(source)}
+          />
+        ))
       ) : (
-        <MarkdownChunk source={text} />
+        <MarkdownChunk source={prepared} />
       )}
     </div>
   );

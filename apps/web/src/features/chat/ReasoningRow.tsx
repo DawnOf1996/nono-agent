@@ -228,7 +228,7 @@ export function ReasoningRow({
     <div className="mb-3 text-[13px] leading-6 text-muted" data-state={running ? "running" : "ok"}>
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 text-left hover:text-ink"
+        className="flex w-full min-w-0 items-center gap-1.5 text-left select-none hover:text-ink"
         onClick={() => setExpanded((value) => !value)}
       >
         <ChevronRight className={`size-3.5 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`} />

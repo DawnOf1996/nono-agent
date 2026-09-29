@@ -5,9 +5,12 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { writeMarkdownFile } from "@/api/client";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { MarkdownText } from "@/components/MarkdownText";
+import { QuoteCard } from "@/features/chat/QuoteCard";
 import { ReasoningRow } from "@/features/chat/ReasoningRow";
+import { SelectionQuote } from "@/features/chat/SelectionQuote";
 import { TurnChangesCard, turnForMessage } from "@/features/chat/TurnChangesCard";
 import { TurnRail, groupChatTurns } from "@/features/chat/TurnRail";
+import { splitQuotedMessage } from "@/lib/quote";
 import { WorkspacePicker } from "@/features/session/WorkspacePicker";
 import { suggestMarkdownFileName } from "@/lib/markdown-file";
 import type { ChatImage, ChatMessage } from "@/store/chat";
@@ -60,15 +63,19 @@ const MessageBlock = memo(function MessageBlock({
     );
   }
   if (message.role === "user") {
+    const quoted = splitQuotedMessage(message.text);
     return (
       <div className="flex justify-end">
         <div className="flex max-w-[min(42rem,92%)] flex-col items-end gap-2">
           {message.images?.length ? (
             <MessageImages images={message.images} messageId={message.id} />
           ) : null}
-          {message.text.trim() ? (
+          {quoted.quotes.map((quote, index) => (
+            <QuoteCard key={`${message.id}-quote-${index}`} text={quote} />
+          ))}
+          {quoted.body ? (
             <div className="rounded-2xl bg-card px-4 py-2.5">
-              <MarkdownText text={message.text} />
+              <MarkdownText text={quoted.body} />
             </div>
           ) : null}
         </div>
@@ -157,6 +164,7 @@ export function MessageList() {
     setExportDraft({ text, name: suggestMarkdownFileName(text) });
   }, []);
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const sessionRef = useRef(sessionId);
   const heightRef = useRef(0);
@@ -239,6 +247,30 @@ export function MessageList() {
     scheduleSync();
   }, [messages, sessionId, scheduleSync]);
 
+  // 图表和图片的高度要等绘制/解码之后才落定，消息列表本身不会因此重渲染。
+  // 贴底时跟着内容尺寸把滚动补到真正的底部；往上翻阅时只更新高度基准，不把视口拽回去。
+  const listReady = messages.length > 0;
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!listReady || !content) return;
+    let adjusting = false;
+    const follow = () => {
+      if (adjusting) return;
+      const el = scrollerRef.current;
+      if (!el) return;
+      adjusting = true;
+      if (stickRef.current) {
+        const max = Math.max(0, el.scrollHeight - el.clientHeight);
+        if (Math.abs(el.scrollTop - max) > 1) el.scrollTop = max;
+      }
+      heightRef.current = el.scrollHeight;
+      adjusting = false;
+    };
+    const observer = new ResizeObserver(follow);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [listReady]);
+
   function jumpToTurn(id: string) {
     const root = scrollerRef.current;
     const node = root?.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(id)}"]`);
@@ -281,12 +313,14 @@ export function MessageList() {
         onScroll={onScroll}
       >
         <div
+          ref={contentRef}
           className={`mx-auto flex max-w-3xl flex-col gap-8 ${historyReveal ? "chat-history-reveal" : ""}`}
         >
           {messages.map((message) => (
             <div
               key={message.id}
               className="chat-msg"
+              data-quote-source={message.role === "assistant" ? "assistant" : undefined}
               data-turn-id={turnStartIds.has(message.id) ? message.id : undefined}
             >
               <MessageBlock message={message} changes={turnForMessage(turnChanges, message)} onExport={openExport} />
@@ -294,6 +328,7 @@ export function MessageList() {
           ))}
         </div>
       </div>
+      <SelectionQuote containerRef={scrollerRef} />
       <TurnRail turns={turns} activeId={activeTurnId} onJump={jumpToTurn} />
       <WorkspacePicker
         open={exportDraft != null}

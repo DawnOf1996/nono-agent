@@ -77,6 +77,13 @@ import {
   saveDraftWorkspace,
 } from "@/lib/workspace";
 import { MAX_PENDING_IMAGES, toApiAttachments, type PendingImage } from "@/lib/images";
+import {
+  MAX_QUOTE_CHARS,
+  MAX_QUOTES,
+  clipQuote,
+  composeQuotedMessage,
+  splitQuotedMessage,
+} from "@/lib/quote";
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 export type MainView = "chat" | "trajectory";
@@ -85,6 +92,11 @@ export type ChatStep = ReplayStep;
 
 export type ChatImage = {
   src: string;
+};
+
+export type ChatQuote = {
+  id: string;
+  text: string;
 };
 
 export type ChatMessage = {
@@ -148,6 +160,7 @@ type ChatState = {
   messages: ChatMessage[];
   input: string;
   attachments: PendingImage[];
+  quotes: ChatQuote[];
   workspace: string;
   workspaceId: string | null;
   draftWorkspaceId: string | null;
@@ -177,6 +190,8 @@ type ChatState = {
   setError: (message: string | null) => void;
   addAttachments: (items: PendingImage[]) => void;
   removeAttachment: (id: string) => void;
+  addQuote: (text: string) => void;
+  removeQuote: (id: string) => void;
   setWorkspace: (value: string) => void;
   addWorkspace: (value: string) => Promise<void>;
   renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
@@ -223,8 +238,10 @@ function nextId(): string {
 }
 
 function titleFromText(text: string, hasImages = false): string {
-  const line = text.trim().split(/\r?\n/)[0] ?? "";
-  return line.slice(0, 32) || (hasImages ? "图片问答" : "新会话");
+  const parsed = splitQuotedMessage(text);
+  const source = parsed.body || parsed.quotes[0] || "";
+  const line = source.trim().split(/\r?\n/)[0] ?? "";
+  return line.slice(0, 32) || (hasImages ? "图片问答" : parsed.quotes.length ? "引用" : "新会话");
 }
 
 function titlesFromEvents(events: SessionEvent[]): string | null {
@@ -426,6 +443,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   input: "",
   attachments: [],
+  quotes: [],
   workspace: loadDraftWorkspace(),
   workspaceId: null,
   draftWorkspaceId: null,
@@ -481,6 +499,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       attachments: state.attachments.filter((item) => item.id !== id),
     })),
+  addQuote: (text) => {
+    const normalized = text.replace(/\r\n/g, "\n").trim();
+    if (!normalized) return;
+    const clipped = clipQuote(normalized);
+    set((state) => {
+      if (state.quotes.length >= MAX_QUOTES) {
+        return patchRun(state, activeKey(state), { error: `最多添加 ${MAX_QUOTES} 条引用` });
+      }
+      return {
+        quotes: [...state.quotes, { id: nextId(), text: clipped.text }],
+        ...patchRun(state, activeKey(state), {
+          error: clipped.clipped ? `引用过长，已保留前 ${MAX_QUOTE_CHARS} 字` : null,
+        }),
+      };
+    });
+  },
+  removeQuote: (id) =>
+    set((state) => ({
+      quotes: state.quotes.filter((item) => item.id !== id),
+    })),
   setWorkspace: (value) => {
     saveDraftWorkspace(value);
     set((state) => {
@@ -496,6 +534,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               draftRunKey: newDraftKey(),
               input: "",
               attachments: [],
+              quotes: [],
               ...EMPTY_RUN,
             }
           : {}),
@@ -517,6 +556,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         draftWorkspaceId: leavingDraft ? null : state.draftWorkspaceId,
         input: leavingDraft ? "" : state.input,
         attachments: leavingDraft ? [] : state.attachments,
+        quotes: leavingDraft ? [] : state.quotes,
         ...(leavingDraft
           ? { draftRunKey: newDraftKey(), ...EMPTY_RUN }
           : patchRun(state, activeKey(state), { error: null })),
@@ -738,6 +778,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       model: model || state.model,
       input: "",
       attachments: [],
+      quotes: [],
       newTaskOpen: false,
       view: "chat",
       ...EMPTY_RUN,
@@ -766,6 +807,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         permissionMode,
         input: state.draftWorkspaceId ? "" : state.input,
         attachments: state.draftWorkspaceId ? [] : state.attachments,
+        quotes: state.draftWorkspaceId ? [] : state.quotes,
         view: "chat",
         runs: { ...state.runs, [sessionId]: run },
         ...run,
@@ -915,13 +957,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   send: async () => {
-    const text = get().input.trim();
+    const typed = get().input.trim();
+    const quoteItems = get().quotes;
     const pending = get().attachments;
+    const text = composeQuotedMessage(quoteItems, typed);
     // 每条会话各自判断是否在流式输出：别的会话在跑不挡当前会话发送。
     let runKey = activeKey(get());
     if (runAt(get(), runKey).streaming) return;
-    if (text.startsWith("/")) {
-      await get().runCommand(text);
+    if (typed.startsWith("/") && quoteItems.length === 0) {
+      await get().runCommand(typed);
       return;
     }
     if (!text && !pending.length) return;
@@ -947,6 +991,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       input: "",
       attachments: [],
+      quotes: [],
       view: "chat",
       ...patchRun(state, runKey, {
         streaming: true,
@@ -1022,8 +1067,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     };
 
     const dropDraft = (state: ChatState, message: string | null): Partial<ChatState> => ({
-      input: state.input || text,
+      input: state.input || typed,
       attachments: state.attachments.length ? state.attachments : pending,
+      quotes: state.quotes.length ? state.quotes : quoteItems,
       ...patchRun(state, runKey, {
         error: message,
         messages: runAt(state, runKey).messages.filter(

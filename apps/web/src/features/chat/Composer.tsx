@@ -7,6 +7,7 @@ import { CommandPalette } from "@/features/chat/CommandPalette";
 import { ComposerMenu } from "@/features/chat/ComposerMenu";
 import { ModelSelect } from "@/features/chat/ModelSelect";
 import { PermissionModeSelect } from "@/features/chat/PermissionModeSelect";
+import { QuoteChip } from "@/features/chat/QuoteCard";
 import { FALLBACK_COMMANDS } from "@/lib/commands";
 import { formatDuration, formatTokens } from "@/lib/format";
 import {
@@ -31,6 +32,8 @@ export function Composer() {
   const attachments = useChatStore((state) => state.attachments);
   const addAttachments = useChatStore((state) => state.addAttachments);
   const removeAttachment = useChatStore((state) => state.removeAttachment);
+  const quotes = useChatStore((state) => state.quotes);
+  const removeQuote = useChatStore((state) => state.removeQuote);
   const setError = useChatStore((state) => state.setError);
   const [menuOpen, setMenuOpen] = useState<"plus" | "connectors" | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -41,7 +44,9 @@ export function Composer() {
   const composerRef = useRef<HTMLDivElement>(null);
   const slashQuery = input.startsWith("/") ? input.slice(1).split(/\s/)[0] ?? "" : "";
   const slashOpen = input.startsWith("/");
-  const canSend = Boolean(input.trim() || attachments.length);
+  const canSend = Boolean(input.trim() || attachments.length || quotes.length);
+  const quoteCount = quotes.length;
+  const quoteFocus = useRef(quoteCount);
 
   useEffect(() => {
     if (!menuOpen && !slashOpen) return;
@@ -96,6 +101,11 @@ export function Composer() {
     window.addEventListener("nono-insert-input", onInsert);
     return () => window.removeEventListener("nono-insert-input", onInsert);
   }, [setInput]);
+
+  useEffect(() => {
+    if (quoteCount > quoteFocus.current) areaRef.current?.focus();
+    quoteFocus.current = quoteCount;
+  }, [quoteCount]);
 
   useEffect(() => {
     function onWindowPaste(event: globalThis.ClipboardEvent) {
@@ -180,6 +190,13 @@ export function Composer() {
                     <X className="size-3" />
                   </button>
                 </div>
+              ))}
+            </div>
+          ) : null}
+          {quotes.length ? (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {quotes.map((item) => (
+                <QuoteChip key={item.id} text={item.text} onRemove={() => removeQuote(item.id)} />
               ))}
             </div>
           ) : null}
