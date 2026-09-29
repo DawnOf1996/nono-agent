@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import sys
@@ -25,9 +26,13 @@ from nono_app_server.common.paths import (
     workspace_root as _workspace_root,
 )
 
+logger = logging.getLogger(__name__)
+
 _MAX_SESSIONS = 8
 
 _BACKLOG_CHARS = 200_000
+
+_SW_HIDE = 0
 
 _sessions: dict[str, TerminalSession] = {}
 
@@ -277,17 +282,61 @@ def _require_conpty_host() -> None:
     raise OSError(f"缺少 ConPTY 宿主，需要 {dll.name} 与 {host.name} 在同一目录: {directory}")
 
 
+def _conpty_init_panic(exc: BaseException) -> bool:
+    """winpty-rs 把 ShowWindow 返回 0 当成失败。窗口本来就隐藏时，错误码是 S_OK。"""
+    return type(exc).__name__ == "PanicException" and "HRESULT(0x00000000)" in str(exc)
+
+
+def _ensure_hidden_console() -> None:
+    """没有控制台时先分配一个并藏起来，避免 pywinpty 第一次初始化 panic。
+
+    windowed sidecar 由 Electron 以隐藏方式拉起。pywinpty 会 AllocConsole，
+    再 ``ShowWindow(SW_HIDE).unwrap()``。这个控制台生下来就是隐藏的，
+    ShowWindow 返回 0 且 GetLastError 为 0，unwrap 抛出 PanicException。
+    控制台已经存在时，pywinpty 不会再走这段，所以第二次创建终端是好的。
+    """
+    if os.name != "nt":
+        return
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+    kernel32.AllocConsole.restype = ctypes.c_int
+    if kernel32.GetConsoleWindow():
+        return
+    if not kernel32.AllocConsole():
+        return
+    hwnd = kernel32.GetConsoleWindow()
+    if not hwnd:
+        return
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.ShowWindow.restype = ctypes.c_int
+    user32.ShowWindow(hwnd, _SW_HIDE)
+
+
+def _spawn_pty(argv: list[str], kwargs: dict[str, Any]) -> Any:
+    from winpty import PtyProcess
+
+    try:
+        return PtyProcess.spawn(argv, **kwargs)
+    except BaseException as exc:
+        if not _conpty_init_panic(exc):
+            raise
+        logger.warning("ConPTY 首次初始化失败，重试一次: %s", exc)
+        return PtyProcess.spawn(argv, **kwargs)
+
+
 def _spawn(spec: ShellSpec, cwd: str, cols: int, rows: int) -> Any:
     if os.name == "nt":
-        from winpty import PtyProcess
-
         kwargs: dict[str, Any] = {"cwd": cwd, "dimensions": (rows, cols)}
         env = _child_env()
         if env is not None:
             kwargs["env"] = env
         with _spawn_lock, _bundle_dll_search_suspended():
             _require_conpty_host()
-            return PtyProcess.spawn(spec.argv, **kwargs)
+            _ensure_hidden_console()
+            return _spawn_pty(spec.argv, kwargs)
     import pty
     import subprocess
 

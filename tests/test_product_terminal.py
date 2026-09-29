@@ -97,6 +97,81 @@ def test_winpty_layout_requires_host_beside_dll(tmp_path: Path) -> None:
         module._require_winpty_layout(tmp_path)
 
 
+def test_hidden_console_is_allocated_and_hide_failure_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    if os.name != "nt":
+        pytest.skip("console allocation is Windows-only")
+    import ctypes
+
+    from nono_app_server.features.terminal import service
+
+    calls: list[str] = []
+    state = {"gets": 0, "hidden": None}
+
+    class _Fn:
+        def __init__(self, impl) -> None:
+            self._impl = impl
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            return self._impl(*args)
+
+    class _Kernel32:
+        def __init__(self) -> None:
+            self.GetConsoleWindow = _Fn(self._get)
+            self.AllocConsole = _Fn(self._alloc)
+
+        def _get(self):
+            state["gets"] += 1
+            return 0 if state["gets"] == 1 else 42
+
+        def _alloc(self):
+            calls.append("alloc")
+            return 1
+
+    class _User32:
+        def __init__(self) -> None:
+            self.ShowWindow = _Fn(self._show)
+
+        def _show(self, hwnd, cmd):
+            state["hidden"] = (hwnd, cmd)
+            return 0
+
+    libs = {"kernel32": _Kernel32(), "user32": _User32()}
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, use_last_error=False: libs[name])
+
+    service._ensure_hidden_console()
+
+    assert calls == ["alloc"]
+    assert state["hidden"] == (42, 0)
+
+
+def test_spawn_retries_conpty_init_panic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("ConPTY is Windows-only")
+    import winpty
+
+    from nono_app_server.features.terminal import service
+
+    calls = {"n": 0}
+
+    def spawn(argv, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise type("PanicException", (Exception,), {})(
+                "called `Result::unwrap()` on an `Err` value: Error { code: HRESULT(0x00000000), message: ok }"
+            )
+        return "proc"
+
+    monkeypatch.setattr(service, "_ensure_hidden_console", lambda: None)
+    monkeypatch.setattr(service, "_require_conpty_host", lambda: None)
+    monkeypatch.setattr(winpty.PtyProcess, "spawn", staticmethod(spawn))
+    spec = service.ShellSpec("cmd", "Command Prompt", ["cmd.exe"])
+
+    assert service._spawn(spec, str(tmp_path), 80, 24) == "proc"
+    assert calls["n"] == 2
+
+
 def test_child_env_unset_when_not_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
     from nono_app_server.features.terminal import service
 
