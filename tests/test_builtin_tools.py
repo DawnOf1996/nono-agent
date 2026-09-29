@@ -82,6 +82,20 @@ class TestDecodeText:
         assert note is not None
         assert "decoded as" in note
 
+    def test_command_output_gbk_volume_line(self):
+        from nono_agent.tools.builtin._common import decode_command_output
+
+        raw = "驱动器 D 中的卷是 新加卷".encode("gbk")
+        assert decode_command_output(raw) == "驱动器 D 中的卷是 新加卷"
+        assert "\ufffd" not in decode_command_output(raw)
+
+    def test_command_output_keeps_split_utf8(self):
+        from nono_agent.tools.builtin._common import decode_command_output
+
+        raw = "你好".encode()
+        assert decode_command_output(raw[:-1]) == "你"
+        assert decode_command_output(raw) == "你好"
+
     def test_lossy_fallback(self, monkeypatch):
         from nono_agent.tools.builtin import _common as common
 

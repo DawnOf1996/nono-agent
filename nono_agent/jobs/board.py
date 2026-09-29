@@ -73,6 +73,19 @@ def open_job(
     return job.id
 
 
+def set_output(job_id: str, text: str) -> None:
+    """用整段文本替换实时输出。命令输出要按累计字节重新解码，不能逐块拼接。"""
+    if not job_id:
+        return
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None or job.status != "running":
+            return
+        job.output = text[-_MAX_OUTPUT:]
+        session_id = job.session_id
+    _mark(session_id)
+
+
 def append_output(job_id: str, text: str) -> None:
     if not job_id or not text:
         return

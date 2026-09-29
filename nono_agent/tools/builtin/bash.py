@@ -14,10 +14,16 @@ import asyncio
 from typing import Any
 
 from nono_agent.core.types import ToolResult
-from nono_agent.jobs.board import append_output, finish_job, open_job
+from nono_agent.jobs.board import finish_job, open_job, set_output
 from nono_agent.jobs.context import jobs_parent, jobs_session
 from nono_agent.permissions.bash_classify import BashClassifier, BashRisk
-from nono_agent.tools.builtin._common import decode_text, ok_result, resolve_path, truncate_text
+from nono_agent.tools.builtin._common import (
+    decode_command_output,
+    decode_text,
+    ok_result,
+    resolve_path,
+    truncate_text,
+)
 from nono_agent.tools.protocol import ToolBase
 from nono_agent.utils.process import hidden_kwargs
 
@@ -38,6 +44,7 @@ def _kill_process(proc: asyncio.subprocess.Process) -> None:
 async def _read_output(proc: asyncio.subprocess.Process, job_id: str) -> bytes:
     """边读边把输出送进任务板，进程结束后返回完整字节。"""
     chunks: list[bytes] = []
+    pending = bytearray()
     stdout = proc.stdout
     if stdout is None:
         await proc.wait()
@@ -47,7 +54,9 @@ async def _read_output(proc: asyncio.subprocess.Process, job_id: str) -> bytes:
         if not block:
             break
         chunks.append(block)
-        append_output(job_id, block.decode("utf-8", "replace"))
+        pending.extend(block)
+        # Windows 控制台默认是 GBK。按累计字节解码，任务栏才能和最终结果一致。
+        set_output(job_id, decode_command_output(pending))
     await proc.wait()
     return b"".join(chunks)
 

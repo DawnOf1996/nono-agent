@@ -95,6 +95,27 @@ def _decode_candidates() -> list[str]:
     return names
 
 
+def decode_command_output(data: bytes | bytearray) -> str:
+    """解码命令的实时输出。
+
+    完整内容与 :func:`decode_text` 一致。末尾被读断的 UTF-8 只显示已经完整的部分，
+    避免半个汉字把整段误判成 GBK。
+    """
+    raw = bytes(data)
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        if exc.end == len(raw):
+            head = raw[: exc.start]
+            try:
+                return head.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+    return decode_text(raw)[0]
+
+
 def decode_text(data: bytes) -> tuple[str, str]:
     """把字节解码为文本。
 
