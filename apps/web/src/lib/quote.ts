@@ -1,8 +1,9 @@
 /** 写入用户消息正文的引用标记。模型能读到原文，界面再把它画成卡片。 */
-const OPEN = "<ref-to-chat>";
-const CLOSE = "</ref-to-chat>";
+const OPEN = "<quoted-from-assistant-message>";
+const CLOSE = "</quoted-from-assistant-message>";
 
-const BLOCK_SOURCE = "<ref-to-chat(?:\\s[^>]*)?>\\n?([\\s\\S]*?)\\n?</ref-to-chat>";
+const BLOCK_SOURCE =
+  "<quoted-from-assistant-message(?:\\s[^>]*)?>\\n?([\\s\\S]*?)\\n?</quoted-from-assistant-message>";
 
 export const MAX_QUOTES = 8;
 export const MAX_QUOTE_CHARS = 4000;
@@ -17,11 +18,11 @@ export type QuotedMessage = {
 };
 
 function shield(text: string): string {
-  return text.replaceAll(OPEN, "< ref-to-chat>").replaceAll(CLOSE, "< /ref-to-chat>");
+  return text.replaceAll(OPEN, "< quoted-from-assistant-message>").replaceAll(CLOSE, "< /quoted-from-assistant-message>");
 }
 
 function unshield(text: string): string {
-  return text.replaceAll("< ref-to-chat>", OPEN).replaceAll("< /ref-to-chat>", CLOSE);
+  return text.replaceAll("< quoted-from-assistant-message>", OPEN).replaceAll("< /quoted-from-assistant-message>", CLOSE);
 }
 
 export function clipQuote(text: string): { text: string; clipped: boolean } {
