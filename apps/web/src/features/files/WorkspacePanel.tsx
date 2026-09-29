@@ -108,6 +108,16 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
     if (root) restoreTerminals(root);
   }, [root, restoreTerminals, setRoot]);
 
+  const conversationOpen = usePanelStore((state) => state.conversationOpen);
+  const seenConversation = useRef(conversationOpen);
+  useEffect(() => {
+    if (conversationOpen === seenConversation.current) return;
+    seenConversation.current = conversationOpen;
+    const prefsNow = getSidebarPrefs();
+    if (!sessionId || !root || !prefsNow.files || !prefsNow.defaultOpenFileTree) return;
+    openPin("files");
+  }, [conversationOpen, sessionId, root, openPin]);
+
   useEffect(() => {
     const parentId = parentSession?.id ?? "";
     retainSideChats(parentId);

@@ -79,6 +79,8 @@ type PanelState = {
   revision: number;
   /** 请求 Workbench 展开右侧栏的计数。 */
   revealRequest: number;
+  /** 用户点开一段对话的次数。用来在工作区重置之后再决定要不要展开文件树。 */
+  conversationOpen: number;
   /** 请求展开底部工作台的计数。 */
   bottomRequest: number;
   bottom: SplitNode;
@@ -93,6 +95,7 @@ type PanelState = {
   embeddedFile: { path: string; title: string } | null;
   previewHeight: number;
   setRoot: (root: string) => void;
+  markConversationOpen: () => void;
   activate: (id: string) => void;
   showHome: () => void;
   openPin: (pin: PanelPin) => void;
@@ -159,6 +162,7 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   lens: "git",
   revision: 0,
   revealRequest: 0,
+  conversationOpen: 0,
   bottomRequest: 0,
   bottom: emptySplit(),
   dirty: {},
@@ -168,6 +172,7 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   changePreview: null,
   previewHeight: readPreviewHeight(),
   embeddedFile: null,
+  markConversationOpen: () => set((state) => ({ conversationOpen: state.conversationOpen + 1 })),
   setRoot: (root) => {
     const current = get();
     if (sameWorkspace(current.root, root) && current.root !== "") return;

@@ -1,3 +1,4 @@
+import { Settings } from "lucide-react";
 import { useState, useSyncExternalStore } from "react";
 
 import { Switch } from "@/components/ui/switch";
@@ -22,15 +23,15 @@ const CARDS: Array<{
   { id: "sidechat", title: "侧边对话", detail: "继承主会话的独立线程" },
 ];
 
-const PREVIEWERS: Array<{ id: keyof SidebarPrefs["previewers"]; title: string; settings?: "html" }> = [
-  { id: "markdown", title: "Markdown" },
-  { id: "html", title: "HTML", settings: "html" },
-  { id: "image", title: "图片" },
-  { id: "pdf", title: "PDF" },
-  { id: "code", title: "代码" },
-  { id: "sheet", title: "表格" },
-  { id: "docx", title: "Word" },
-  { id: "pptx", title: "PowerPoint" },
+const PREVIEWERS: Array<{ id: keyof SidebarPrefs["previewers"]; title: string; detail: string; settings?: "html" }> = [
+  { id: "markdown", title: "Markdown", detail: "渲染标题、列表和图表" },
+  { id: "html", title: "HTML", detail: "在沙箱里打开网页", settings: "html" },
+  { id: "image", title: "图片", detail: "查看常见图片格式" },
+  { id: "pdf", title: "PDF", detail: "翻页阅读文档" },
+  { id: "code", title: "代码", detail: "语法高亮显示源码" },
+  { id: "sheet", title: "表格", detail: "CSV 和 Excel" },
+  { id: "docx", title: "Word", detail: "阅读 Word 文档" },
+  { id: "pptx", title: "PowerPoint", detail: "翻页查看幻灯片" },
 ];
 
 export function SidebarCards() {
@@ -46,26 +47,28 @@ export function SidebarCards() {
             key={card.id}
             className={`rounded-2xl border px-3 py-3 ${prefs[card.id] ? "border-ink/20 bg-sidebar" : "border-line"}`}
           >
-            <div className="flex items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium">{card.title}</p>
-                <p className="text-[12px] text-muted">{card.detail}</p>
-              </div>
+            <div className="flex items-center justify-between gap-2">
+              <p className="min-w-0 text-[13px] font-medium">{card.title}</p>
               <Switch
                 checked={prefs[card.id]}
                 title={prefs[card.id] ? `关闭${card.title}` : `启用${card.title}`}
                 onCheckedChange={(checked) => updateSidebarPrefs({ [card.id]: checked })}
               />
             </div>
-            {card.settings ? (
-              <button
-                type="button"
-                className="mt-2 text-[12px] text-muted hover:text-ink"
-                onClick={() => setEditing(card.settings ?? null)}
-              >
-                功能设置
-              </button>
-            ) : null}
+            <div className="mt-1.5 flex items-center justify-between gap-2">
+              <p className="min-w-0 text-[12px] text-muted">{card.detail}</p>
+              {card.settings ? (
+                <button
+                  type="button"
+                  title="功能设置"
+                  aria-label="功能设置"
+                  className="grid h-5 w-9 shrink-0 place-items-center rounded-md text-muted hover:bg-ink/5 hover:text-ink"
+                  onClick={() => setEditing(card.settings ?? null)}
+                >
+                  <Settings className="size-3.5" />
+                </button>
+              ) : null}
+            </div>
           </div>
         ))}
       </div>
@@ -77,8 +80,8 @@ export function SidebarCards() {
             key={card.id}
             className={`rounded-2xl border px-3 py-3 ${prefs.previewers[card.id] ? "border-ink/20 bg-sidebar" : "border-line"}`}
           >
-            <div className="flex items-center gap-2">
-              <p className="min-w-0 flex-1 text-[13px] font-medium">{card.title}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="min-w-0 text-[13px] font-medium">{card.title}</p>
               <Switch
                 checked={prefs.previewers[card.id]}
                 title={prefs.previewers[card.id] ? `关闭${card.title}` : `启用${card.title}`}
@@ -87,11 +90,20 @@ export function SidebarCards() {
                 }
               />
             </div>
-            {card.settings ? (
-              <button type="button" className="mt-2 text-[12px] text-muted hover:text-ink" onClick={() => setEditing("html")}>
-                功能设置
-              </button>
-            ) : null}
+            <div className="mt-1.5 flex items-center justify-between gap-2">
+              <p className="min-w-0 text-[12px] text-muted">{card.detail}</p>
+              {card.settings ? (
+                <button
+                  type="button"
+                  title="功能设置"
+                  aria-label="功能设置"
+                  className="grid h-5 w-9 shrink-0 place-items-center rounded-md text-muted hover:bg-ink/5 hover:text-ink"
+                  onClick={() => setEditing("html")}
+                >
+                  <Settings className="size-3.5" />
+                </button>
+              ) : null}
+            </div>
           </div>
         ))}
       </div>
@@ -156,6 +168,13 @@ function CardSettings({
             <label className="flex items-center justify-between gap-3">
               显示隐藏文件
               <Switch checked={prefs.showHiddenFiles} onCheckedChange={(checked) => updateSidebarPrefs({ showHiddenFiles: checked })} />
+            </label>
+            <label className="flex items-center justify-between gap-3">
+              打开对话时展开文件树
+              <Switch
+                checked={prefs.defaultOpenFileTree}
+                onCheckedChange={(checked) => updateSidebarPrefs({ defaultOpenFileTree: checked })}
+              />
             </label>
             <label className="block">
               资源管理器

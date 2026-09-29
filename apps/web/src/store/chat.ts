@@ -771,6 +771,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ...run,
       };
     });
+    usePanelStore.getState().markConversationOpen();
     void get().refreshMcp();
     void get().loadTurnChanges(sessionId);
     if (live) return;

@@ -10,6 +10,8 @@ export type SidebarPrefs = {
   terminalFontSize: number;
   browserHome: string;
   showHiddenFiles: boolean;
+  /** 点开一段对话时展开右侧栏，并打开已加载的文件树。 */
+  defaultOpenFileTree: boolean;
   /** split：文件页只显示树，打开文件进新标签。merged：树嵌在预览左侧，点击在当前页切换。 */
   explorerMode: "split" | "merged";
   /** 关掉的预览器不再认领对应文件，会落到下一个预览或纯文本。 */
@@ -39,6 +41,7 @@ export const SIDEBAR_PREFS_DEFAULTS: SidebarPrefs = {
   terminalFontSize: 13,
   browserHome: "",
   showHiddenFiles: true,
+  defaultOpenFileTree: false,
   explorerMode: "split",
   previewers: {
     markdown: true,
@@ -68,6 +71,7 @@ function readPrefs(): SidebarPrefs {
       ...SIDEBAR_PREFS_DEFAULTS,
       ...parsed,
       previewers: { ...SIDEBAR_PREFS_DEFAULTS.previewers, ...parsed.previewers },
+      defaultOpenFileTree: parsed.defaultOpenFileTree === true,
       explorerMode: parsed.explorerMode === "merged" ? "merged" : SIDEBAR_PREFS_DEFAULTS.explorerMode,
     };
   } catch {
