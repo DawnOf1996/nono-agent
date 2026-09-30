@@ -1,5 +1,14 @@
 import { ArrowUp, Paperclip, Square, X } from "lucide-react";
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -47,6 +56,23 @@ export function Composer() {
   const canSend = Boolean(input.trim() || attachments.length || quotes.length);
   const quoteCount = quotes.length;
   const quoteFocus = useRef(quoteCount);
+
+  // 输入区随内容增高：默认保持 rows={2} 的高度，超出上限（CSS max-height）后改为框内滚动。
+  const resizeArea = useCallback(() => {
+    const area = areaRef.current;
+    if (!area) return;
+    area.style.height = "auto";
+    const cap = parseFloat(getComputedStyle(area).maxHeight) || Number.POSITIVE_INFINITY;
+    area.style.height = `${Math.min(area.scrollHeight, cap)}px`;
+    area.style.overflowY = area.scrollHeight > cap ? "auto" : "hidden";
+  }, []);
+
+  useLayoutEffect(resizeArea, [input, resizeArea]);
+
+  useEffect(() => {
+    window.addEventListener("resize", resizeArea);
+    return () => window.removeEventListener("resize", resizeArea);
+  }, [resizeArea]);
 
   useEffect(() => {
     if (!menuOpen && !slashOpen) return;
@@ -144,7 +170,7 @@ export function Composer() {
   }
 
   return (
-    <div className="px-6 pb-3">
+    <div className="shrink-0 px-6 pb-3">
       <div className="mx-auto max-w-[52rem]">
         {error ? <div className="mb-2 px-2 text-xs text-danger">{error}</div> : null}
         <div
@@ -204,6 +230,7 @@ export function Composer() {
             ref={areaRef}
             rows={2}
             value={input}
+            className="max-h-[min(40vh,18rem)]"
             placeholder="描述你想做的事，可粘贴截图或添加图片"
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={onKeyDown}
