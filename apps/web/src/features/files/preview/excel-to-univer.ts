@@ -1,10 +1,24 @@
-import type { Border, Cell, Fill, Style, Workbook, Worksheet } from "exceljs";
+import type {
+  Border,
+  Cell,
+  CellHyperlinkValue,
+  Fill,
+  Font,
+  RichText as RichTextRun,
+  Style,
+  Workbook,
+  Worksheet,
+  WorksheetModel,
+} from "exceljs";
 import { ValueType } from "exceljs";
 import {
   BaselineOffset,
   BooleanNumber,
   BorderStyleTypes,
   CellValueType,
+  createParagraphId,
+  createSectionId,
+  CustomRangeType,
   HorizontalAlign,
   TextDecoration,
   VerticalAlign,
@@ -14,12 +28,18 @@ import {
   type IBorderStyleData,
   type ICellData,
   type IColumnData,
+  type IDocumentBody,
+  type IDocumentData,
   type IFreeze,
+  type IParagraph,
   type IRange,
   type IRowData,
   type IStyleData,
+  type ISectionBreak,
   type ITextDecoration,
   type ITextRotation,
+  type ITextRun,
+  type ITextStyle,
   type IWorkbookData,
   type IWorksheetData,
   type LocaleType,
@@ -155,8 +175,14 @@ function worksheetToUniver(
   const cellData: IWorksheetData["cellData"] = {};
   const rowData: IWorksheetData["rowData"] = {};
   const columnData: IWorksheetData["columnData"] = {};
+  const mergeRanges = mergedRangesOf(sheet);
+  const rowNumbers = rowNumbersOf(sheet);
 
-  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+  // eachRow 的默认分支按 row.hasValues 过滤：整行都只有边框没有值时 hasValues 为 false，
+  // 整行会被跳过，下面的 eachCell 根本不会执行。所以改用 model.rows 取文件里真实存在的行号，
+  // 既不漏行，也不会像 eachRow({includeEmpty:true}) 那样把中间的空行全部物化出来。
+  for (const rowNumber of rowNumbers) {
+    const row = sheet.getRow(rowNumber);
     const rowIndex = rowNumber - 1;
     const rowStyle = styles.id(styleOf(row));
     const height = Number.isFinite(row.height) ? Math.round((row.height * 96) / 72) : undefined;
@@ -167,15 +193,34 @@ function worksheetToUniver(
       if (rowStyle !== undefined) data.s = rowStyle;
       rowData[rowIndex] = data;
     }
-    row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-      if (cell.isMerged && cell.master.address !== cell.address) return;
-      const converted = cellOf(cell, styles, date1904);
-      if (converted === null) return;
+    // includeEmpty 必须为 true：只有边框没有值的格子 type 是 Null，默认分支会把它们整个丢掉，
+    // 导致撑版式的空格子边框全部不渲染。cellOf 内部会过滤掉真正无样式的空格。
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      const columnIndex = colNumber - 1;
+      const master = cell.master;
+      const at = positionOf(master);
+      const range = cell.isMerged ? mergeRanges.get(`${at.row - 1}:${at.col - 1}`) : undefined;
+      let data: ICellData | null = null;
+      if (range) {
+        const perimeter = mergedBorderOf(sheet, range);
+        if (cell.isMerged && master.address !== cell.address) {
+          // 合并从格：Univer 是逐格绘制边框的，从格没有样式就会让合并区缺边。
+          // 这里补一份只含外框的样式，边按所在位置只朝合并区外侧。
+          const edge = perimeter ? mergeEdgeOf(perimeter, range, rowIndex, columnIndex) : null;
+          const styleId = styles.id(edge ? { bd: edge } : null);
+          if (styleId !== undefined) data = { s: styleId };
+        } else {
+          data = cellOf(cell, styles, date1904, perimeter);
+        }
+      } else {
+        data = cellOf(cell, styles, date1904, null);
+      }
+      if (data === null) return;
       const rowCells = cellData[rowIndex] ?? {};
-      rowCells[colNumber - 1] = converted;
+      rowCells[columnIndex] = data;
       cellData[rowIndex] = rowCells;
     });
-  });
+  }
 
   for (let index = 1; index <= sheet.columnCount; index += 1) {
     const column = sheet.getColumn(index);
@@ -189,7 +234,7 @@ function worksheetToUniver(
     columnData[index - 1] = data;
   }
 
-  const view = sheet.views[0];
+  const view = sheet.views?.[0];
   const zoom = view?.zoomScale;
   return {
     id: sheetId,
@@ -213,22 +258,121 @@ function worksheetToUniver(
   };
 }
 
-function cellOf(cell: Cell, styles: StyleBook, date1904: boolean): ICellData | null {
+function cellOf(cell: Cell, styles: StyleBook, date1904: boolean, mergedBorder?: IBorderData | null): ICellData | null {
   const out: ICellData = {};
   const value = plainValue(cell, date1904);
   if (value !== null) {
     out.t = value.t;
     out.v = value.v;
+    // v 保留纯文本当兜底，p 承载富文本与超链接。Univer 自己的富文本单元格也是 v/p 同时写
+    // （见 sheets-ui 里 cellData.v = newDataStream 后再 cellData.p = snapshot），
+    // 这样即使 p 的渲染出问题，至少文字还在。
+    if (value.body) out.p = value.body;
   }
   const formula = cell.formula?.trim();
   if (formula) out.f = formula.startsWith("=") ? formula : `=${formula}`;
-  const style = styles.id(styleOf(cell.style));
+  const style = styles.id(styleOf(cell.style, mergedBorder));
   if (style !== undefined) out.s = style;
   if (value === null && !formula && style === undefined) return null;
   return out;
 }
 
-function plainValue(cell: Cell, date1904: boolean): { t: CellValueType; v: string | number | boolean } | null {
+type PlainValue = { t: CellValueType; v: string | number | boolean; body?: IDocumentData };
+type RichBody = { text: string; body: IDocumentBody };
+
+/**
+ * 预览会原样渲染用户提供的文件，所以链接协议要自己把关。
+ * Univer 内部渲染时也会过一遍 isSafeUrl，但那是运行期的最后一道防线；
+ * 这里在生成快照时就拦掉，避免把 javascript: / data: 之类写进文档模型。
+ */
+const SAFE_LINK = /^(?:https?|mailto|ftp):/i;
+
+function safeUrlOf(url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  const trimmed = url.trim();
+  return SAFE_LINK.test(trimmed) ? trimmed : null;
+}
+
+/** 单元格内换行统一成 \r：Univer 的 dataStream 只认 \r 作为段分隔。 */
+function normalizeBreaks(text: string): string {
+  return text.replace(/\r\n|\n/g, "\r");
+}
+
+/**
+ * 按 Univer 的约定拼 dataStream / paragraphs：以 \r\n 收尾，
+ * 每个 \r 结束一段，paragraph.startIndex 指向这个 \r 本身。
+ * 调用方需保证传入的 text 已做过换行归一化，否则偏移量会和 dataStream 对不上。
+ */
+function bodyOfText(text: string, extra?: Partial<IDocumentBody>): IDocumentBody {
+  const dataStream = text.endsWith("\r\n") ? text : `${text}\r\n`;
+  const ids = new Set<string>();
+  const paragraphs: IParagraph[] = [];
+  for (let index = 0; index < dataStream.length; index += 1) {
+    if (dataStream[index] === "\r") paragraphs.push({ startIndex: index, paragraphId: createParagraphId(ids) });
+  }
+  const body: IDocumentBody = { dataStream, paragraphs, ...extra };
+  if (paragraphs.length > 1) {
+    const sectionBreaks: ISectionBreak[] = [{ sectionId: createSectionId(new Set()), startIndex: dataStream.indexOf("\n") }];
+    body.sectionBreaks = sectionBreaks;
+  }
+  return body;
+}
+
+let documentSeq = 0;
+let linkSeq = 0;
+
+function documentOf(body: IDocumentBody): IDocumentData {
+  documentSeq += 1;
+  return { id: `doc-${documentSeq}`, body, documentStyle: {} };
+}
+
+/**
+ * 富文本转成 Univer 的文档体：每段带字体的生成一个 textRun。
+ * textRun.ed 是开区间（与 Univer 的 getCellStyleBySnapshot 对齐：`ed - st >= 正文长度`）。
+ * 偏移量用 JS 的 .length 累加，和 Univer 的下标一致（都是 UTF-16 码元，不能用 Array.from）。
+ */
+function richTextBody(runs: RichTextRun[]): RichBody | null {
+  let text = "";
+  const textRuns: ITextRun[] = [];
+  for (const run of runs) {
+    const chunk = normalizeBreaks(run.text ?? "");
+    if (chunk === "") continue;
+    const start = text.length;
+    text += chunk;
+    const ts = textStyleOf(run.font);
+    if (ts) textRuns.push({ st: start, ed: text.length, ts });
+  }
+  if (text === "") return null;
+  return { text, body: bodyOfText(text, textRuns.length > 0 ? { textRuns } : {}) };
+}
+
+/**
+ * 超链接转成文档体：显示文字进 dataStream，链接本身进 customRanges。
+ * customRange.endIndex 是闭区间（对齐 sheets-ui 的 generateBody：urlText.length - 1）。
+ */
+function hyperlinkBody(value: CellHyperlinkValue): RichBody | null {
+  const url = safeUrlOf(value.hyperlink);
+  if (url === null) return null;
+  // Excel 允许只存链接不写显示文字，这种情况下用链接本身当显示文本。
+  const text = normalizeBreaks(String(value.text ?? "").trim()) || url;
+  linkSeq += 1;
+  return {
+    text,
+    body: bodyOfText(text, {
+      customRanges: [
+        {
+          startIndex: 0,
+          endIndex: text.length - 1,
+          rangeId: `link-${linkSeq}`,
+          rangeType: CustomRangeType.HYPERLINK,
+          properties: { url },
+        },
+      ],
+    }),
+  };
+}
+
+function plainValue(cell: Cell, date1904: boolean): PlainValue | null {
   const value = cell.value;
   if (cell.type === ValueType.Number && typeof value === "number") return { t: CellValueType.NUMBER, v: value };
   if (cell.type === ValueType.Boolean && typeof value === "boolean") return { t: CellValueType.BOOLEAN, v: value };
@@ -244,11 +388,15 @@ function plainValue(cell: Cell, date1904: boolean): { t: CellValueType; v: strin
     return null;
   }
   if (value && typeof value === "object" && "richText" in value) {
-    const text = value.richText.map((part) => part.text).join("");
-    return text ? { t: CellValueType.STRING, v: text } : null;
+    const rich = richTextBody(value.richText);
+    return rich ? { t: CellValueType.STRING, v: rich.text, body: documentOf(rich.body) } : null;
   }
   if (value && typeof value === "object" && "text" in value && "hyperlink" in value) {
-    return { t: CellValueType.STRING, v: String(value.text ?? "") };
+    const link = hyperlinkBody(value as CellHyperlinkValue);
+    if (link) return { t: CellValueType.STRING, v: link.text, body: documentOf(link.body) };
+    // 协议不在白名单里就不生成链接，但显示文字要留住。
+    const text = String((value as CellHyperlinkValue).text ?? "");
+    return text ? { t: CellValueType.STRING, v: text } : null;
   }
   if (typeof value === "string") return value ? { t: CellValueType.STRING, v: value } : null;
   if (typeof value === "number") return { t: CellValueType.NUMBER, v: value };
@@ -256,28 +404,38 @@ function plainValue(cell: Cell, date1904: boolean): { t: CellValueType; v: strin
   return null;
 }
 
-function styleOf(style: Partial<Style> | undefined): IStyleData | null {
-  if (!style) return null;
+/**
+ * 字符级字体属性。IStyleData 和 ITextStyle 都继承 IStyleBase，
+ * 所以单元格样式和富文本分段可以共用这一份映射。
+ */
+function textStyleOf(font: Partial<Font> | undefined): ITextStyle | null {
+  if (!font) return null;
+  const out: ITextStyle = {};
+  if (font.name) out.ff = font.name;
+  if (typeof font.size === "number" && font.size > 0) out.fs = font.size;
+  if (font.bold) out.bl = BooleanNumber.TRUE;
+  if (font.italic) out.it = BooleanNumber.TRUE;
+  const color = cssColor(font.color);
+  if (color) out.cl = { rgb: color };
+  const underline = underlineOf(font.underline);
+  if (underline) out.ul = underline;
+  if (font.strike) out.st = { s: BooleanNumber.TRUE };
+  if (font.vertAlign === "superscript") out.va = BaselineOffset.SUPERSCRIPT;
+  if (font.vertAlign === "subscript") out.va = BaselineOffset.SUBSCRIPT;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function styleOf(style: Partial<Style> | undefined, mergedBorder?: IBorderData | null): IStyleData | null {
+  if (!style && !mergedBorder) return null;
   const out: IStyleData = {};
-  const font = style.font;
-  if (font) {
-    if (font.name) out.ff = font.name;
-    if (typeof font.size === "number" && font.size > 0) out.fs = font.size;
-    if (font.bold) out.bl = BooleanNumber.TRUE;
-    if (font.italic) out.it = BooleanNumber.TRUE;
-    const color = cssColor(font.color);
-    if (color) out.cl = { rgb: color };
-    const underline = underlineOf(font.underline);
-    if (underline) out.ul = underline;
-    if (font.strike) out.st = { s: BooleanNumber.TRUE };
-    if (font.vertAlign === "superscript") out.va = BaselineOffset.SUPERSCRIPT;
-    if (font.vertAlign === "subscript") out.va = BaselineOffset.SUBSCRIPT;
-  }
-  const background = fillColor(style.fill);
+  const font = textStyleOf(style?.font);
+  if (font) Object.assign(out, font);
+  const background = fillColor(style?.fill);
   if (background) out.bg = { rgb: background };
-  const border = borderOf(style.border);
-  if (border) out.bd = border;
-  const alignment = style.alignment;
+  const own = borderOf(style?.border);
+  const border = mergedBorder ? { ...own, ...mergedBorder } : own;
+  if (border && Object.keys(border).length > 0) out.bd = border;
+  const alignment = style?.alignment;
   if (alignment) {
     if (alignment.horizontal) out.ht = HORIZONTAL[alignment.horizontal];
     if (alignment.vertical) out.vt = VERTICAL[alignment.vertical];
@@ -286,7 +444,7 @@ function styleOf(style: Partial<Style> | undefined): IStyleData | null {
     const rotation = rotationOf(alignment.textRotation);
     if (rotation) out.tr = rotation;
   }
-  if (style.numFmt && style.numFmt !== "General") out.n = { pattern: style.numFmt };
+  if (style?.numFmt && style.numFmt !== "General") out.n = { pattern: style.numFmt };
   return Object.keys(out).length > 0 ? out : null;
 }
 
@@ -368,7 +526,7 @@ function columnWidthPx(width: number): number {
 }
 
 function freezeOf(sheet: Worksheet): IFreeze {
-  for (const view of sheet.views) {
+  for (const view of sheet.views ?? []) {
     if (view.state !== "frozen") continue;
     const xSplit = view.xSplit ?? 0;
     const ySplit = view.ySplit ?? 0;
@@ -390,6 +548,93 @@ function mergesOf(sheet: Worksheet): IRange[] {
     if (range) ranges.push(range);
   }
   return ranges;
+}
+
+/**
+ * 文件里真实存在的行号。
+ * exceljs 的 WorksheetModel 类型漏了 rows，但 get model() 运行时会从 _rows 里组装出来，
+ * 只收录真正带 model 的行，也就是 sheetData 里出现过的那些。
+ */
+function rowNumbersOf(sheet: Worksheet): number[] {
+  const rows = (sheet.model as WorksheetModel & { rows?: Array<{ number?: number }> }).rows;
+  const numbers: number[] = [];
+  for (const row of rows ?? []) {
+    if (typeof row.number === "number" && row.number > 0) numbers.push(row.number);
+  }
+  return numbers;
+}
+
+/**
+ * exceljs 的 Address 接口把 row/col 错标成 string，运行时 Cell 实际返回的是 1 起的 number。
+ * 这里窄化一次，免得整条链路上到处做类型断言。
+ */
+function positionOf(cell: Cell): { row: number; col: number } {
+  const { row, col } = cell as unknown as { row: number; col: number };
+  return { row, col };
+}
+
+/** 合并区按左上角坐标索引，键是 0 基的 `${row}:${col}`。 */
+function mergedRangesOf(sheet: Worksheet): Map<string, IRange> {
+  const map = new Map<string, IRange>();
+  for (const merge of sheet.model.merges ?? []) {
+    const range = decodeRange(merge);
+    if (range) map.set(`${range.startRow}:${range.startColumn}`, range);
+  }
+  return map;
+}
+
+/**
+ * 快照里只有主格代表整个合并区，而 Excel 的外框常由周边格子各自拼出，
+ * 只留主格会缺边。exceljs 导入时特意不合并各格样式（Worksheet#_parseMergeCells），
+ * 所以这里按区域把四条边依次回退到周边格子上取，主格自身的边框优先。
+ */
+function mergedBorderOf(sheet: Worksheet, range: IRange): IBorderData | null {
+  const { startRow, startColumn, endRow, endColumn } = range;
+  const edgeOf = (row: number, column: number, side: "top" | "bottom" | "left" | "right") =>
+    borderSide(sheet.getCell(row + 1, column + 1).style?.border?.[side]);
+  const out: IBorderData = {};
+  for (let column = startColumn; column <= endColumn; column += 1) {
+    const side = edgeOf(startRow, column, "top");
+    if (side) {
+      out.t = side;
+      break;
+    }
+  }
+  for (let column = startColumn; column <= endColumn; column += 1) {
+    const side = edgeOf(endRow, column, "bottom");
+    if (side) {
+      out.b = side;
+      break;
+    }
+  }
+  for (let row = startRow; row <= endRow; row += 1) {
+    const side = edgeOf(row, startColumn, "left");
+    if (side) {
+      out.l = side;
+      break;
+    }
+  }
+  for (let row = startRow; row <= endRow; row += 1) {
+    const side = edgeOf(row, endColumn, "right");
+    if (side) {
+      out.r = side;
+      break;
+    }
+  }
+  return out.t || out.b || out.l || out.r ? out : null;
+}
+
+/**
+ * 合并区里某个从格应该承担的外框边：只有落在合并区最外圈的那几条边。
+ * 逐格渲染时这些边首尾相接，正好拼出完整轮廓；内部格子返回 null 不出样式。
+ */
+function mergeEdgeOf(perimeter: IBorderData, range: IRange, row: number, column: number): IBorderData | null {
+  const out: IBorderData = {};
+  if (row === range.startRow && perimeter.t) out.t = perimeter.t;
+  if (row === range.endRow && perimeter.b) out.b = perimeter.b;
+  if (column === range.startColumn && perimeter.l) out.l = perimeter.l;
+  if (column === range.endColumn && perimeter.r) out.r = perimeter.r;
+  return out.t || out.b || out.l || out.r ? out : null;
 }
 
 function decodeRange(range: string): IRange | null {
