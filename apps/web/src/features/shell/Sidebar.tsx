@@ -1,4 +1,4 @@
-import { Archive, ChevronRight, Folder, FolderOpen, FolderPlus, GitFork, Loader2, MoreHorizontal, PanelLeftClose, Pencil, Plus, Settings, ShieldAlert, SquarePen, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUpDown, Check, ChevronRight, Clock, Eye, EyeOff, Folder, FolderOpen, FolderPlus, FolderTree, GitFork, GripVertical, List, Loader2, MessageSquarePlus, MoreHorizontal, PanelLeftClose, Pencil, Settings, Settings2, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { SessionListItem, Workspace } from "@nono/protocol";
@@ -10,6 +10,20 @@ import { WorkspacePicker } from "@/features/session/WorkspacePicker";
 import { formatRelativeTime, sessionTitle } from "@/lib/format";
 import { sameWorkspace, workspaceLabel } from "@/lib/workspace";
 import { sessionRun, useChatStore } from "@/store/chat";
+import {
+  buildWorkspaceTree,
+  loadListView,
+  loadManualOrder,
+  pruneEmptyArchiveTree,
+  reorderManual,
+  saveListView,
+  saveManualOrder,
+  sortSessions,
+  type ArchiveFilter,
+  type GroupMode,
+  type SortMode,
+  type WorkspaceTreeNode,
+} from "@/features/shell/sidebar-list";
 
 const COLLAPSED_KEY = "nono.sidebar.collapsedWorkspaces";
 const UNGROUPED_ID = "__ungrouped__";
@@ -32,6 +46,179 @@ function saveCollapsed(ids: Set<string>) {
   } catch {
     // private mode / blocked storage
   }
+}
+
+function ListViewMenu({
+  groupMode,
+  sortMode,
+  archiveFilter,
+  onGroup,
+  onSort,
+  onArchive,
+}: {
+  groupMode: GroupMode;
+  sortMode: SortMode;
+  archiveFilter: ArchiveFilter;
+  onGroup: (mode: GroupMode) => void;
+  onSort: (mode: SortMode) => void;
+  onArchive: (filter: ArchiveFilter) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const tuned = groupMode !== "workspace" || sortMode !== "recent" || archiveFilter !== "hide";
+
+  useEffect(() => {
+    if (!open) return;
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) {
+      const width = 248;
+      setPos({
+        top: rect.bottom + 4,
+        left: Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8),
+      });
+    }
+    function onPointer(event: PointerEvent) {
+      const target = event.target as Node;
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  function pickGroup(mode: GroupMode) {
+    onGroup(mode);
+    setOpen(false);
+  }
+
+  function pickSort(mode: SortMode) {
+    onSort(mode);
+    setOpen(false);
+  }
+
+  function pickArchive(filter: ArchiveFilter) {
+    onArchive(filter);
+    setOpen(false);
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`flex size-6 items-center justify-center rounded-md hover:bg-hover hover:text-ink ${
+          tuned ? "text-accent" : "text-faint"
+        }`}
+        title="工作区选项"
+        aria-label="工作区选项"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Settings2 className="size-3.5" />
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              className="fixed z-50 w-[248px] rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_rgba(15,17,21,0.12)]"
+              style={{ top: pos.top, left: pos.left }}
+            >
+              <p className="px-2.5 pb-1 pt-1.5 text-[11px] text-faint">分组方式</p>
+              <MenuChoice
+                icon={<Folder className="size-3.5 text-muted" />}
+                label="按工作区"
+                selected={groupMode === "workspace"}
+                onClick={() => pickGroup("workspace")}
+              />
+              <MenuChoice
+                icon={<FolderTree className="size-3.5 text-muted" />}
+                label="按工作区树"
+                selected={groupMode === "tree"}
+                onClick={() => pickGroup("tree")}
+              />
+              <MenuChoice
+                icon={<List className="size-3.5 text-muted" />}
+                label="单列表"
+                selected={groupMode === "flat"}
+                onClick={() => pickGroup("flat")}
+              />
+              <div className="my-1 border-t border-line" />
+              <p className="px-2.5 pb-1 pt-1 text-[11px] text-faint">排序方式</p>
+              <MenuChoice
+                icon={<ArrowUpDown className="size-3.5 text-muted" />}
+                label="手动排序"
+                selected={sortMode === "manual"}
+                onClick={() => pickSort("manual")}
+              />
+              <MenuChoice
+                icon={<Clock className="size-3.5 text-muted" />}
+                label="最近更新"
+                selected={sortMode === "recent"}
+                onClick={() => pickSort("recent")}
+              />
+              <div className="my-1 border-t border-line" />
+              <p className="px-2.5 pb-1 pt-1 text-[11px] text-faint">筛选会话</p>
+              <MenuChoice
+                icon={<EyeOff className="size-3.5 text-muted" />}
+                label="隐藏已归档"
+                selected={archiveFilter === "hide"}
+                onClick={() => pickArchive("hide")}
+              />
+              <MenuChoice
+                icon={<Eye className="size-3.5 text-muted" />}
+                label="全部对话（显示已归档）"
+                selected={archiveFilter === "all"}
+                onClick={() => pickArchive("all")}
+              />
+              <MenuChoice
+                icon={<Archive className="size-3.5 text-muted" />}
+                label="仅显示已归档"
+                selected={archiveFilter === "only"}
+                onClick={() => pickArchive("only")}
+              />
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+function MenuChoice({
+  icon,
+  label,
+  selected,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={selected}
+      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover hover:text-ink"
+      onClick={onClick}
+    >
+      {icon}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {selected ? <Check className="size-3.5 shrink-0 text-ink" /> : null}
+    </button>
+  );
 }
 
 function WorkspaceRowMenu({
@@ -161,15 +348,18 @@ function WorkspaceRowMenu({
 
 function SessionRowMenu({
   sessionId,
+  archived,
   onRename,
   onOpenChange,
 }: {
   sessionId: string;
+  archived: boolean;
   onRename: () => void;
   onOpenChange?: (open: boolean) => void;
 }) {
   const forkSession = useChatStore((state) => state.forkSession);
   const archiveSession = useChatStore((state) => state.archiveSession);
+  const unarchiveSession = useChatStore((state) => state.unarchiveSession);
   const deleteSession = useChatStore((state) => state.deleteSession);
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -251,17 +441,31 @@ function SessionRowMenu({
                 <GitFork className="size-3.5 text-muted" />
                 叉分
               </button>
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover hover:text-ink"
-                onClick={() => {
-                  toggle(false);
-                  void archiveSession(sessionId);
-                }}
-              >
-                <Archive className="size-3.5 text-muted" />
-                归档
-              </button>
+              {archived ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover hover:text-ink"
+                  onClick={() => {
+                    toggle(false);
+                    void unarchiveSession(sessionId);
+                  }}
+                >
+                  <ArchiveRestore className="size-3.5 text-muted" />
+                  取消归档
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover hover:text-ink"
+                  onClick={() => {
+                    toggle(false);
+                    void archiveSession(sessionId);
+                  }}
+                >
+                  <Archive className="size-3.5 text-muted" />
+                  归档
+                </button>
+              )}
               <button
                 type="button"
                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-danger hover:bg-danger/10"
@@ -298,7 +502,15 @@ function SessionRowMenu({
   );
 }
 
-function SessionRow({ session }: { session: SessionListItem }) {
+function SessionRow({
+  session,
+  manualSort = false,
+  onReorder,
+}: {
+  session: SessionListItem;
+  manualSort?: boolean;
+  onReorder?: (sourceId: string, targetId: string) => void;
+}) {
   const sessionId = useChatStore((state) => state.sessionId);
   const sessionTitles = useChatStore((state) => state.sessionTitles);
   const openSession = useChatStore((state) => state.openSession);
@@ -315,8 +527,10 @@ function SessionRow({ session }: { session: SessionListItem }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const skipCommit = useRef(false);
+  const archived = session.archived === true;
 
   useEffect(() => {
     if (!renaming) setDraft(title);
@@ -343,10 +557,31 @@ function SessionRow({ session }: { session: SessionListItem }) {
   }
 
   return (
-    <li className="group">
+    <li
+      className="group"
+      onDragOver={(event) => {
+        if (!manualSort || renaming) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(event) => {
+        if (!manualSort) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setDragOver(false);
+        const sourceId = event.dataTransfer.getData("text/plain");
+        if (sourceId && sourceId !== session.id) onReorder?.(sourceId, session.id);
+      }}
+    >
       <div
         className={`flex items-center rounded-lg ${
-          selected ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
+          dragOver
+            ? "bg-hover ring-1 ring-accent"
+            : selected
+              ? "bg-active text-ink"
+              : "text-ink/80 hover:bg-hover"
         }`}
       >
         {renaming ? (
@@ -373,10 +608,20 @@ function SessionRow({ session }: { session: SessionListItem }) {
         ) : (
           <button
             type="button"
-            className="flex min-w-0 flex-1 items-center px-2 py-1.5 text-left text-[13px]"
+            draggable={manualSort}
+            title={archived ? "已归档" : manualSort ? "拖动调整顺序" : undefined}
+            className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-[13px] ${
+              manualSort ? "cursor-grab active:cursor-grabbing" : ""
+            }`}
+            onDragStart={(event) => {
+              event.dataTransfer.setData("text/plain", session.id);
+              event.dataTransfer.effectAllowed = "move";
+            }}
             onClick={() => void openSession(session.engine_session_id)}
           >
-            <span className="truncate">{title}</span>
+            {manualSort ? <GripVertical className="size-3 shrink-0 text-faint" /> : null}
+            {archived ? <Archive className="size-3 shrink-0 text-faint" /> : null}
+            <span className={`truncate ${archived ? "text-muted" : ""}`}>{title}</span>
           </button>
         )}
         <div className="flex shrink-0 items-center pr-0.5">
@@ -396,6 +641,7 @@ function SessionRow({ session }: { session: SessionListItem }) {
               <span className={menuOpen ? "flex" : "hidden group-hover:flex"}>
                 <SessionRowMenu
                   sessionId={session.id}
+                  archived={archived}
                   onRename={() => {
                     setDraft(title);
                     setRenaming(true);
@@ -418,6 +664,9 @@ function WorkspaceRow({
   collapsed,
   onToggle,
   onExpand,
+  manualSort,
+  onReorder,
+  nested,
 }: {
   workspace: Workspace;
   sessions: SessionListItem[];
@@ -425,6 +674,9 @@ function WorkspaceRow({
   collapsed: boolean;
   onToggle: () => void;
   onExpand: () => void;
+  manualSort: boolean;
+  onReorder: (sourceId: string, targetId: string) => void;
+  nested?: ReactNode;
 }) {
   const newSession = useChatStore((state) => state.newSession);
   const renameWorkspace = useChatStore((state) => state.renameWorkspace);
@@ -529,7 +781,7 @@ function WorkspaceRow({
             void newSession({ cwd: workspace.path });
           }}
         >
-          <Plus className="size-3.5" />
+          <MessageSquarePlus className="size-3.5" />
         </button>
       </div>
       {expanded ? (
@@ -543,11 +795,118 @@ function WorkspaceRow({
             </li>
           ) : null}
           {sessions.map((session) => (
-            <SessionRow key={session.id} session={session} />
+            <SessionRow key={session.id} session={session} manualSort={manualSort} onReorder={onReorder} />
           ))}
         </ul>
       ) : null}
+      {expanded && nested ? <div className="ml-3 border-l border-line pl-2">{nested}</div> : null}
     </div>
+  );
+}
+
+function DirGroup({
+  node,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  node: Extract<WorkspaceTreeNode, { kind: "dir" }>;
+  collapsed: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const expanded = !collapsed;
+  return (
+    <div className="mb-1">
+      <button
+        type="button"
+        className="flex w-full items-center gap-1 rounded-lg px-2 py-1.5 text-left text-[13px] text-ink/80 hover:bg-hover"
+        title={expanded ? "折起分组" : "展开分组"}
+        aria-expanded={expanded}
+        onClick={onToggle}
+      >
+        <ChevronRight className={`size-3 shrink-0 text-faint transition-transform ${expanded ? "rotate-90" : ""}`} />
+        {expanded ? (
+          <FolderOpen className="size-3.5 shrink-0 text-muted" />
+        ) : (
+          <Folder className="size-3.5 shrink-0 text-muted" />
+        )}
+        <span className="truncate">{node.label}</span>
+      </button>
+      {expanded ? <div className="ml-3 border-l border-line pl-2">{children}</div> : null}
+    </div>
+  );
+}
+
+function TreeBranch({
+  nodes,
+  sessionsById,
+  workspacePath,
+  collapsed,
+  onToggle,
+  onExpand,
+  manualSort,
+  onReorder,
+}: {
+  nodes: WorkspaceTreeNode[];
+  sessionsById: Map<string, SessionListItem[]>;
+  workspacePath: string;
+  collapsed: Set<string>;
+  onToggle: (id: string) => void;
+  onExpand: (id: string) => void;
+  manualSort: boolean;
+  onReorder: (sourceId: string, targetId: string) => void;
+}) {
+  return (
+    <>
+      {nodes.map((node) =>
+        node.kind === "dir" ? (
+          <DirGroup
+            key={node.id}
+            node={node}
+            collapsed={collapsed.has(node.id)}
+            onToggle={() => onToggle(node.id)}
+          >
+            <TreeBranch
+              nodes={node.children}
+              sessionsById={sessionsById}
+              workspacePath={workspacePath}
+              collapsed={collapsed}
+              onToggle={onToggle}
+              onExpand={onExpand}
+              manualSort={manualSort}
+              onReorder={onReorder}
+            />
+          </DirGroup>
+        ) : (
+          <WorkspaceRow
+            key={node.workspace.id}
+            workspace={node.workspace}
+            sessions={sessionsById.get(node.workspace.id) ?? []}
+            active={sameWorkspace(node.workspace.path, workspacePath)}
+            collapsed={collapsed.has(node.workspace.id)}
+            onToggle={() => onToggle(node.workspace.id)}
+            onExpand={() => onExpand(node.workspace.id)}
+            manualSort={manualSort}
+            onReorder={onReorder}
+            nested={
+              node.children.length ? (
+                <TreeBranch
+                  nodes={node.children}
+                  sessionsById={sessionsById}
+                  workspacePath={workspacePath}
+                  collapsed={collapsed}
+                  onToggle={onToggle}
+                  onExpand={onExpand}
+                  manualSort={manualSort}
+                  onReorder={onReorder}
+                />
+              ) : null
+            }
+          />
+        ),
+      )}
+    </>
   );
 }
 
@@ -583,6 +942,8 @@ export function Sidebar({
   onCollapse: () => void;
 }) {
   const sessions = useChatStore((state) => state.sessions);
+  const archiveFilter = useChatStore((state) => state.sessionArchiveFilter);
+  const setSessionArchiveFilter = useChatStore((state) => state.setSessionArchiveFilter);
   const healthOk = useChatStore((state) => state.healthOk);
   const workspace = useChatStore((state) => state.workspace);
   const workspaces = useChatStore((state) => state.workspaces);
@@ -590,22 +951,36 @@ export function Sidebar({
   const newSession = useChatStore((state) => state.newSession);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
+  const [listView, setListView] = useState(loadListView);
+  const [manualOrder, setManualOrder] = useState<string[]>(loadManualOrder);
 
   const groups = useMemo(() => {
+    const ordered = sortSessions(sessions, listView.sort, manualOrder);
     const byId = new Map<string, typeof sessions>();
     for (const item of workspaces) {
       byId.set(item.id, []);
     }
     const unbound: typeof sessions = [];
-    for (const session of sessions) {
+    for (const session of ordered) {
       if (byId.has(session.workspace_id)) {
         byId.get(session.workspace_id)?.push(session);
       } else {
         unbound.push(session);
       }
     }
-    return { byId, unbound };
-  }, [sessions, workspaces]);
+    return { byId, unbound, ordered };
+  }, [sessions, workspaces, listView.sort, manualOrder]);
+
+  const treeNodes = useMemo(() => {
+    const tree = buildWorkspaceTree(workspaces);
+    if (archiveFilter !== "only") return tree;
+    return pruneEmptyArchiveTree(tree, groups.byId);
+  }, [workspaces, archiveFilter, groups.byId]);
+
+  const visibleWorkspaces =
+    archiveFilter === "only"
+      ? workspaces.filter((item) => (groups.byId.get(item.id) ?? []).length > 0)
+      : workspaces;
 
   function toggleCollapsed(id: string) {
     setCollapsed((current) => {
@@ -628,6 +1003,35 @@ export function Sidebar({
   }
 
   const ungroupedOpen = !collapsed.has(UNGROUPED_ID);
+
+  function chooseGroup(mode: GroupMode) {
+    setListView((current) => {
+      const next = { ...current, group: mode };
+      saveListView(next);
+      return next;
+    });
+  }
+
+  function chooseSort(mode: SortMode) {
+    setListView((current) => {
+      const next = { ...current, sort: mode };
+      saveListView(next);
+      return next;
+    });
+  }
+
+  function reorderSession(sourceId: string, targetId: string) {
+    setManualOrder((current) => {
+      const next = reorderManual(
+        current,
+        sortSessions(sessions, "recent", []).map((item) => item.id),
+        sourceId,
+        targetId,
+      );
+      saveManualOrder(next);
+      return next;
+    });
+  }
 
   function startNewSession() {
     const listed = workspaces.some((item) => sameWorkspace(item.path, workspace));
@@ -654,7 +1058,7 @@ export function Sidebar({
         </div>
         <div className="flex flex-col items-center gap-1 px-1.5 pt-2">
           <RailButton title="新会话" onClick={startNewSession}>
-            <SquarePen className="size-4" />
+            <MessageSquarePlus className="size-4" />
           </RailButton>
           <RailButton title="新建工作区" onClick={() => setPickerOpen(true)}>
             <FolderPlus className="size-4" />
@@ -693,13 +1097,13 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="px-3 pb-3">
+      <div className="px-3 pb-3 pt-3">
         <Button
           variant="outline"
-          className="h-9 w-full justify-start gap-2 rounded-full border-line-strong bg-bg"
+          className="h-9 w-full justify-center gap-2 rounded-full border-line-strong bg-bg"
           onClick={startNewSession}
         >
-          <Plus className="size-4" />
+          <MessageSquarePlus className="size-4" />
           新会话
         </Button>
       </div>
@@ -707,29 +1111,67 @@ export function Sidebar({
       <div className="flex-1 overflow-auto px-2 pb-3">
         <div className="mb-1 flex items-center justify-between px-2">
           <span className="text-[11px] font-medium text-faint">工作区</span>
-          <button
-            type="button"
-            className="flex size-6 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-ink"
-            title="新建工作区"
-            onClick={() => setPickerOpen(true)}
-          >
-            <Plus className="size-3.5" />
-          </button>
+          <div className="flex items-center">
+            <ListViewMenu
+              groupMode={listView.group}
+              sortMode={listView.sort}
+              archiveFilter={archiveFilter}
+              onGroup={chooseGroup}
+              onSort={chooseSort}
+              onArchive={(filter) => void setSessionArchiveFilter(filter)}
+            />
+            <button
+              type="button"
+              className="flex size-6 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-ink"
+              title="新建工作区"
+              onClick={() => setPickerOpen(true)}
+            >
+              <FolderPlus className="size-3.5" />
+            </button>
+          </div>
         </div>
 
-        {workspaces.map((item) => (
-          <WorkspaceRow
-            key={item.id}
-            workspace={item}
-            sessions={groups.byId.get(item.id) ?? []}
-            active={sameWorkspace(item.path, workspace)}
-            collapsed={collapsed.has(item.id)}
-            onToggle={() => toggleCollapsed(item.id)}
-            onExpand={() => expandGroup(item.id)}
+        {listView.group === "flat" ? (
+          groups.ordered.length ? (
+            <ul>
+              {groups.ordered.map((session) => (
+                <SessionRow
+                  key={session.id}
+                  session={session}
+                  manualSort={listView.sort === "manual"}
+                  onReorder={reorderSession}
+                />
+              ))}
+            </ul>
+          ) : null
+        ) : listView.group === "tree" ? (
+          <TreeBranch
+            nodes={treeNodes}
+            sessionsById={groups.byId}
+            workspacePath={workspace}
+            collapsed={collapsed}
+            onToggle={toggleCollapsed}
+            onExpand={expandGroup}
+            manualSort={listView.sort === "manual"}
+            onReorder={reorderSession}
           />
-        ))}
+        ) : (
+          visibleWorkspaces.map((item) => (
+            <WorkspaceRow
+              key={item.id}
+              workspace={item}
+              sessions={groups.byId.get(item.id) ?? []}
+              active={sameWorkspace(item.path, workspace)}
+              collapsed={collapsed.has(item.id)}
+              onToggle={() => toggleCollapsed(item.id)}
+              onExpand={() => expandGroup(item.id)}
+              manualSort={listView.sort === "manual"}
+              onReorder={reorderSession}
+            />
+          ))
+        )}
 
-        {groups.unbound.length ? (
+        {listView.group !== "flat" && groups.unbound.length ? (
           <div className="mb-1">
             <button
               type="button"
@@ -751,14 +1193,27 @@ export function Sidebar({
             {ungroupedOpen ? (
               <ul className="ml-3 border-l border-line pl-2">
                 {groups.unbound.map((session) => (
-                  <SessionRow key={session.id} session={session} />
+                  <SessionRow
+                    key={session.id}
+                    session={session}
+                    manualSort={listView.sort === "manual"}
+                    onReorder={reorderSession}
+                  />
                 ))}
               </ul>
             ) : null}
           </div>
         ) : null}
 
-        {workspaces.length === 0 && sessions.length === 0 ? (
+        {listView.group === "flat" && groups.ordered.length === 0 ? (
+          <p className="px-2 pt-2 text-xs leading-5 text-muted">
+            {archiveFilter === "only" ? "没有已归档的会话。" : "还没有会话。"}
+          </p>
+        ) : null}
+        {listView.group !== "flat" && archiveFilter === "only" && sessions.length === 0 ? (
+          <p className="px-2 pt-2 text-xs leading-5 text-muted">没有已归档的会话。</p>
+        ) : null}
+        {listView.group !== "flat" && archiveFilter !== "only" && workspaces.length === 0 && sessions.length === 0 ? (
           <p className="px-2 pt-2 text-xs leading-5 text-muted">点右上角 + 添加一个工作区。</p>
         ) : null}
       </div>

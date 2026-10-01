@@ -213,7 +213,22 @@ class TestProductMappingApi:
                 json={"archived": True},
             )
             assert archived.status_code == 200
+            assert archived.json()["archived"] is True
             assert client.get("/app/sessions").json()["sessions"] == []
+            listed_all = client.get("/app/sessions?archived=all").json()["sessions"]
+            assert [item["id"] for item in listed_all] == [row["id"]]
+            assert listed_all[0]["archived"] is True
+            only = client.get("/app/sessions?archived=only").json()["sessions"]
+            assert [item["id"] for item in only] == [row["id"]]
+            restored = client.patch(
+                f"/app/sessions/{row['id']}",
+                json={"archived": False},
+            )
+            assert restored.status_code == 200
+            assert restored.json()["archived"] is False
+            assert [item["id"] for item in client.get("/app/sessions").json()["sessions"]] == [row["id"]]
+            assert client.get("/app/sessions?archived=only").json()["sessions"] == []
+            assert client.get("/app/sessions?archived=nope").status_code == 400
 
     def test_fork_session_adds_copy(self, tmp_path: Path):
         with _client(tmp_path) as client:

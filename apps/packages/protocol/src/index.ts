@@ -50,6 +50,8 @@ export type SessionListItem = {
   model: string;
   permission_mode?: PermissionMode;
   turn_count: number;
+  /** 已归档的会话默认不出现在列表里。 */
+  archived?: boolean;
   created_at: number;
   updated_at: number;
 };

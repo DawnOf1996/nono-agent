@@ -236,8 +236,15 @@ export async function deleteWorkspace(workspaceId: string): Promise<void> {
   await readJson(await fetch(`/app/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE" }));
 }
 
-export async function fetchSessionList(workspaceId?: string): Promise<SessionListItem[]> {
-  const query = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+export async function fetchSessionList(options?: {
+  workspaceId?: string;
+  archived?: "hide" | "all" | "only";
+}): Promise<SessionListItem[]> {
+  const params = new URLSearchParams();
+  if (options?.workspaceId) params.set("workspace_id", options.workspaceId);
+  if (options?.archived && options.archived !== "hide") params.set("archived", options.archived);
+  const queryString = params.toString();
+  const query = queryString ? `?${queryString}` : "";
   const data = await readJson<{ sessions: SessionListItem[] }>(await fetch(`/app/sessions${query}`));
   return data.sessions;
 }

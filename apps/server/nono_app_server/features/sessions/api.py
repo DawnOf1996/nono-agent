@@ -69,10 +69,13 @@ class SideSessionBody(BaseModel):
 async def list_app_sessions(
     workspace_id: str | None = Query(default=None),
     side_of: str | None = Query(default=None),
+    archived: str = Query(default="hide"),
     store: AppStore = Depends(get_store),
     manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
-    rows = store.list_sessions(workspace_id, side_of=side_of)
+    if archived not in {"hide", "all", "only"}:
+        raise HTTPException(status_code=400, detail="archived must be hide, all, or only")
+    rows = store.list_sessions(workspace_id, side_of=side_of, archived=archived)
     return {"sessions": [_enrich(row, manager) for row in rows]}
 
 

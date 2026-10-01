@@ -18,6 +18,11 @@ import type {
 import { create } from "zustand";
 
 import { usePanelStore } from "@/features/files/panel-store";
+import {
+  loadArchiveFilter,
+  saveArchiveFilter,
+  type ArchiveFilter,
+} from "@/features/shell/sidebar-list";
 
 import {
   abortSession,
@@ -154,6 +159,8 @@ type ChatState = {
   mcpServers: McpServerInfo[];
   mcpConfigPath: string | null;
   sessions: SessionListItem[];
+  /** 侧边栏要不要把已归档会话拉进列表。 */
+  sessionArchiveFilter: ArchiveFilter;
   sessionId: string | null;
   sessionTitles: Record<string, string>;
   events: SessionEvent[];
@@ -210,7 +217,9 @@ type ChatState = {
   renameSession: (sessionId: string, title: string) => Promise<void>;
   forkSession: (sessionId: string, seq?: number) => Promise<void>;
   forkFromMessage: (seq: number) => Promise<void>;
+  setSessionArchiveFilter: (filter: ArchiveFilter) => Promise<void>;
   archiveSession: (sessionId: string) => Promise<void>;
+  unarchiveSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   send: () => Promise<void>;
   runCommand: (line: string) => Promise<void>;
@@ -389,7 +398,7 @@ async function persistDraftSession(
       const stillOnDraft = state.sessionId === null && state.draftRunKey === draftKey;
       return {
         runs,
-        sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
+        sessions: placeSession(state, session),
         sessionTitles: { ...state.sessionTitles, [key]: session.title || "新会话" },
         workspaces: mergeWorkspaceList(state.workspaces, [workspace]),
         ...(stillOnDraft
@@ -410,6 +419,20 @@ async function persistDraftSession(
     persistDraftTask = null;
   });
   return persistDraftTask;
+}
+
+function sessionListed(filter: ArchiveFilter, archived: boolean): boolean {
+  if (filter === "all") return true;
+  if (filter === "only") return archived;
+  return !archived;
+}
+
+function placeSession(state: ChatState, session: SessionListItem): SessionListItem[] {
+  const rest = state.sessions.filter((item) => item.id !== session.id);
+  if (!sessionListed(state.sessionArchiveFilter, Boolean(session.archived))) return rest;
+  const exists = state.sessions.some((item) => item.id === session.id);
+  if (!exists) return [session, ...rest];
+  return state.sessions.map((item) => (item.id === session.id ? { ...item, ...session } : item));
 }
 
 function omitSession(state: ChatState, productId: string): Partial<ChatState> {
@@ -437,6 +460,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   mcpServers: [],
   mcpConfigPath: null,
   sessions: [],
+  sessionArchiveFilter: loadArchiveFilter(),
   sessionId: null,
   sessionTitles: {},
   events: [],
@@ -581,7 +605,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     let workspaces = get().workspaces.filter((item) => item.id !== target);
     let sessions = get().sessions;
     try {
-      [workspaces, sessions] = await Promise.all([fetchWorkspaces(), fetchSessionList()]);
+      [workspaces, sessions] = await Promise.all([
+        fetchWorkspaces(),
+        fetchSessionList({ archived: get().sessionArchiveFilter }),
+      ]);
     } catch {
       // sidecar 已删除工作区时，本地仍保留会话，稍后刷新
     }
@@ -655,12 +682,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setView: (view) => set({ view }),
 
   refresh: async () => {
+    const archiveFilter = get().sessionArchiveFilter;
     try {
       const [health, info, workspacesRaw, sessions, permissions, catalog, commands] = await Promise.all([
         fetchHealth(),
         fetchAppInfo().catch(() => null),
         fetchWorkspaces().catch(() => [] as Workspace[]),
-        fetchSessionList().catch(() => [] as SessionListItem[]),
+        fetchSessionList({ archived: archiveFilter }).catch(() => [] as SessionListItem[]),
         fetchPermissions().catch(() => []),
         fetchCatalog().catch(() => null),
         fetchCommands().catch(() => get().commands),
@@ -874,7 +902,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const forked = await forkAppSession(sessionId, seq);
       set((state) => ({
-        sessions: [forked, ...state.sessions.filter((item) => item.id !== forked.id)],
+        sessions: placeSession(state, forked),
         sessionTitles: {
           ...state.sessionTitles,
           [forked.engine_session_id]: forked.title || "新会话",
@@ -896,10 +924,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await get().forkSession(mapped.id, seq);
   },
 
+  setSessionArchiveFilter: async (filter) => {
+    const previous = get().sessionArchiveFilter;
+    if (previous === filter) return;
+    saveArchiveFilter(filter);
+    set({ sessionArchiveFilter: filter });
+    try {
+      const sessions = await fetchSessionList({ archived: filter });
+      set((state) => ({
+        sessions,
+        sessionTitles: titlesFromSessions(sessions, state.sessionTitles),
+      }));
+    } catch (error) {
+      saveArchiveFilter(previous);
+      set((state) => ({
+        sessionArchiveFilter: previous,
+        ...patchRun(state, activeKey(state), {
+          error: error instanceof Error ? error.message : "无法加载会话",
+        }),
+      }));
+    }
+  },
+
   archiveSession: async (sessionId) => {
     if (!sessionId.trim()) return;
-    await patchAppSession(sessionId, { archived: true });
-    set((state) => omitSession(state, sessionId));
+    const updated = await patchAppSession(sessionId, { archived: true });
+    if (get().sessionArchiveFilter === "hide") {
+      set((state) => omitSession(state, sessionId));
+      return;
+    }
+    set((state) => ({ sessions: placeSession(state, { ...updated, archived: true }) }));
+  },
+
+  unarchiveSession: async (sessionId) => {
+    if (!sessionId.trim()) return;
+    const updated = await patchAppSession(sessionId, { archived: false });
+    set((state) => ({ sessions: placeSession(state, { ...updated, archived: false }) }));
   },
 
   deleteSession: async (sessionId) => {

@@ -271,19 +271,25 @@ class AppStore:
         workspace_id: str | None = None,
         *,
         side_of: str | None = None,
+        archived: str = "hide",
     ) -> list[dict[str, Any]]:
+        if archived not in {"hide", "all", "only"}:
+            raise ValueError("archived must be hide, all, or only")
         params: list[str] = []
+        clauses: list[str] = []
         if side_of:
-            sql = _SESSION_SELECT + " WHERE s.archived = 0 AND s.side_of = ?"
+            clauses.append("s.side_of = ?")
             params.append(side_of)
         else:
-            sql = (
-                _SESSION_SELECT + " WHERE s.archived = 0 AND (s.side_of IS NULL OR s.side_of = '')"
-            )
+            clauses.append("(s.side_of IS NULL OR s.side_of = '')")
+        if archived == "hide":
+            clauses.append("s.archived = 0")
+        elif archived == "only":
+            clauses.append("s.archived = 1")
         if workspace_id:
-            sql += " AND s.workspace_id = ?"
+            clauses.append("s.workspace_id = ?")
             params.append(workspace_id)
-        sql += " ORDER BY s.updated_at DESC"
+        sql = _SESSION_SELECT + " WHERE " + " AND ".join(clauses) + " ORDER BY s.updated_at DESC"
         with self._tx() as conn:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._session_dict(row) for row in rows]
