@@ -280,6 +280,32 @@ textarea {
   height: auto;
 }
 
+/* 预览画布（图片、图表放大框）：按住拖动平移时不该顺手选中文本，SVG 里的 <text> 是可选中的。 */
+.pan-zoom {
+  cursor: grab;
+  touch-action: none;
+  overscroll-behavior: contain;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pan-zoom-target {
+  transform-origin: center;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 只在拖拽过程中提层：位移交给合成器，大图和节点多的 SVG 都不用每帧重新栅格化；
+   松手就撤掉，滚轮改缩放时浏览器仍会按新倍率重新采样。 */
+.pan-zoom[data-panning="true"] {
+  cursor: grabbing;
+}
+
+.pan-zoom[data-panning="true"] .pan-zoom-target {
+  will-change: transform;
+}
+
 .prose-md-muted {
   font-size: 13px;
   line-height: 1.6;

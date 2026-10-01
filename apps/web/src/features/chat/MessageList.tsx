@@ -166,6 +166,8 @@ export function MessageList() {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  /** 最近一次由代码自己写入的 scrollTop，用来把随之而来的 scroll 事件认出来。 */
+  const pinnedRef = useRef<number | null>(null);
   const sessionRef = useRef(sessionId);
   const heightRef = useRef(0);
   const countRef = useRef(0);
@@ -210,9 +212,28 @@ export function MessageList() {
     [],
   );
 
+  // 贴底要由代码自己写 scrollTop，浏览器会在下一帧补一个 scroll 事件回来；
+  // 记下写进去的位置，回声事件就不会被当成「用户往上翻」。
+  const pinBottom = useCallback((el: HTMLElement) => {
+    const max = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (Math.abs(el.scrollTop - max) <= 1) return;
+    pinnedRef.current = max;
+    el.scrollTop = max;
+  }, []);
+
   const onScroll = useCallback(() => {
     const el = scrollerRef.current;
     if (!el) return;
+    const pinned = pinnedRef.current;
+    if (pinned !== null) {
+      pinnedRef.current = null;
+      // 位置没动过 —— 这是代码自己那次贴底的回声。内容在这中间长高（SVG/图表落定）不能算用户翻页。
+      if (Math.abs(el.scrollTop - pinned) <= 1) {
+        heightRef.current = el.scrollHeight;
+        scheduleSync();
+        return;
+      }
+    }
     // 是否贴底必须立刻记下来，否则下一个分片会把用户往回拽。
     stickRef.current = isNearBottom(el);
     scheduleSync();
@@ -236,7 +257,7 @@ export function MessageList() {
     if (sessionChanged || countRef.current === 0) stickRef.current = true;
 
     if (stickRef.current) {
-      el.scrollTop = el.scrollHeight;
+      pinBottom(el);
     } else {
       const delta = el.scrollHeight - heightRef.current;
       if (delta > 0 && messages.length > countRef.current) el.scrollTop += delta;
@@ -245,7 +266,7 @@ export function MessageList() {
     heightRef.current = el.scrollHeight;
     countRef.current = messages.length;
     scheduleSync();
-  }, [messages, sessionId, scheduleSync]);
+  }, [messages, sessionId, scheduleSync, pinBottom]);
 
   // 图表和图片的高度要等绘制/解码之后才落定，消息列表本身不会因此重渲染。
   // 贴底时跟着内容尺寸把滚动补到真正的底部；往上翻阅时只更新高度基准，不把视口拽回去。
@@ -259,10 +280,7 @@ export function MessageList() {
       const el = scrollerRef.current;
       if (!el) return;
       adjusting = true;
-      if (stickRef.current) {
-        const max = Math.max(0, el.scrollHeight - el.clientHeight);
-        if (Math.abs(el.scrollTop - max) > 1) el.scrollTop = max;
-      }
+      if (stickRef.current) pinBottom(el);
       heightRef.current = el.scrollHeight;
       adjusting = false;
     };
@@ -286,7 +304,7 @@ export function MessageList() {
     if (!el) return;
     stickRef.current = true;
     setShowJump(false);
-    el.scrollTop = el.scrollHeight;
+    pinBottom(el);
   }
 
   if (messages.length === 0) {

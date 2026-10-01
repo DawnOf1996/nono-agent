@@ -19,13 +19,30 @@ export function svgBlockSource(children: ReactNode): string | null {
   return source;
 }
 
+const PREPARE_LIMIT = 32;
+/** 同一段源码只做一次 DOMParser + getBBox：重复打开或组件重挂载时直接取结果。 */
+const prepared = new Map<string, string>();
+
+function prepareOnce(markup: string, idPrefix: string): string {
+  const key = `${idPrefix}\u0000${markup}`;
+  const hit = prepared.get(key);
+  if (hit !== undefined) return hit;
+  const result = prepareChatSvg(markup, idPrefix);
+  if (prepared.size >= PREPARE_LIMIT) {
+    const oldest = prepared.keys().next();
+    if (!oldest.done) prepared.delete(oldest.value);
+  }
+  prepared.set(key, result);
+  return result;
+}
+
 export function SvgFigure({ markup }: { markup: string }) {
   const reactId = useId().replace(/:/g, "");
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
   useLayoutEffect(() => {
-    const next = prepareChatSvg(markup, `chat-svg-${reactId}-`);
+    const next = prepareOnce(markup, `chat-svg-${reactId}-`);
     setFailed(!next);
     setSvg(next || null);
   }, [markup, reactId]);

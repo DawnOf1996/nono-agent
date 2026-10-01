@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import { useMemo } from "react";
+import { memo, useMemo, type ComponentProps } from "react";
 import Markdown from "react-markdown";
 import type { Components } from "react-markdown";
 import rehypeRaw from "rehype-raw";
@@ -28,8 +28,23 @@ const schema = {
   },
 };
 
+type MarkdownProps = ComponentProps<typeof Markdown>;
+const remarkPlugins: MarkdownProps["remarkPlugins"] = [remarkGfm];
+const rehypePlugins: MarkdownProps["rehypePlugins"] = [rehypeRaw, [rehypeSanitize, schema]];
+
+/**
+ * components 按 root/path 缓存，不能每次渲染都新建。
+ * 新建的话 react-markdown 每次拿到的都是全新的组件类型，React 会卸载重建整棵 pre 子树，
+ * 代码块里的 mermaid/svg 跟着重画一遍；父组件因为切对话之类的原因重渲染一次，图就白画一次。
+ */
+const componentCache = new Map<string, Components>();
+
 function previewComponents(root: string, filePath: string): Components {
-  return {
+  const key = `${root}\u0000${filePath}`;
+  const hit = componentCache.get(key);
+  if (hit) return hit;
+  if (componentCache.size > 32) componentCache.clear();
+  const created: Components = {
     pre: ({ children }) => {
       const mermaid = mermaidBlockSource(children);
       if (mermaid !== null) return <MermaidDiagram code={mermaid} />;
@@ -59,22 +74,20 @@ function previewComponents(root: string, filePath: string): Components {
       </a>
     ),
   };
+  componentCache.set(key, created);
+  return created;
 }
 
-function MarkdownChunk({ root, path, text }: { root: string; path: string; text: string }) {
+const MarkdownChunk = memo(function MarkdownChunk({ root, path, text }: { root: string; path: string; text: string }) {
   if (!text.trim()) return null;
   return (
-    <Markdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeRaw, [rehypeSanitize, schema]]}
-      components={previewComponents(root, path)}
-    >
+    <Markdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={previewComponents(root, path)}>
       {text}
     </Markdown>
   );
-}
+});
 
-export function MarkdownBody({ root, path, content }: DocumentPreviewProps) {
+export const MarkdownBody = memo(function MarkdownBody({ root, path, content }: DocumentPreviewProps) {
   const segments = useMemo(() => (content.kind === "text" ? segmentReadmeHtml(content.text) : []), [content]);
   if (content.kind !== "text") return null;
   return (
@@ -102,4 +115,4 @@ export function MarkdownBody({ root, path, content }: DocumentPreviewProps) {
       </div>
     </div>
   );
-}
+});
