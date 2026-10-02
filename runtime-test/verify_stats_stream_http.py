@@ -3,8 +3,8 @@
 起一个真的 uvicorn，连上 ``/session/<id>/stats/stream``，然后在**另一条请求**
 里让引擎跑一次带工具调用的对话，逐帧打印客户端收到的内容。
 
-预期：每落一步事件就有一帧推过来，步数 0→1→2 往前走，最后一帧与
-``GET /session/<id>/stats`` 的一次性取值一致。
+预期：每落一步事件就有一帧推过来，步数 0→1→2 单调递增走完，最后一帧
+应当与 ``GET /session/<id>/stats`` 的一次性取值一致。
 """
 
 import asyncio
@@ -42,7 +42,7 @@ async def main() -> None:
         async with httpx.AsyncClient(base_url=base, timeout=30) as client:
             created = await client.post("/session/new", json={"cwd": str(tmp)})
             sid = created.json()["session_id"]
-            print(f"会话 {sid[:8]} 已创建，先取一次基线：")
+            print(f"会话 {sid[:8]} 已创建，先取一次基线快照：")
             baseline = (await client.get(f"/session/{sid}/stats")).json()
             print(f"  steps={baseline['steps']} tokens={baseline['usage']['total_tokens']}")
 
@@ -58,8 +58,8 @@ async def main() -> None:
             await asyncio.sleep(0.4)  # 等订阅建立
 
             print("\n开始对话，同时客户端在收推送：")
-            # 需要真 provider 才能走 /chat，这里改为在进程内直接驱动引擎：
-            # 手动 stage + flush 事件，等价于引擎跑完一步，HTTP 流照样收到回调。
+            # 走 /chat 需要真实的 provider，这里改为在进程内直接驱动引擎：
+            # 手动 stage + flush 事件，等价于引擎跑完一步，HTTP 侧照样收到回调。
             manager = app.state.engine_sessions
             engine = await manager.get_or_create(sid, model="dummy")
             # 直接喂事件：模拟引擎落盘 → flush → 统计变化 → fanout
