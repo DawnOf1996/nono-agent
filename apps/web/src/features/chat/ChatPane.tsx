@@ -2,6 +2,7 @@ import { PanelBottom, PanelRight } from "lucide-react";
 
 import { Composer } from "@/features/chat/Composer";
 import { MessageList } from "@/features/chat/MessageList";
+import { TodoDock } from "@/features/chat/TodoDock";
 import { Trajectory } from "@/features/chat/Trajectory";
 import { sessionTitle } from "@/lib/format";
 import { sameWorkspace, workspaceLabel } from "@/lib/workspace";
@@ -100,6 +101,7 @@ export function ChatPane({
         </div>
       </header>
       {view === "chat" ? <MessageList /> : <Trajectory />}
+      <TodoDock />
       <Composer />
     </section>
   );
