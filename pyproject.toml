@@ -17,6 +17,9 @@ dependencies = [
     "pyyaml>=6.0",
     "zstandard>=0.23",
     "mcp>=2.0,<3",
+    # 上下文占用的 token 估算。缺了会退回 len//4，对工具 JSON schema 低估 ~40%，
+    # 面板上的「上下文已用」会明显偏小。见 nono_agent/utils/tokens.py。
+    "tiktoken>=0.7",
 ]
 
 [project.optional-dependencies]

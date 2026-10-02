@@ -7,21 +7,44 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
-# 懒加载 tiktoken 以避免硬依赖
+logger = logging.getLogger(__name__)
+
+# 懒加载 tiktoken：编码器初始化要读 BPE 词表，别拖慢 import。
 _tiktoken_encoder: Any = None
+# 已经试过并失败了就不再重试。词表是**首次使用时才下载**的，
+# 离线/代理不通时会抛 requests 异常而不是 ImportError；没有这个标记的话，
+# count_tokens 每调一次就重发一次 HTTP，而它每轮对话要被调几百次。
+_tiktoken_unavailable = False
 
 
 def _get_encoder() -> Any:
-    """懒加载 tiktoken 编码器 —— 首次调用时初始化。"""
-    global _tiktoken_encoder
+    """懒加载 tiktoken 编码器 —— 首次调用时初始化；不可用时返回 None。
+
+    tiktoken 是声明的硬依赖，但它的 BPE 词表**不在包里**，首次 ``get_encoding``
+    要联网下载。桌面端经常离线或走公司代理，下载失败会抛 ``requests`` 的异常 ——
+    这里统一吞掉退回启发式估算，不能让它冒到 ``analyze_context_usage``
+    （每条 assistant 消息都会调）把整轮对话带崩。
+    """
+    global _tiktoken_encoder, _tiktoken_unavailable
+    if _tiktoken_unavailable:
+        return None
     if _tiktoken_encoder is None:
         try:
-            import tiktoken  # type: ignore[import-not-found]
+            import tiktoken
 
             _tiktoken_encoder = tiktoken.get_encoding("cl100k_base")
         except ImportError:
+            _tiktoken_unavailable = True
+            logger.warning("tiktoken 未安装，token 估算退回 ~4 字符/token 启发式")
+            return None
+        except Exception as exc:  # 词表下载失败等：网络、代理、磁盘只读
+            _tiktoken_unavailable = True
+            logger.warning(
+                "tiktoken 编码器不可用（%s），token 估算退回 ~4 字符/token 启发式", exc
+            )
             return None
     return _tiktoken_encoder
 

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER_ROOT = ROOT / "apps" / "server"
 ENTRY = SERVER_ROOT / "packaging" / "sidecar_entry.py"
+TIKTOKEN_HOOK = SERVER_ROOT / "packaging" / "tiktoken_runtime_hook.py"
 DIST = ROOT / "dist" / "desktop-sidecar"
 WORK = ROOT / "build" / "desktop-sidecar"
 SPEC = WORK / "nono-app-server.spec"
@@ -22,6 +25,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metada
 ROOT = Path(r"{root}")
 SERVER_ROOT = ROOT / "apps" / "server"
 ENTRY = str(SERVER_ROOT / "packaging" / "sidecar_entry.py")
+TIKTOKEN_HOOK = str(SERVER_ROOT / "packaging" / "tiktoken_runtime_hook.py")
 
 PACKAGES = {packages!r}
 METADATA = {metadata!r}
@@ -61,6 +65,11 @@ for src, dest in _WINPTY_FILES:
 if _WINPTY_FILES:
     hiddenimports.append("winpty")
 
+# tiktoken 的 BPE 词表：构建期预取、随包分发，运行期由 runtime hook 指向这里。
+# 目录可能为空（构建期断网），仍然要建出来 —— 空目录进包不影响启动。
+_TIKTOKEN_CACHE = r"{tiktoken_cache}"
+datas.append((_TIKTOKEN_CACHE, "tiktoken_cache"))
+
 # 去重并保持顺序
 hiddenimports = list(dict.fromkeys(item for item in hiddenimports if item))
 datas = list(dict.fromkeys(datas))
@@ -74,7 +83,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={{}},
-    runtime_hooks=[],
+    runtime_hooks=[TIKTOKEN_HOOK],
     excludes=[],
     noarchive=False,
 )
@@ -125,6 +134,9 @@ PACKAGES = (
     "certifi",
     "multipart",
     "jiter",
+    # token 估算走 tiktoken；regex 是它的快路径依赖。
+    "tiktoken",
+    "regex",
 )
 
 METADATA = (
@@ -138,7 +150,49 @@ METADATA = (
     "starlette",
     "uvicorn",
     "httpx",
+    "tiktoken",
 )
+
+# tiktoken 的编码名 → 词表在缓存里的文件名（sha1(blobpath)），见 tiktoken.load.read_file_cached。
+TIKTOKEN_ENCODINGS = {
+    "cl100k_base": "9b5ad71b2ce5302211f9c61530b329a4922fc6a4",
+}
+
+
+def _tiktoken_cache(target: Path) -> Path:
+    """把 cl100k_base 词表预取到 ``target``，供离线运行。
+
+    词表不在 wheel 里，只能在构建期联网下一份打进包里；运行期由
+    ``packaging/tiktoken_runtime_hook.py`` 把 TIKTOKEN_CACHE_DIR 指到这里。
+    构建期拿不到（断网）就跳过 —— 运行期会自动退回 len//4 启发式，
+    不会因此让打包失败。
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    name = TIKTOKEN_ENCODINGS["cl100k_base"]
+    cached = target / name
+    if cached.is_file() and cached.stat().st_size > 0:
+        return target
+    try:
+        import tiktoken
+
+        # 触发一次 get_encoding，tiktoken 会把词表写进它自己的缓存目录。
+        tiktoken.get_encoding("cl100k_base")
+    except Exception as exc:  # 断网 / 代理不通
+        print(f"  ! tiktoken 词表预取失败，打包后离线将退回估算：{exc}")
+        return target
+    for directory in (
+        os.environ.get("TIKTOKEN_CACHE_DIR"),
+        os.path.join(tempfile.gettempdir(), "data-gym-cache"),
+    ):
+        if not directory:
+            continue
+        source = Path(directory) / name
+        if source.is_file():
+            shutil.copyfile(source, cached)
+            print(f"  + tiktoken 词表已随包分发 ({cached.stat().st_size} bytes)")
+            return target
+    print("  ! 未找到 tiktoken 缓存文件，打包后离线将退回估算")
+    return target
 
 # 必须和 _winpty.pyd 落在同一目录，conpty.dll 只在自己旁边找 OpenConsole.exe。
 _WINPTY_BINARIES = (
@@ -176,18 +230,29 @@ def _require_winpty_layout(dist_root: Path) -> None:
         )
 
 
+def _report_tiktoken_cache(dist_root: Path) -> None:
+    """报告词表是否进了包 —— 缺了不致命（运行期会退回估算），但要让人知道。"""
+    vocab = list(dist_root.rglob(TIKTOKEN_ENCODINGS["cl100k_base"]))
+    if vocab:
+        print(f"  + tiktoken 词表随包分发: {vocab[0]}")
+    else:
+        print("  ! sidecar 里没有 tiktoken 词表：离线运行将退回 ~4 字符/token 估算")
+
+
 def main() -> None:
     if not ENTRY.is_file():
         raise SystemExit(f"missing sidecar entry: {ENTRY}")
 
     WORK.mkdir(parents=True, exist_ok=True)
     DIST.mkdir(parents=True, exist_ok=True)
+    tiktoken_cache = _tiktoken_cache(WORK / "tiktoken_cache")
     SPEC.write_text(
         SPEC_TEMPLATE.format(
             root=str(ROOT),
             packages=PACKAGES,
             metadata=METADATA,
             winpty_binaries=_winpty_binaries(),
+            tiktoken_cache=str(tiktoken_cache),
         ),
         encoding="utf-8",
     )
@@ -210,6 +275,7 @@ def main() -> None:
     if not exe.is_file():
         raise SystemExit(f"sidecar exe missing after build: {exe}")
     _require_winpty_layout(exe.parent)
+    _report_tiktoken_cache(exe.parent)
     print(f"sidecar ready: {exe}")
 
 

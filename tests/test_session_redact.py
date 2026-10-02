@@ -1,12 +1,14 @@
 """脱敏投影 —— 外发副本不带凭据，磁盘上的事件流保持逐字真实。"""
 
+import pytest
+
 from nono_agent.session import redact_event, redact_events, redact_text, redact_value
 from nono_agent.session.events import (
     EVENT_REQUEST_HEADER,
     EVENT_TOOL_RESULT,
     SessionEvent,
 )
-from nono_agent.session.redact import REDACTED
+from nono_agent.session.redact import _GUARD, REDACTED
 
 
 class TestRedactText:
@@ -46,6 +48,76 @@ class TestRedactText:
 
     def test_leaves_ordinary_text_untouched(self):
         text = "read 42 lines from src/main.py and ran the tests"
+        assert redact_text(text) == text
+
+
+class TestRedactGuard:
+    """``_GUARD`` 只是提前返回，必须严格覆盖所有模式的字面量。
+
+    漏掉任何一种字面量 = 那种凭据再也脱不干净，所以这里逐个形态钉死。
+    """
+
+    # (说明, 必须被脱敏的样本)
+    CREDENTIALS = [
+        ("openai 风格 key", "sk-abcdefghijklmnopqrstuvwxyz012345"),
+        ("github pat", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
+        ("github oauth", "gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
+        ("github user", "ghu_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
+        ("github server", "ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
+        ("github refresh", "ghr_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
+        ("fine-grained pat", "github_pat_" + "A" * 30),
+        ("aws access key", "AKIAIOSFODNN7EXAMPLE"),
+        ("aws session key", "ASIAIOSFODNN7EXAMPLE"),
+        ("slack", "xoxb-1234567890-abcdefghij"),
+        ("google", "AIza" + "B" * 35),
+        ("jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQ"),
+        ("bearer", "Authorization: Bearer abcdef1234567890abcdef"),
+        ("pem", "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"),
+    ]
+
+    ASSIGNMENTS = [
+        ("api_key", "api_key=abcdefghijklmnop"),
+        ("api-key", "api-key: abcdefghijklmnop"),
+        ("apikey", "apikey=abcdefghijklmnop"),
+        ("access_token", "access_token = 'abcdefghijklmnop'"),
+        ("refresh-token", "refresh-token: abcdefghijklmnop"),
+        ("secret_key", "secret_key=abcdefghijklmnop"),
+        ("client_secret", "client_secret=abcdefghijklmnop"),
+        ("password", 'password = "sup3rs3cretvalue"'),
+        ("passwd", "passwd=abcdefghijklmnop"),
+        ("secret", "secret = abcdefghijklmnop"),
+        ("token", "token: abcdefghijklmnop"),
+        ("authorization", "authorization: abcdefghijklmnop"),
+    ]
+
+    @pytest.mark.parametrize(
+        ("label", "sample"),
+        CREDENTIALS,
+        ids=[c[0] for c in CREDENTIALS],
+    )
+    def test_guard_never_skips_a_credential(self, label, sample):
+        assert _GUARD.search(sample), f"{label} 未被快速筛覆盖，会被提前返回跳过脱敏"
+        assert sample != redact_text(sample), f"{label} 没有被脱敏"
+
+    @pytest.mark.parametrize(
+        ("label", "sample"),
+        ASSIGNMENTS,
+        ids=[a[0] for a in ASSIGNMENTS],
+    )
+    def test_guard_never_skips_an_assignment(self, label, sample):
+        assert _GUARD.search(sample), f"{label} 未被快速筛覆盖"
+        assert "abcdefghijklmnop" not in redact_text(sample)
+
+    def test_guard_is_case_insensitive_for_ig_nore_patterns(self):
+        """bearer / 赋值形态是 (?i)，大写形态也必须照样脱敏。"""
+        out = redact_text("BEARER abcdef1234567890abcdef")
+        assert "abcdef1234567890abcdef" not in out
+        out = redact_text("API_KEY=abcdefghijklmnop")
+        assert "abcdefghijklmnop" not in out
+
+    def test_ordinary_text_takes_the_fast_path_unchanged(self):
+        text = "一个普通人立刻懂的工作，被一条直观规则扭歪；工作对象持续反抗"
+        assert not _GUARD.search(text)
         assert redact_text(text) == text
 
 

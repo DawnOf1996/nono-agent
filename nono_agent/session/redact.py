@@ -50,6 +50,18 @@ _ASSIGNMENT = re.compile(
     r"(\"[^\"\n]{4,}\"|'[^'\n]{4,}'|[A-Za-z0-9._~+/=-]{8,})"
 )
 
+# 快速筛：上面每个模式都必须出现某个固定字面量，缺了就绝无命中。
+# 长会话里绝大多数字符串是普通文本，不先挡一道的话每个字符串都要跑满 10 遍正则
+# （一条会话五万多个分片，光这一步就要一秒多）。这里的字面量是所有模式所需
+# 字面量的超集：_GUARD 不匹配 ⇒ 任何模式都不可能匹配，所以只是提前返回，
+# 不会漏脱敏。匹配上就照常走原来的全量正则。
+_GUARD = re.compile(
+    r"-----BEGIN|eyJ|sk-|gh[opsur]_|github_pat_|AKIA|ASIA|xox|AIza|bearer"
+    r"|api[_-]?key|access[_-]?token|refresh[_-]?token"
+    r"|secret|password|passwd|token|authorization",
+    re.IGNORECASE,
+)
+
 # 键名本身就表明是凭据的字段，整值替换（不看内容形态）
 _SENSITIVE_KEYS = frozenset(
     {
@@ -77,6 +89,8 @@ def redact_text(text: str) -> str:
     Returns:
         脱敏后的文本；无命中时原样返回。
     """
+    if not _GUARD.search(text):
+        return text
     for kind, pattern in _PATTERNS:
         text = pattern.sub(REDACTED.format(kind=kind), text)
     return _ASSIGNMENT.sub(
