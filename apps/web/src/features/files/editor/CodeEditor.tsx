@@ -1,7 +1,7 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import {
   bracketMatching,
-  defaultHighlightStyle,
+  HighlightStyle,
   indentOnInput,
   syntaxHighlighting,
 } from "@codemirror/language";
@@ -15,6 +15,7 @@ import {
   keymap,
   lineNumbers,
 } from "@codemirror/view";
+import { tags } from "@lezer/highlight";
 import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
 
 import { languageForPath } from "@/features/files/preview/languages";
@@ -39,15 +40,31 @@ const surface = EditorView.theme({
     borderRight: "1px solid var(--color-line)",
   },
   ".cm-lineNumbers .cm-gutterElement": { padding: "0 10px 0 12px", fontSize: "11px" },
-  ".cm-activeLine": { backgroundColor: "#f6f7f9" },
-  ".cm-activeLineGutter": { backgroundColor: "#f6f7f9", color: "var(--color-ink)" },
+  ".cm-activeLine": { backgroundColor: "var(--color-sunken)" },
+  ".cm-activeLineGutter": { backgroundColor: "var(--color-sunken)", color: "var(--color-ink)" },
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-    backgroundColor: "#dbe4f5 !important",
+    backgroundColor: "var(--color-find-match) !important",
   },
-  ".cm-selectionMatch": { backgroundColor: "#eef2d6" },
+  ".cm-selectionMatch": { backgroundColor: "var(--color-selection-match)" },
   ".cm-panels": { backgroundColor: "var(--color-sidebar)", borderColor: "var(--color-line)" },
   ".cm-panels input, .cm-panels button": { fontSize: "12px" },
 });
+
+/**
+ * 不用 defaultHighlightStyle：它是一套写死给浅底的十六进制色，深色底上关键字、字符串
+ * 之类会糊进去。这里每条都写 var()，HighlightStyle 生成的是普通样式表，var() 能解析到 :root。
+ */
+const syntax = HighlightStyle.define([
+  { tag: [tags.keyword, tags.modifier, tags.controlKeyword, tags.moduleKeyword], color: "var(--color-syntax-keyword)" },
+  { tag: [tags.string, tags.special(tags.string), tags.regexp], color: "var(--color-syntax-string)" },
+  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: "var(--color-syntax-number)" },
+  { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: "var(--color-syntax-comment)", fontStyle: "italic" },
+  { tag: [tags.typeName, tags.className, tags.namespace, tags.tagName], color: "var(--color-syntax-type)" },
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: "var(--color-syntax-func)" },
+  { tag: [tags.propertyName, tags.attributeName], color: "var(--color-add)" },
+  { tag: [tags.operator, tags.punctuation, tags.bracket, tags.separator], color: "var(--color-muted)" },
+  { tag: [tags.invalid], color: "var(--color-danger)" },
+]);
 
 async function languageExtension(path: string): Promise<Extension | null> {
   const language = languageForPath(path);
@@ -154,7 +171,7 @@ export function CodeEditor({
         indentOnInput(),
         bracketMatching(),
         highlightSelectionMatches(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        syntaxHighlighting(syntax, { fallback: true }),
         EditorState.tabSize.of(2),
         EditorView.contentAttributes.of({ spellcheck: "false" }),
         surface,

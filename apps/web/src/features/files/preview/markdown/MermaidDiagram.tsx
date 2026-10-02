@@ -2,20 +2,26 @@ import { Children, isValidElement, useEffect, useState, type ReactNode } from "r
 
 import { FigureCard, FigurePlaceholder } from "@/components/FigureCard";
 import { sanitizeMermaidSvg } from "@/features/files/preview/markdown/svg";
+import { useResolvedTheme, type ResolvedTheme } from "@/lib/theme";
 
 let mermaidReady: Promise<typeof import("mermaid").default> | null = null;
+let configured: ResolvedTheme | null = null;
 
-function loadMermaid() {
-  mermaidReady ??= import("mermaid").then((module) => {
-    module.default.initialize({
+async function loadMermaid(theme: ResolvedTheme) {
+  mermaidReady ??= import("mermaid").then((module) => module.default);
+  const mermaid = await mermaidReady;
+  // mermaid 的主题是全局配置、不是每次调用的参数，所以切外观必须重新 initialize。
+  // 深色用它自带的 dark 主题（自带一套深底配色），浅色保持原来的 neutral。
+  if (configured !== theme) {
+    configured = theme;
+    mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
       htmlLabels: false,
-      theme: "neutral",
+      theme: theme === "dark" ? "dark" : "neutral",
     });
-    return module.default;
-  });
-  return mermaidReady;
+  }
+  return mermaid;
 }
 
 let renderSeq = 0;
@@ -34,14 +40,14 @@ const CACHE_LIMIT = 64;
 const renderedCache = new Map<string, string>();
 const inFlight = new Map<string, Promise<string>>();
 
-function cachedDiagram(source: string): string | null {
-  return renderedCache.get(source) ?? null;
+function cachedDiagram(cacheKey: string): string | null {
+  return renderedCache.get(cacheKey) ?? null;
 }
 
-function renderDiagram(source: string): Promise<string> {
-  const hit = inFlight.get(source);
+function renderDiagram(cacheKey: string, source: string, theme: ResolvedTheme): Promise<string> {
+  const hit = inFlight.get(cacheKey);
   if (hit) return hit;
-  const task = loadMermaid()
+  const task = loadMermaid(theme)
     .then(async (mermaid) => {
       renderSeq += 1;
       const rendered = await renderOffscreen(mermaid, `mermaid-${renderSeq}`, source);
@@ -51,12 +57,17 @@ function renderDiagram(source: string): Promise<string> {
         const oldest = renderedCache.keys().next();
         if (!oldest.done) renderedCache.delete(oldest.value);
       }
-      renderedCache.set(source, clean);
+      renderedCache.set(cacheKey, clean);
       return clean;
     })
-    .finally(() => inFlight.delete(source));
-  inFlight.set(source, task);
+    .finally(() => inFlight.delete(cacheKey));
+  inFlight.set(cacheKey, task);
   return task;
+}
+
+/** 缓存必须把主题算进 key：同一段源码在深浅两套下是两张不同的图，共用一份就会串色。 */
+function cacheKeyOf(source: string, theme: ResolvedTheme): string {
+  return `${theme}${source}`;
 }
 
 export function mermaidBlockSource(children: ReactNode): string | null {
@@ -69,21 +80,23 @@ export function mermaidBlockSource(children: ReactNode): string | null {
 
 export function MermaidDiagram({ code }: { code: string }) {
   const source = code.trim();
+  const theme = useResolvedTheme();
+  const cacheKey = cacheKeyOf(source, theme);
   // 首帧就命中缓存的话，连「正在渲染图表」都不会闪一下。
-  const [svg, setSvg] = useState<string | null>(() => cachedDiagram(source));
+  const [svg, setSvg] = useState<string | null>(() => cachedDiagram(cacheKey));
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!source) return;
     let live = true;
     setError(null);
-    const hit = cachedDiagram(source);
+    const hit = cachedDiagram(cacheKey);
     if (hit !== null) {
       setSvg(hit);
       return;
     }
     setSvg(null);
-    void renderDiagram(source)
+    void renderDiagram(cacheKey, source, theme)
       .then((clean) => {
         if (live) setSvg(clean);
       })
@@ -95,7 +108,7 @@ export function MermaidDiagram({ code }: { code: string }) {
     return () => {
       live = false;
     };
-  }, [source]);
+  }, [source, cacheKey, theme]);
 
   if (!source) return null;
   if (error) {

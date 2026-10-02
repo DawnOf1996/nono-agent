@@ -177,7 +177,7 @@ export function Composer() {
         {error ? <div className="mb-2 px-2 text-xs text-danger">{error}</div> : null}
         <div
           ref={composerRef}
-          className={`rounded-[22px] border bg-bg px-3 pt-3 pb-2 shadow-[0_8px_24px_rgba(15,17,21,0.06)] ${
+          className={`rounded-[22px] border bg-bg px-3 pt-3 pb-2 shadow-[0_8px_24px_var(--shadow-color-soft)] ${
             dragOver ? "border-accent" : "border-line"
           }`}
           onPaste={onPaste}
@@ -281,7 +281,7 @@ export function Composer() {
               {streaming ? (
                 <button
                   type="button"
-                  className="flex size-8 items-center justify-center rounded-full bg-accent text-white"
+                  className="flex size-8 items-center justify-center rounded-full bg-accent text-on-accent"
                   onClick={() => void abort()}
                 >
                   <Square className="size-3 fill-current" />
@@ -289,7 +289,7 @@ export function Composer() {
               ) : (
                 <button
                   type="button"
-                  className="flex size-8 items-center justify-center rounded-full bg-accent text-white disabled:opacity-30"
+                  className="flex size-8 items-center justify-center rounded-full bg-accent text-on-accent disabled:opacity-30"
                   disabled={!canSend}
                   onClick={() => void send()}
                 >

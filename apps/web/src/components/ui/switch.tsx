@@ -27,8 +27,10 @@ export function Switch({ checked, onCheckedChange, disabled, title }: SwitchProp
     >
       <span
         className={cn(
-          "absolute top-0.5 size-4 rounded-full bg-white transition-[left]",
-          checked ? "left-[18px]" : "left-0.5",
+          // 拨块要同时压得住两种底色：打开时压在 accent 上，没打开时压在 line-strong 上，
+          // 所以两种状态各取一个"和当前底色对调"的色，写死 bg-white 在深色下会整个消失。
+          "absolute top-0.5 size-4 rounded-full transition-[left,background-color]",
+          checked ? "left-[18px] bg-on-accent" : "left-0.5 bg-bg",
         )}
       />
     </button>

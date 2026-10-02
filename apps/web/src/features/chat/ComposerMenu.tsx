@@ -90,7 +90,7 @@ export function ComposerMenu({ open, onOpenChange, disabled, onAddImages }: Comp
           <Plus className="size-4" />
         </button>
         {plusOpen ? (
-          <div className="absolute bottom-[calc(100%+10px)] left-0 z-30 w-[198px] overflow-hidden rounded-2xl border border-line bg-bg py-1 shadow-[0_12px_32px_rgba(15,17,21,0.12)]">
+          <div className="absolute bottom-[calc(100%+10px)] left-0 z-30 w-[198px] overflow-hidden rounded-2xl border border-line bg-bg py-1 shadow-[0_12px_32px_var(--shadow-color)]">
             <button
               type="button"
               className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-ink hover:bg-hover"
@@ -123,7 +123,7 @@ export function ComposerMenu({ open, onOpenChange, disabled, onAddImages }: Comp
           ) : null}
         </button>
         {connectorsOpen ? (
-          <div className="absolute bottom-[calc(100%+10px)] left-0 z-30 w-[280px] overflow-hidden rounded-2xl border border-line bg-bg shadow-[0_12px_32px_rgba(15,17,21,0.12)]">
+          <div className="absolute bottom-[calc(100%+10px)] left-0 z-30 w-[280px] overflow-hidden rounded-2xl border border-line bg-bg shadow-[0_12px_32px_var(--shadow-color)]">
             <div className="border-b border-line px-2.5 py-2">
               <label className="flex h-8 items-center gap-2 rounded-lg bg-card px-2.5 text-muted">
                 <Search className="size-3.5 shrink-0" />

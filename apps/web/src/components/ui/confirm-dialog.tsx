@@ -46,7 +46,7 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby="confirm-dialog-title"
         aria-describedby="confirm-dialog-desc"
-        className="w-full max-w-sm rounded-2xl border border-line bg-bg p-5 shadow-[0_16px_48px_rgba(15,17,21,0.24)]"
+        className="w-full max-w-sm rounded-2xl border border-line bg-bg p-5 shadow-[0_16px_48px_var(--shadow-color-strong)]"
         onPointerDown={(event) => event.stopPropagation()}
       >
         <h2 id="confirm-dialog-title" className="text-[15px] font-medium">

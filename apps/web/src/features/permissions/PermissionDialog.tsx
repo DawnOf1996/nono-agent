@@ -5,7 +5,7 @@ import { useChatStore } from "@/store/chat";
 const SHELL =
   "pointer-events-none fixed inset-y-0 left-[260px] right-0 z-20 flex items-end justify-center p-6";
 const CARD =
-  "pointer-events-auto w-full max-w-lg rounded-2xl border border-line bg-bg p-5 shadow-[0_16px_48px_rgba(15,17,21,0.24)]";
+  "pointer-events-auto w-full max-w-lg rounded-2xl border border-line bg-bg p-5 shadow-[0_16px_48px_var(--shadow-color-strong)]";
 
 export function PermissionDialog() {
   const permissions = useChatStore((state) => state.permissions);

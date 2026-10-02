@@ -52,7 +52,7 @@ function MessageImages({ images, messageId }: { images: ChatImage[]; messageId: 
           <button
             key={`${messageId}-img-${index}`}
             type="button"
-            className="block shrink-0 cursor-zoom-in overflow-hidden rounded-2xl border border-line bg-bg p-1.5 shadow-[0_8px_24px_rgba(15,17,21,0.06)]"
+            className="block shrink-0 cursor-zoom-in overflow-hidden rounded-2xl border border-line bg-bg p-1.5 shadow-[0_8px_24px_var(--shadow-color-soft)]"
             title="查看大图"
             onClick={() => setPreview(image.src)}
           >
@@ -397,7 +397,7 @@ export function MessageList() {
       {showJump ? (
         <button
           type="button"
-          className="absolute bottom-4 left-1/2 z-10 flex size-9 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-bg text-ink shadow-[0_8px_24px_rgba(15,17,21,0.12)] hover:bg-hover"
+          className="absolute bottom-4 left-1/2 z-10 flex size-9 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-bg text-ink shadow-[0_8px_24px_var(--shadow-color)] hover:bg-hover"
           title="回到底部"
           onClick={jumpToBottom}
         >

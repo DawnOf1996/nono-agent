@@ -26,12 +26,8 @@ export function ProviderList({
 }: ProviderListProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div>
-        <h3 className="text-[15px] font-medium">模型</h3>
-        <p className="mt-1 text-[13px] text-muted">输入各提供方的 API 密钥即可使用其模型。</p>
-      </div>
-
-      <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
+      {/* 标题由设置面板顶栏统一负责，这里不重复画。 */}
+      <div className="min-h-0 flex-1 space-y-2 overflow-auto pr-1">
         {providers.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-line px-4 py-8 text-center text-sm text-muted">
             还没有提供方。先添加一个，再选模型开始对话。
@@ -74,7 +70,7 @@ export function ProviderList({
                           className={cn(
                             "rounded-full border px-2.5 py-1 text-[11px] transition-colors",
                             selected
-                              ? "border-ink bg-ink text-white"
+                              ? "border-accent bg-accent text-on-accent"
                               : "border-line text-muted hover:border-line-strong hover:text-ink",
                           )}
                           onClick={() => onChooseDefault(provider.id, item.id)}
@@ -115,11 +111,7 @@ type PresetPickerProps = {
 export function PresetPicker({ existingIds, onPick, onCancel }: PresetPickerProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div>
-        <h3 className="text-[15px] font-medium">添加提供方</h3>
-        <p className="mt-1 text-[13px] text-muted">选择常用供应商，预填协议和 API 地址，再补密钥与模型。</p>
-      </div>
-      <div className="mt-4 grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-auto pr-1">
+      <div className="grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-auto pr-1">
         {PROVIDER_PRESETS.map((preset) => {
           const added = existingIds.includes(preset.id);
           return (

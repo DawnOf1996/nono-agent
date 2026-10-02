@@ -118,7 +118,7 @@ export function TurnRail({
         })}
         {hovered && hover ? (
           <div
-            className="pointer-events-none absolute right-7 w-56 -translate-y-1/2 rounded-xl border border-line bg-bg px-3 py-2.5 shadow-[0_12px_32px_rgba(15,17,21,0.12)]"
+            className="pointer-events-none absolute right-7 w-56 -translate-y-1/2 rounded-xl border border-line bg-bg px-3 py-2.5 shadow-[0_12px_32px_var(--shadow-color)]"
             style={{ top: Math.max(28, hover.top) }}
           >
             <div className="text-[12px] leading-5 font-medium text-ink">

@@ -38,8 +38,8 @@ export function SidebarCards() {
   const prefs = useSyncExternalStore(subscribeSidebarPrefs, getSidebarPrefs, getSidebarPrefs);
   const [editing, setEditing] = useState<"terminal" | "browser" | "files" | "html" | null>(null);
   return (
-    <div className="mt-5">
-      <h4 className="text-[13px] font-medium">侧边栏</h4>
+    <div>
+      <h4 className="text-[13px] font-medium text-muted">侧边栏</h4>
       <p className="mt-1 text-[12px] text-muted">每种标签可以单独关掉。功能设置会记在这台电脑上。</p>
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
         {CARDS.map((card) => (
@@ -191,7 +191,7 @@ function CardSettings({
             </label>
           </div>
         ) : null}
-        <button type="button" className="mt-4 h-8 rounded-lg bg-ink px-3 text-[13px] text-white" onClick={onClose}>
+        <button type="button" className="mt-4 h-8 rounded-lg bg-accent px-3 text-[13px] text-on-accent" onClick={onClose}>
           完成
         </button>
       </div>

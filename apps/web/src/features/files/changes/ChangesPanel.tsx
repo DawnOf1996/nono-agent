@@ -24,7 +24,7 @@ export function ChangesPanel({ root, visible }: { root: string; visible: boolean
               aria-pressed={lens === item.id}
               className={cn(
                 "h-6 rounded-md px-3 text-[12px]",
-                lens === item.id ? "bg-bg text-ink shadow-[0_1px_2px_rgba(15,17,21,0.08)]" : "text-muted hover:text-ink",
+                lens === item.id ? "bg-bg text-ink shadow-[0_1px_2px_var(--shadow-color-soft)]" : "text-muted hover:text-ink",
               )}
               onClick={() => setLens(item.id)}
             >

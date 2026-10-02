@@ -114,8 +114,8 @@ function OpRow({ op, selected }: { op: FileOp; selected: boolean }) {
         className={cn(
           "shrink-0 rounded px-1 text-[10px] leading-4",
           op.kind === "read" && "bg-card text-muted",
-          op.kind === "write" && "bg-[#e7f6ec] text-[#1d7a3a]",
-          op.kind === "edit" && "bg-[#e8eefc] text-[#2a4ea3]",
+          op.kind === "write" && "bg-add-soft text-add",
+          op.kind === "edit" && "bg-info-soft text-info",
         )}
       >
         {KIND_LABEL[op.kind]}
@@ -187,7 +187,7 @@ export function SessionLens() {
               aria-pressed={filter === item.id}
               className={cn(
                 "h-6 rounded-full px-2 text-[11px]",
-                filter === item.id ? "bg-ink text-white" : "bg-card text-muted hover:text-ink",
+                filter === item.id ? "bg-accent text-on-accent" : "bg-card text-muted hover:text-ink",
               )}
               onClick={() => setFilter(item.id)}
             >

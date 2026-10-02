@@ -298,9 +298,7 @@ export function ProviderEditor({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-auto pr-1">
         <div className="rounded-2xl border border-line bg-sidebar/60 p-5">
-          <h3 className="text-[15px] font-medium">{creating ? "自定义提供方" : "编辑提供方"}</h3>
-
-          <div className="mt-4">
+          <div>
             <FieldLabel htmlFor="provider-id">Provider ID</FieldLabel>
             <Input
               id="provider-id"

@@ -80,7 +80,7 @@ export function DiagramLightbox({
     >
       <div
         ref={stageRef}
-        className="pan-zoom flex h-[90vh] w-[92vw] items-center justify-center overflow-hidden rounded-xl bg-white p-4"
+        className="pan-zoom flex h-[90vh] w-[92vw] items-center justify-center overflow-hidden rounded-xl bg-bg p-4"
         title="按住拖动平移 · 滚轮缩放 · 双击适应窗口"
         onClick={(event) => {
           // 在画布内松手时 click 落在画布上，这里顺手把拖拽标记清掉，别留着吞掉下一次点背景。

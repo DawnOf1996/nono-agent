@@ -89,7 +89,7 @@ export function PermissionModeSelect() {
             </button>
             <button
               type="button"
-              className="rounded-md bg-danger px-2 py-1 text-[11px] text-white"
+              className="rounded-md bg-danger px-2 py-1 text-[11px] text-on-danger"
               onClick={() => void choose("bypass")}
             >
               开启

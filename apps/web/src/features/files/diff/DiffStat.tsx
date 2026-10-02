@@ -20,22 +20,22 @@ export function DiffStat({
   }
   return (
     <span className={cn("inline-flex shrink-0 gap-1.5 font-mono text-[11px] tabular-nums", className)}>
-      <span className="text-[#2f8a4c]">+{added}</span>
-      <span className="text-[#c4403f]">-{deleted}</span>
+      <span className="text-add">+{added}</span>
+      <span className="text-del">-{deleted}</span>
     </span>
   );
 }
 
 const STATUS_TONE: Record<string, string> = {
-  M: "text-[#b7791f]",
-  A: "text-[#2f8a4c]",
-  U: "text-[#2f8a4c]",
-  "?": "text-[#2f8a4c]",
-  D: "text-[#c4403f]",
-  R: "text-[#3366cc]",
-  C: "text-[#3366cc]",
-  T: "text-[#b7791f]",
-  "!": "text-[#c4403f]",
+  M: "text-modified",
+  A: "text-add",
+  U: "text-add",
+  "?": "text-add",
+  D: "text-del",
+  R: "text-rename",
+  C: "text-rename",
+  T: "text-modified",
+  "!": "text-del",
 };
 
 /** git 风格的单字母状态徽标。 */

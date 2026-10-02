@@ -508,13 +508,13 @@ export function FileTree({
       </div>
       {dropPath ? (
         <div className="pointer-events-none absolute inset-2 flex items-end justify-center rounded-xl border border-dashed border-ink/30 bg-bg/70 p-3">
-          <span className="rounded-full bg-ink px-3 py-1 text-[12px] text-white">
+          <span className="rounded-full bg-accent px-3 py-1 text-[12px] text-on-accent">
             上传到 {sameWorkspace(dropPath, root) ? workspaceLabel(root) : relativeTo(root, dropPath)}
           </span>
         </div>
       ) : null}
       {uploading ? (
-        <div className="absolute bottom-2 left-2 flex items-center gap-1.5 rounded-full bg-ink px-2.5 py-1 text-[11px] text-white">
+        <div className="absolute bottom-2 left-2 flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] text-on-accent">
           <Loader2 className="size-3 animate-spin" />
           正在上传
         </div>

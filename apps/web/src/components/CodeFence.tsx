@@ -32,7 +32,7 @@ export function CodeFence({ children }: { children: ReactNode }) {
   }, [copied]);
 
   return (
-    <div className="code-fence my-[0.85em] max-w-full overflow-hidden rounded-xl border border-line bg-[#f7f8fa]">
+    <div className="code-fence my-[0.85em] max-w-full overflow-hidden rounded-xl border border-line bg-code">
       <div className="flex items-center justify-between gap-3 px-3.5 pt-2.5 select-none">
         <span className="min-w-0 truncate text-[13px] text-muted">{language}</span>
         <button

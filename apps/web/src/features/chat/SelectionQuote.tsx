@@ -147,7 +147,7 @@ export function SelectionQuote({ containerRef }: { containerRef: RefObject<HTMLE
       ref={barRef}
       role="toolbar"
       aria-label="选中文字"
-      className="fixed z-40 flex items-center gap-0.5 rounded-lg border border-line bg-bg p-1 shadow-[0_8px_24px_rgba(15,17,21,0.12)]"
+      className="fixed z-40 flex items-center gap-0.5 rounded-lg border border-line bg-bg p-1 shadow-[0_8px_24px_var(--shadow-color)]"
       style={{
         top: anchor.top,
         left: anchor.left,

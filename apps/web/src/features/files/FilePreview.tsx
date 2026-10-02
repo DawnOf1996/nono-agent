@@ -262,7 +262,7 @@ export function FilePreview({
               <button
                 type="button"
                 disabled={!dirty || saveState === "saving"}
-                className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-accent px-2 text-[12px] text-white hover:bg-black disabled:opacity-40"
+                className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-accent px-2 text-[12px] text-on-accent hover:bg-accent-hover disabled:opacity-40"
                 title="保存（Ctrl+S）"
                 onClick={() => void save()}
               >
@@ -295,14 +295,14 @@ export function FilePreview({
         ) : null}
       </div>
       {saveState === "conflict" ? (
-        <div className="flex flex-wrap items-center gap-2 border-b border-[#f0dca8] bg-[#fdf6e3] px-3 py-1.5 text-[12px] text-[#7a5b12]">
+        <div className="flex flex-wrap items-center gap-2 border-b border-warn-line bg-warn-soft px-3 py-1.5 text-[12px] text-warn">
           <span className="min-w-0 flex-1">磁盘上的文件在你编辑期间被改过了。</span>
-          <button type="button" className="rounded-md px-2 py-0.5 hover:bg-[#f5e7bf]" onClick={reloadFromDisk}>
+          <button type="button" className="rounded-md px-2 py-0.5 hover:bg-warn-hover" onClick={reloadFromDisk}>
             载入磁盘版本
           </button>
           <button
             type="button"
-            className="rounded-md bg-[#7a5b12] px-2 py-0.5 text-white hover:bg-[#5f460d]"
+            className="rounded-md bg-warn px-2 py-0.5 text-on-warn hover:bg-warn-strong"
             onClick={() => void save(true)}
           >
             覆盖保存

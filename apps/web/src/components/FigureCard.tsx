@@ -13,14 +13,14 @@ const FILENAME = { mermaid: "mermaid.png", svg: "diagram.png" } as const;
 /** 图表还没画出来时先占住卡片外框。最终高度仍由内容决定，滚动由列表的尺寸监听补齐。 */
 export function FigurePlaceholder({ label }: { label: string }) {
   return (
-    <div className="relative my-3 overflow-hidden rounded-lg border border-line bg-white" aria-busy="true">
+    <div className="relative my-3 overflow-hidden rounded-lg border border-line bg-bg" aria-busy="true">
       <div className="flex min-h-40 items-center justify-center px-3 pt-11 pb-3 text-[12px] text-faint">{label}</div>
     </div>
   );
 }
 
 const actionClass =
-  "inline-flex h-7 cursor-pointer items-center gap-1 rounded-lg border border-line bg-white px-2 text-[12px] text-muted shadow-[0_4px_14px_rgba(15,17,21,0.06)] hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-ink/15 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40";
+  "inline-flex h-7 cursor-pointer items-center gap-1 rounded-lg border border-line bg-bg px-2 text-[12px] text-muted shadow-[0_4px_14px_var(--shadow-color-soft)] hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-ink/15 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40";
 
 /** Mermaid / SVG 图块：复制源码、把图加进当前对话，以及下载 PNG、查看代码。 */
 export function FigureCard({
@@ -69,7 +69,7 @@ export function FigureCard({
   }
 
   return (
-    <div className="relative my-3 overflow-hidden rounded-lg border border-line bg-white">
+    <div className="relative my-3 overflow-hidden rounded-lg border border-line bg-bg">
       <div className="absolute top-2 right-2 z-10 flex max-w-[calc(100%-1rem)] flex-wrap justify-end gap-1.5 select-none">
         <button
           type="button"
@@ -150,7 +150,7 @@ export function FigureCard({
 
       <div className="pt-11">
         {error ? (
-          <p className="mx-3 mb-2 rounded-md bg-[#fdf6e3] px-2.5 py-1.5 text-[12px] text-[#7a5b12]" title={detail}>
+          <p className="mx-3 mb-2 rounded-md bg-warn-soft px-2.5 py-1.5 text-[12px] text-warn" title={detail}>
             {error}
           </p>
         ) : null}

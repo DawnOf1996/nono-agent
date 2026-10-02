@@ -154,7 +154,7 @@ export function SideChatPane({
         />
         <button
           type="submit"
-          className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-white disabled:opacity-30"
+          className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent disabled:opacity-30"
           disabled={streaming || !input.trim()}
           aria-label="发送"
         >

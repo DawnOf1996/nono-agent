@@ -132,7 +132,7 @@ export function Dropdown({
               ref={panelRef}
               style={style}
               className={cn(
-                "overflow-auto rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_rgba(15,17,21,0.12)]",
+                "overflow-auto rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_var(--shadow-color)]",
                 panelClassName,
               )}
             >

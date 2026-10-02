@@ -1,9 +1,16 @@
 @import "tailwindcss";
 
 @theme {
+  /* 纯系统字体栈，不加载任何 Web 字体。Windows 上拉丁落到 Segoe UI，中文逐字回退到微软雅黑。 */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", "IBM Plex Mono", Consolas, monospace;
+  /* 等宽栈末尾的 PingFang SC / Microsoft YaHei 不能省：代码里的中文不在任何等宽字体里，
+     没有它们兜底就会一路落到通用 monospace，在 Windows 上掉回宋体（衬线、笔画粗重）。
+     通用 monospace 仍留在最后，只为覆盖 Linux 上没装上面任何一款的情况。 */
+  --font-mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", "IBM Plex Mono", Consolas,
+    Menlo, "PingFang SC", "Microsoft YaHei", monospace;
+
+  /* ---- 外观：这里是浅色的一套，深色的一套在下面的 :root[data-theme="dark"] ---- */
   --color-bg: #ffffff;
   --color-sidebar: #f6f7f9;
   --color-ink: #0f1115;
@@ -18,6 +25,140 @@
   --color-accent: #111827;
   /* 拖拽落点线：与中性墨色区分开，拖动时一眼能看见插在哪。 */
   --color-drag: #4176e6;
+
+  /* accent 在深色下会翻成浅色，所以"压在实心块上的文字"必须另有一个 token，
+     不能写死 text-white —— 否则深色下是白底白字。 */
+  --color-on-accent: #ffffff;
+  --color-accent-hover: #000000;
+  --color-on-danger: #ffffff;
+
+  /* 代码区。行内代码比整块代码再浅一点，浅色下靠底色差拉开层次。 */
+  --color-code: #f6f7f9;
+  --color-code-inline: #f1f2f5;
+
+  /* 语义色。diff 的增删、状态标签、提示条全走这里，深浅两套各自调过对比度。 */
+  --color-add: #2f8a4c;
+  --color-add-soft: #e9f7ee;
+  /* 行号槽那一格：整行底色太淡，压不住数字，要比 -soft 再重一档。 */
+  --color-add-deep: #d5efdd;
+  --color-add-deep-ink: #3f7d52;
+  --color-del: #c4403f;
+  --color-del-soft: #fdeeee;
+  --color-del-deep: #f9dcdc;
+  --color-del-deep-ink: #a2474a;
+  --color-warn: #7a5b12;
+  --color-warn-soft: #fdf6e3;
+  --color-warn-line: #f0dca8;
+  --color-warn-hover: #f5e7bf;
+  --color-warn-strong: #5f460d;
+  --color-on-warn: #ffffff;
+  --color-info: #2a4ea3;
+  --color-info-soft: #e8eefc;
+  --color-modified: #b7791f;
+  --color-rename: #3366cc;
+  --color-ok: #22c55e;
+
+  /* 编辑器 / diff 里那些"底色提示"：行高亮、斑马纹、查找命中、行内改动。 */
+  --color-sunken: #f6f7f9;
+  --color-zebra: #eef0f4;
+  --color-find-match: #dbe4f5;
+  --color-selection-match: #eef2d6;
+  --color-inline-change: #b7d4ff;
+  --color-diff-head: #f3f6fb;
+  --color-diff-head-line: #e3e8f2;
+  --color-diff-head-ink: #5b6b8c;
+
+  /* CodeMirror 的语法色。defaultHighlightStyle 是一套写死给浅底的颜色，深色下关键字和
+     字符串会糊进背景里，所以自己定义一份，颜色全走 var() 跟着主题切。 */
+  --color-syntax-keyword: #cf222e;
+  --color-syntax-string: #0a3069;
+  --color-syntax-number: #0550ae;
+  --color-syntax-comment: #6e7781;
+  --color-syntax-type: #953800;
+  --color-syntax-func: #8250df;
+}
+
+/* 阴影颜色也随主题走：深色底上再叠一层近黑阴影等于没叠，弹窗/浮层会糊在背景里分不出来。
+   会话正文字号写在本机 localStorage：index.html 里的首屏脚本先把它读出来写进
+   --content-font-size（避免首屏先按默认值渲染再跳一下），React 起来后由
+   lib/content-font-size.ts 继续维护同一个变量。
+   默认 14px：中文在这个尺寸下笔画最匀，15px 起微软雅黑就明显发粗、显大。 */
+:root {
+  --shadow-color-soft: rgb(15 17 21 / 0.06);
+  --shadow-color: rgb(15 17 21 / 0.12);
+  --shadow-color-strong: rgb(15 17 21 / 0.24);
+  --term-selection: rgb(17 24 39 / 0.16);
+  --content-font-size: 14px;
+  color-scheme: light;
+}
+
+/* 深色一套。冷灰基调，贴着浅色那套的色温走，不做成纯黑 —— 纯黑和纯白对比过强，长时间读代码刺眼。
+   用 :root[data-theme=...] 而不是 [data-theme=...]：选择器权重比 Tailwind 生成的 :root 高一档，
+   不依赖"谁写在后面"这种顺序去赢。 */
+:root[data-theme="dark"] {
+  --color-bg: #16181d;
+  --color-sidebar: #1a1d23;
+  --color-ink: #e6e8ec;
+  --color-muted: #9aa2b1;
+  --color-faint: #6b7383;
+  --color-line: #262a32;
+  --color-line-strong: #363c48;
+  --color-hover: #22262e;
+  --color-active: #2b303a;
+  --color-card: #1f232b;
+  --color-danger: #f0736c;
+  --color-accent: #e6e8ec;
+  --color-drag: #6f9bff;
+
+  --color-on-accent: #16181d;
+  --color-accent-hover: #c9ced8;
+  --color-on-danger: #2a1214;
+
+  --color-code: #1c1f26;
+  --color-code-inline: #24272f;
+
+  /* 深色下饱和度要压、亮度要抬：同样一个绿，直接搬 #2f8a4c 上去会糊成一团分不出笔画。 */
+  --color-add: #5fbf7f;
+  --color-add-soft: #16261c;
+  --color-add-deep: #1d3326;
+  --color-add-deep-ink: #8fd3a6;
+  --color-del: #f08a88;
+  --color-del-soft: #2a1719;
+  --color-del-deep: #3a1e20;
+  --color-del-deep-ink: #f5a9a7;
+  --color-warn: #e0bd77;
+  --color-warn-soft: #2a2313;
+  --color-warn-line: #4a3d1c;
+  --color-warn-hover: #3a3018;
+  --color-warn-strong: #b3924c;
+  --color-on-warn: #2a2313;
+  --color-info: #8fb0ff;
+  --color-info-soft: #18213a;
+  --color-modified: #d9a441;
+  --color-rename: #7aa7ff;
+  --color-ok: #4ade80;
+
+  --color-sunken: #1a1d23;
+  --color-zebra: #1d212a;
+  --color-find-match: #3a4a2a;
+  --color-selection-match: #3d4526;
+  --color-inline-change: #2a3f63;
+  --color-diff-head: #1a1f28;
+  --color-diff-head-line: #2b3140;
+  --color-diff-head-ink: #93a2bd;
+
+  --color-syntax-keyword: #ff7b72;
+  --color-syntax-string: #a5d6ff;
+  --color-syntax-number: #79c0ff;
+  --color-syntax-comment: #8b949e;
+  --color-syntax-type: #ffa657;
+  --color-syntax-func: #d2a8ff;
+
+  --shadow-color-soft: rgb(0 0 0 / 0.4);
+  --shadow-color: rgb(0 0 0 / 0.55);
+  --shadow-color-strong: rgb(0 0 0 / 0.7);
+  --term-selection: rgb(154 162 177 / 0.3);
+  color-scheme: dark;
 }
 
 html,
@@ -84,13 +225,19 @@ textarea {
   font-family: inherit;
 }
 
+/* 侧边栏里能点的东西一律"伸手"：光标变小手是最便宜的可点击反馈。
+   会话/工作区那几行可拖拽，光标要留给 grab 抓手，所以把它们排除在外。 */
+.sidebar button:not(:disabled):not([draggable="true"]) {
+  cursor: pointer;
+}
+
 ::selection {
-  background: color-mix(in srgb, #111827 16%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
 }
 
 .prose-md {
-  font-size: 15px;
-  line-height: 1.75;
+  font-size: var(--content-font-size, 14px);
+  line-height: 1.72;
   color: var(--color-ink);
   overflow-wrap: anywhere;
 }
@@ -183,7 +330,7 @@ textarea {
 .prose-md code {
   font-family: var(--font-mono);
   font-size: 0.92em;
-  background: #f1f2f5;
+  background: var(--color-code-inline);
   padding: 0.1em 0.35em;
   border-radius: 4px;
 }
@@ -192,7 +339,7 @@ textarea {
   margin: 0.75em 0;
   overflow: auto;
   border-radius: 10px;
-  background: #f4f5f7;
+  background: var(--color-code);
   padding: 0.85em 1em;
 }
 
@@ -212,8 +359,9 @@ textarea {
   padding: 10px 14px 14px;
 }
 
+/* 代码块固定 13px，不随会话字号缩放：正文放大到 22px 时，一块 22px 的代码会把版面撑散。 */
 .prose-md .code-fence pre code {
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.65;
 }
 
@@ -237,7 +385,9 @@ textarea {
   font-weight: 600;
 }
 
+/* 文件预览是"读文档"，不是"看对话"，固定 14px：跟着会话字号走，README 会跟着忽大忽小。 */
 .file-preview .prose-md {
+  font-size: 14px;
   overflow-wrap: break-word;
 }
 
@@ -256,6 +406,87 @@ textarea {
 .file-preview .prose-md summary {
   cursor: pointer;
   font-weight: 600;
+}
+
+/* diff 里左右两半对不齐的空白格：斜纹条提示"这里没有对应行"，
+   底色跟主题走，所以走 class 而不是 Tailwind 的任意值（那里面塞不下两个 var）。 */
+/* 字号滑块。原生 range 控件在深浅两套下都太糙：轨道是系统灰、拇指是个方角小块。
+   这里把轨道压细、已走过的部分填成墨色、拇指做成空心圆点。
+   --pct 由组件按当前值算好写在行内 —— 原生 range 没有"只给已选段上色"的接口。 */
+.font-size-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.font-size-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--color-accent) 0 var(--pct, 33%),
+    var(--color-line-strong) var(--pct, 33%) 100%
+  );
+}
+
+.font-size-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5.5px;
+  border-radius: 999px;
+  background: var(--color-bg);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 1px 3px var(--shadow-color);
+}
+
+/* Firefox 没有 :-webkit-slider-progress 之外的"已选段"伪元素，:moz-range-progress 正好对应。 */
+.font-size-slider::-moz-range-track {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-line-strong);
+}
+
+.font-size-slider::-moz-range-progress {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
+.font-size-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--color-bg);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 1px 3px var(--shadow-color);
+}
+
+.font-size-slider:focus-visible {
+  outline: none;
+}
+
+.font-size-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.font-size-slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.diff-zebra {
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--color-sunken),
+    var(--color-sunken) 4px,
+    var(--color-zebra) 4px,
+    var(--color-zebra) 8px
+  );
 }
 
 .terminal-host .xterm {
@@ -308,8 +539,8 @@ textarea {
   will-change: transform;
 }
 
-.prose-md-muted {
-  font-size: 13px;
+/* 次级行（摘要、引用、元信息）永远比正文小一档，宽度一变层级就还在。 */.prose-md-muted {
+  font-size: calc(var(--content-font-size, 14px) - 1px);
   line-height: 1.6;
   color: var(--color-muted);
 }

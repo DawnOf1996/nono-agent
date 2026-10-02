@@ -5,6 +5,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/logo.png" />
     <title>NoNo</title>
+    <script>
+      // 首屏两件事：定外观、定会话字号。都得在 React 挂载前做完 ——
+      // 深色模式晚一拍就是先闪一屏白纸，字号晚一拍就是正文先大后小。
+      // 常量跟 src/lib/theme.ts、src/lib/content-font-size.ts 是同一套，改一处要改两处。
+      (function () {
+        var root = document.documentElement;
+        try {
+          var saved = localStorage.getItem("nono.theme");
+          var mode = saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
+          var dark = mode === "dark" || (mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          root.dataset.theme = dark ? "dark" : "light";
+          root.style.colorScheme = dark ? "dark" : "light";
+        } catch (e) {
+          /* localStorage 不可用：跟随系统，失败就浅色 */
+          root.dataset.theme = "light";
+          root.style.colorScheme = "light";
+        }
+        try {
+          var raw = localStorage.getItem("nono.content.fontSize");
+          var size = raw === null ? 14 : Math.round(Number(raw));
+          if (!isFinite(size)) size = 14;
+          root.style.setProperty("--content-font-size", Math.min(22, Math.max(10, size)) + "px");
+        } catch (e) {
+          /* 用 CSS 里的默认 14px */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

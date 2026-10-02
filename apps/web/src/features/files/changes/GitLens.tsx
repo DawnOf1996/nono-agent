@@ -507,7 +507,7 @@ export function GitLens({ root, visible, onShowSession }: { root: string; visibl
           <button
             type="button"
             disabled={busy || !canCommit || !message.trim()}
-            className="mt-1.5 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg bg-accent text-[12.5px] font-medium text-white hover:bg-black disabled:opacity-40"
+            className="mt-1.5 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg bg-accent text-[12.5px] font-medium text-on-accent hover:bg-accent-hover disabled:opacity-40"
             onClick={commit}
           >
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}

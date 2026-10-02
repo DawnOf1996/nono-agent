@@ -13,6 +13,7 @@ import {
   type InlineRange,
 } from "@/features/files/diff/rows";
 import { highlightCode } from "@/features/files/preview/highlight";
+import { useResolvedTheme, type ResolvedTheme } from "@/lib/theme";
 import { languageForPath } from "@/features/files/preview/languages";
 import { cn } from "@/lib/utils";
 
@@ -22,28 +23,33 @@ type SideTokens = Map<number, ThemedToken[]>;
 type HunkTokens = { old: SideTokens; new: SideTokens };
 
 const ROW_TONE = {
-  add: "bg-[#e9f7ee]",
-  del: "bg-[#fdeeee]",
+  add: "bg-add-soft",
+  del: "bg-del-soft",
   context: "",
 } as const;
 
 const GUTTER_TONE = {
-  add: "bg-[#d5efdd] text-[#3f7d52]",
-  del: "bg-[#f9dcdc] text-[#a2474a]",
+  add: "bg-add-deep text-add-deep-ink",
+  del: "bg-del-deep text-del-deep-ink",
   context: "text-faint",
 } as const;
 
 /** 整行仍是增绿、删红；配对后真正改掉的那一段用蓝色。 */
-const INLINE_CHANGE = "bg-[#b7d4ff]";
+const INLINE_CHANGE = "bg-[color-mix(in_srgb,var(--color-inline-change)_85%,var(--color-ink))]";
 
-async function highlightSide(rows: readonly DiffRow[], side: "old" | "new", language: string): Promise<SideTokens> {
+async function highlightSide(
+  rows: readonly DiffRow[],
+  side: "old" | "new",
+  language: string,
+  theme: ResolvedTheme,
+): Promise<SideTokens> {
   const source = rows.flatMap((row) => {
     const no = row[side];
     return no === undefined ? [] : [{ no, text: row.text }];
   });
   const map: SideTokens = new Map();
   if (!source.length) return map;
-  const tokens = await highlightCode(source.map((line) => line.text).join("\n"), language);
+  const tokens = await highlightCode(source.map((line) => line.text).join("\n"), language, theme);
   if (!tokens) return map;
   source.forEach((line, index) => {
     const lineTokens = tokens[index];
@@ -57,14 +63,15 @@ async function highlightSide(rows: readonly DiffRow[], side: "old" | "new", lang
 function useHunkTokens(path: string, rowsByHunk: readonly DiffRow[][]): HunkTokens[] | null {
   const [tokens, setTokens] = useState<HunkTokens[] | null>(null);
   const language = languageForPath(path);
+  const theme = useResolvedTheme();
   useEffect(() => {
     setTokens(null);
     if (language === undefined) return;
     let live = true;
     void Promise.all(
       rowsByHunk.map(async (rows) => ({
-        old: await highlightSide(rows, "old", language),
-        new: await highlightSide(rows, "new", language),
+        old: await highlightSide(rows, "old", language, theme),
+        new: await highlightSide(rows, "new", language, theme),
       })),
     )
       .then((next) => {
@@ -74,7 +81,7 @@ function useHunkTokens(path: string, rowsByHunk: readonly DiffRow[][]): HunkToke
     return () => {
       live = false;
     };
-  }, [language, rowsByHunk]);
+  }, [language, rowsByHunk, theme]);
   return tokens;
 }
 
@@ -148,7 +155,7 @@ function noteOf(diff: FileDiff): string | null {
 function HunkHeader({ hunks, index, full }: { hunks: DiffHunk[]; index: number; full: DiffHunk[] }) {
   const gap = gapBefore(full, index);
   return (
-    <div className="sticky left-0 flex items-center gap-2 border-y border-[#e3e8f2] bg-[#f3f6fb] px-3 py-1 font-mono text-[11px] text-[#5b6b8c]">
+    <div className="sticky left-0 flex items-center gap-2 border-y border-diff-head-line bg-diff-head px-3 py-1 font-mono text-[11px] text-diff-head-ink">
       <span className="whitespace-pre">{hunkHeader(hunks[index])}</span>
       {gap > 0 ? <span className="shrink-0 font-sans text-faint">省略 {gap} 行</span> : null}
     </div>
@@ -213,7 +220,7 @@ function SplitHunk({
                 key={side}
                 className={cn(
                   "flex min-w-0",
-                  cell ? ROW_TONE[kind] : "bg-[repeating-linear-gradient(135deg,#f6f7f9,#f6f7f9_4px,#eef0f4_4px,#eef0f4_8px)]",
+                  cell ? ROW_TONE[kind] : "diff-zebra",
                   side === "right" && "border-l border-line",
                 )}
               >

@@ -68,7 +68,7 @@ export function QuoteCard({ text }: { text: string }) {
               onMouseEnter={show}
               onMouseLeave={hide}
             >
-              <div className="max-h-40 overflow-auto rounded-xl border border-line bg-bg px-3 py-2 text-[13px] leading-5 break-words whitespace-pre-wrap text-ink shadow-[0_12px_32px_rgba(15,17,21,0.12)]">
+              <div className="max-h-40 overflow-auto rounded-xl border border-line bg-bg px-3 py-2 text-[13px] leading-5 break-words whitespace-pre-wrap text-ink shadow-[0_12px_32px_var(--shadow-color)]">
                 {text}
               </div>
             </div>,
@@ -91,7 +91,7 @@ export function QuoteChip({ text, onRemove }: { text: string; onRemove: () => vo
     >
       {open ? (
         <div className="absolute bottom-full left-0 z-30 w-72 pb-1">
-          <div className="max-h-40 overflow-auto rounded-xl border border-line bg-bg px-3 py-2 text-[13px] leading-5 break-words whitespace-pre-wrap text-ink shadow-[0_12px_32px_rgba(15,17,21,0.12)]">
+          <div className="max-h-40 overflow-auto rounded-xl border border-line bg-bg px-3 py-2 text-[13px] leading-5 break-words whitespace-pre-wrap text-ink shadow-[0_12px_32px_var(--shadow-color)]">
             {text}
           </div>
         </div>

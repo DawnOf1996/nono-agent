@@ -140,7 +140,7 @@ function ListViewMenu({
             <div
               ref={menuRef}
               role="menu"
-              className="fixed z-50 w-[248px] rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_rgba(15,17,21,0.12)]"
+              className="fixed z-50 w-[248px] rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_var(--shadow-color)]"
               style={{ top: pos.top, left: pos.left }}
             >
               <p className="px-2.5 pb-1 pt-1.5 text-[11px] text-faint">分组方式</p>
@@ -308,7 +308,7 @@ function WorkspaceRowMenu({
         ? createPortal(
             <div
               ref={menuRef}
-              className="fixed z-50 w-[168px] rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_rgba(15,17,21,0.12)]"
+              className="fixed z-50 w-[168px] rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_var(--shadow-color)]"
               style={{ top: pos.top, left: pos.left }}
             >
               <button
@@ -425,7 +425,7 @@ function SessionRowMenu({
         ? createPortal(
             <div
               ref={menuRef}
-              className="fixed z-50 w-[168px] rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_rgba(15,17,21,0.12)]"
+              className="fixed z-50 w-[168px] rounded-xl border border-line bg-bg p-1 shadow-[0_12px_32px_var(--shadow-color)]"
               style={{ top: pos.top, left: pos.left }}
             >
               <button
@@ -1167,7 +1167,7 @@ export function Sidebar({
 
   if (!expanded) {
     return (
-      <aside className="flex h-full w-full flex-col items-center border-r border-line bg-sidebar">
+      <aside className="sidebar flex h-full w-full flex-col items-center border-r border-line bg-sidebar">
         <div className="flex h-12 w-full shrink-0 items-center justify-center border-b border-line">
           <button
             type="button"
@@ -1198,13 +1198,13 @@ export function Sidebar({
   }
 
   return (
-    <aside className="flex h-full w-full min-w-0 flex-col border-r border-line bg-sidebar">
+    <aside className="sidebar flex h-full w-full min-w-0 flex-col border-r border-line bg-sidebar">
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
         <img src="/logo.png" alt="" draggable={false} className="size-8 shrink-0 rounded-[10px]" />
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <div className="truncate text-sm font-medium">NoNo Agent</div>
           <span
-            className={`size-2 shrink-0 rounded-full ${healthOk ? "bg-[#22c55e]" : "bg-danger"}`}
+            className={`size-2 shrink-0 rounded-full ${healthOk ? "bg-ok" : "bg-danger"}`}
             title={healthOk ? "服务在线" : "服务离线"}
             aria-label={healthOk ? "服务在线" : "服务离线"}
           />

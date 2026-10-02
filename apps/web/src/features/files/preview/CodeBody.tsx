@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { ThemedToken } from "shiki/core";
 
 import { highlightCode } from "@/features/files/preview/highlight";
+import { useResolvedTheme } from "@/lib/theme";
 import { languageForPath } from "@/features/files/preview/languages";
 import type { DocumentPreviewProps } from "@/features/files/preview/types";
 
@@ -50,18 +51,20 @@ export function CodeBody({ path, content, wrap }: DocumentPreviewProps) {
   const [copied, setCopied] = useState(false);
   const text = content.kind === "text" ? content.text : "";
   const language = languageForPath(path);
+  const theme = useResolvedTheme();
 
   useEffect(() => {
     if (content.kind !== "text" || language === undefined) return;
     let live = true;
     setTokens(null);
-    void highlightCode(content.text, language).then((next) => {
+    void highlightCode(content.text, language, theme).then((next) => {
       if (live) setTokens(next);
     });
     return () => {
       live = false;
     };
-  }, [content, language]);
+    // theme 也进依赖：切外观要重新高亮，缓存里存的是另一套配色。
+  }, [content, language, theme]);
 
   useEffect(() => {
     if (!copied) return;

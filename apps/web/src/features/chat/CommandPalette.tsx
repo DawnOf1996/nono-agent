@@ -15,7 +15,7 @@ export function CommandPalette({ open, query, commands, onPick }: CommandPalette
   if (!open) return null;
 
   return (
-    <div className="absolute bottom-[calc(100%+10px)] left-0 z-20 w-[min(28rem,calc(100vw-3rem))] overflow-hidden rounded-2xl border border-line bg-bg shadow-[0_12px_32px_rgba(15,17,21,0.12)]">
+    <div className="absolute bottom-[calc(100%+10px)] left-0 z-20 w-[min(28rem,calc(100vw-3rem))] overflow-hidden rounded-2xl border border-line bg-bg shadow-[0_12px_32px_var(--shadow-color)]">
       <div className="border-b border-line px-3 py-2 text-[11px] text-faint">指令</div>
       <div className="max-h-72 overflow-auto p-1">
         {items.length === 0 ? (

@@ -46,7 +46,9 @@ export async function svgToPngBlob(markup: string): Promise<Blob> {
     canvas.height = height;
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("无法导出图片");
-    ctx.fillStyle = "#ffffff";
+    // 画布底色取当前主题的 --color-bg：图是跟着主题渲染的，导出的 PNG 底下压一张白纸，
+    // 深色下就是一圈白边。
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--color-bg").trim() || "#ffffff";
     ctx.fillRect(0, 0, width, height);
     ctx.drawImage(image, 0, 0, width, height);
     return await new Promise((resolve, reject) => {

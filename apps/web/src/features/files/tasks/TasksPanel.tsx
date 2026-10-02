@@ -20,7 +20,7 @@ function JobRow({ job, sessionId, nested }: { job: WorkspaceJob; sessionId: stri
         <span
           className={cn(
             "shrink-0 rounded px-1 text-[10px] leading-4",
-            job.kind === "agent" ? "bg-[#e8eefc] text-[#2a4ea3]" : "bg-card text-muted",
+            job.kind === "agent" ? "bg-info-soft text-info" : "bg-card text-muted",
           )}
         >
           {job.kind === "agent" ? "子代理" : "命令"}
@@ -28,10 +28,10 @@ function JobRow({ job, sessionId, nested }: { job: WorkspaceJob; sessionId: stri
         <span
           className={cn(
             "size-2 shrink-0 rounded-full",
-            job.status === "running" && "bg-[#1d7a3a]",
-            job.status === "completed" && "bg-[#9aa0ab]",
-            job.status === "failed" && "bg-[#d94841]",
-            job.status === "killed" && "bg-[#d94841]",
+            job.status === "running" && "bg-add",
+            job.status === "completed" && "bg-faint",
+            job.status === "failed" && "bg-danger",
+            job.status === "killed" && "bg-danger",
           )}
           title={STATUS_LABEL[job.status] ?? job.status}
         />

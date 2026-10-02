@@ -1,5 +1,5 @@
 import { Cable, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { McpServerInfo, McpServerUpsert } from "@nono/protocol";
 
 import { prepareMcpRuntime } from "@/api/client";
@@ -89,7 +89,7 @@ function parseArgs(raw: string): string[] {
     .filter(Boolean);
 }
 
-export function ConnectorSettings() {
+export function ConnectorSettings({ onViewChange }: { onViewChange?: (title: string | null) => void }) {
   const servers = useChatStore((state) => state.mcpServers);
   const configPath = useChatStore((state) => state.mcpConfigPath);
   const upsertMcpServer = useChatStore((state) => state.upsertMcpServer);
@@ -99,6 +99,13 @@ export function ConnectorSettings() {
   const [progress, setProgress] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // 把"正在编辑哪个连接器"报给设置面板顶栏；组件卸载时清空，
+  // 否则切到别的选项卡，标题还卡在上一栏的子页面上。
+  useEffect(() => {
+    onViewChange?.(draft ? (draft.mode === "create" ? "添加连接器" : `编辑 ${draft.id}`) : null);
+    return () => onViewChange?.(null);
+  }, [draft, onViewChange]);
 
   const userServers = servers.filter((item) => item.source === "user");
 
@@ -157,12 +164,10 @@ export function ConnectorSettings() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div>
-        <h3 className="text-[15px] font-medium">连接器</h3>
-        <p className="mt-1 text-[13px] text-muted">
-          MCP 服务保存在本机用户目录。每个工作区要在对话里单独打开才会启用，默认全部关闭。
-        </p>
-      </div>
+      {/* 标题在设置面板顶栏，这里只留那段"什么时候才生效"的说明。 */}
+      <p className="text-[13px] text-muted">
+        MCP 服务保存在本机用户目录。每个工作区要在对话里单独打开才会启用，默认全部关闭。
+      </p>
       <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
         {userServers.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-line px-4 py-8 text-center text-sm text-muted">
@@ -268,10 +273,8 @@ function ConnectorEditor({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div>
-        <h3 className="text-[15px] font-medium">{creating ? "添加连接器" : `编辑 ${draft.id}`}</h3>
-        <p className="mt-1 text-[13px] text-muted">保存时会校验命令，并用内置运行时下载缺失的 uv / Python / Node。</p>
-      </div>
+      {/* 标题在设置面板顶栏，这里只留操作说明。 */}
+      <p className="text-[13px] text-muted">保存时会校验命令，并用内置运行时下载缺失的 uv / Python / Node。</p>
       <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-auto pr-1">
         <div>
           <FieldLabel>ID</FieldLabel>

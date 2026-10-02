@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import { fetchTerminalShells, startTerminal, stopTerminal, type TerminalShell } from "@/api/client";
 import { usePanelStore } from "@/features/files/panel-store";
 import { getSidebarPrefs, subscribeSidebarPrefs } from "@/features/settings/sidebar-prefs";
+import { useResolvedTheme } from "@/lib/theme";
 
 function terminalWsUrl(id: string): string {
   let base = window.location.origin;
@@ -28,7 +29,8 @@ function terminalTheme() {
     background: pick("--color-bg", "#ffffff"),
     foreground: pick("--color-ink", "#0f1115"),
     cursor: pick("--color-ink", "#111827"),
-    selectionBackground: "rgba(17, 24, 39, 0.16)",
+    // 选区色也走 token：xterm 要的是实色 rgba，深浅两套的选区浓度不一样，写死一边另一边就看不见。
+    selectionBackground: pick("--term-selection", "rgba(17, 24, 39, 0.16)"),
   };
 }
 
@@ -54,6 +56,13 @@ export function TerminalPane({
   const [status, setStatus] = useState<"connecting" | "open" | "restarted" | "closed" | "error">("connecting");
   const [error, setError] = useState<string | null>(null);
   const fontSize = useSyncExternalStore(subscribeSidebarPrefs, getSidebarPrefs, getSidebarPrefs).terminalFontSize;
+  const theme = useResolvedTheme();
+
+  // xterm 在构造时就把颜色烤进自己的画布，切主题不会自己跟着变，得重新喂一次。
+  useEffect(() => {
+    const term = termRef.current;
+    if (term) term.options.theme = terminalTheme();
+  }, [theme]);
 
   useEffect(() => {
     void fetchTerminalShells()
