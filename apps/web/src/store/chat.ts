@@ -2,6 +2,7 @@ import type {
   AppInfo,
   AskUserSignal,
   CatalogSnapshot,
+  FileDiffUi,
   McpServerInfo,
   McpServerUpsert,
   PermissionMode,
@@ -70,8 +71,11 @@ import {
   messagesFromEvents,
   parseSse,
   sliceLastUserTurns,
+  toolResultsFromContent,
+  toolUiFromMessage,
   type ReplayStep,
   type ReplayToolCall,
+  type ToolResultRecord,
 } from "@/api/sse";
 import {
   loadDraftPermissionMode,
@@ -331,8 +335,56 @@ export function sessionRun(state: ChatState, sessionId: string | null): SessionR
   return state.runs[sessionId] ?? EMPTY_RUN;
 }
 
-let persistDraftTask: Promise<string | null> | null = null;
+/**
+ * 把一条工具结果贴回发起它的 tool_use（按 tool_use 的 id 匹配）。
+ * 命中就返回新消息，没命中原样返回 —— 没命中的结果不该引发重渲染。
+ */
+function attachToolOutput(message: ChatMessage, record: ToolResultRecord): ChatMessage {
+  if (!message.steps?.length) return message;
+  let hit = false;
+  const steps = message.steps.map((step) => {
+    if (!step.tools?.length) return step;
+    let stepHit = false;
+    const tools = step.tools.map((tool) => {
+      if (tool.id !== record.callId) return tool;
+      stepHit = true;
+      return { ...tool, output: record.text, isError: record.isError };
+    });
+    if (!stepHit) return step;
+    hit = true;
+    return { ...step, tools };
+  });
+  return hit ? { ...message, steps } : message;
+}
 
+/** 一次贴多条结果（一个 tool_result 消息里通常有几条）。 */
+function attachMany(message: ChatMessage, records: readonly ToolResultRecord[]): ChatMessage {
+  return records.reduce(attachToolOutput, message);
+}
+
+/** 同上，但贴的是 UI 附件（文件差异）：只挂界面，不动结果文本。 */
+function attachToolUi(
+  message: ChatMessage,
+  record: { callId: string; ui: FileDiffUi },
+): ChatMessage {
+  if (!message.steps?.length) return message;
+  let hit = false;
+  const steps = message.steps.map((step) => {
+    if (!step.tools?.length) return step;
+    let stepHit = false;
+    const tools = step.tools.map((tool) => {
+      if (tool.id !== record.callId) return tool;
+      stepHit = true;
+      return { ...tool, ui: record.ui };
+    });
+    if (!stepHit) return step;
+    hit = true;
+    return { ...step, tools };
+  });
+  return hit ? { ...message, steps } : message;
+}
+
+let persistDraftTask: Promise<string | null> | null = null;
 /**
  * 当前打开的统计订阅流的关闭函数。
  *
@@ -1305,6 +1357,57 @@ export const useChatStore = create<ChatState>((set, get) => ({
               streaming: true,
             };
           });
+        } else if (frame.event === "user") {
+          // 引擎合成的 tool_result 消息（开了用户消息回放时才会到这里）：
+          // 同样把结果挂回发起它的工具调用。
+          const results = toolResultsFromContent(
+            (payload as { message?: { content?: unknown } }).message?.content,
+          );
+          if (!results.length) continue;
+          flushStream();
+          set((state) =>
+            patchRun(state, runKey, {
+              messages: runAt(state, runKey).messages.map((item) =>
+                item.id === draftId ? attachMany(item, results) : item,
+              ),
+            }),
+          );
+        } else if (frame.event === "system") {
+          // 工具跑完的进度帧（subtype="tool_result"）—— 结果在这里就贴回
+          // 正在跑的那次调用，不用等整轮结束再回放事件流。
+          const notice = payload as {
+            subtype?: string;
+            tool_use_id?: string;
+            tool_result?: string;
+            tool_is_error?: boolean;
+          };
+          if (notice.subtype !== "tool_result" || !notice.tool_use_id) continue;
+          const record: ToolResultRecord = {
+            callId: notice.tool_use_id,
+            text: notice.tool_result ?? "",
+            isError: notice.tool_is_error === true,
+          };
+          flushStream();
+          set((state) =>
+            patchRun(state, runKey, {
+              messages: runAt(state, runKey).messages.map((item) =>
+                item.id === draftId ? attachToolOutput(item, record) : item,
+              ),
+            }),
+          );
+        } else if (frame.event === "ui_tool_result") {
+          // 工具结果给 UI 的结构化附件（文件差异等）。只挂界面，不进模型上下文 ——
+          // 与上面的 tool_result 通知是两条独立消息，这里要的就是"真实行号的差异"。
+          const record = toolUiFromMessage(payload);
+          if (!record) continue;
+          flushStream();
+          set((state) =>
+            patchRun(state, runKey, {
+              messages: runAt(state, runKey).messages.map((item) =>
+                item.id === draftId ? attachToolUi(item, record) : item,
+              ),
+            }),
+          );
         } else if (frame.event === "result") {
           flushStream();
           const result = payload as SdkResultMessage;
