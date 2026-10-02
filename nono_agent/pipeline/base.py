@@ -48,11 +48,35 @@ class PipelineContext:
     # 当前 token 估算值（含 overhead_tokens；stage 压缩后更新）
     estimated_tokens: int = 0
 
+    # provider 实测的上下文下界 —— 最近一次请求真正带进去的输入量
+    # （input + cache_read + cache_creation 三桶）。
+    #
+    # 为什么要它：estimated_tokens 是**估算**，会系统性偏低 —— tokenizer 与
+    # provider 不一致、图片/富内容块未建模、provider 侧固定开销等。估算偏低
+    # 会让所有 stage 的阈值**偏晚触发**，撞上 context_length_exceeded。
+    # 一轮之内上下文单调增长（不压缩的话），所以上一次请求的实测值一定是
+    # 下一次请求的合法下界，取 max() 即可。
+    #
+    # 独立成字段而不是混进 estimated_tokens：snip_compact / auto_compact 会
+    # 用 _reestimate() 整体重算 estimated_tokens，混进去会被立刻冲掉。
+    #
+    # 压缩边界创建后必须清零 —— 否则旧的（压缩前的）大值会把压缩反复触发。
+    provider_floor_tokens: int = 0
+
     # 是否是重试尝试（重试时 stage 可采取更激进的策略）
     is_retry: bool = False
 
     # stage 可读写的额外元数据
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def effective_tokens(self) -> int:
+        """阈值判定用的占用量 —— 估算值与 provider 实测下界取大。
+
+        阶段内部调整 ``estimated_tokens`` 时不受影响；只有"要不要触发"
+        这种判定才应该看 effective_tokens。
+        """
+        return max(self.estimated_tokens, self.provider_floor_tokens)
 
 
 @dataclass

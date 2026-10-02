@@ -65,7 +65,7 @@ class ContextCollapseStage:
         if self._summarizer is None:
             return False
         # 阈值基于配置的上下文窗口（context.context_window）
-        return context.estimated_tokens > int(context.context_window * self._threshold)
+        return context.effective_tokens > int(context.context_window * self._threshold)
 
     async def execute(
         self,

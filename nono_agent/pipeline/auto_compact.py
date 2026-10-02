@@ -46,7 +46,7 @@ class AutoCompactStage:
         context: PipelineContext,
     ) -> bool:
         auto_limit = int(context.context_window * AUTO_COMPACT_THRESHOLD)
-        return context.estimated_tokens >= auto_limit
+        return context.effective_tokens >= auto_limit
 
     async def execute(
         self,
@@ -57,12 +57,14 @@ class AutoCompactStage:
         blocking_limit = int(window * BLOCKING_LIMIT_THRESHOLD)
 
         # 是否超过阻塞上限（95%）
-        is_blocking = context.estimated_tokens >= blocking_limit
+        # 判定走 effective_tokens —— 95% 是最后一道防线，宁可早压不可撞限。
+        is_blocking = context.effective_tokens >= blocking_limit
 
         if is_blocking:
             # CRITICAL: 超过阻塞上限 —— 激进压缩（仅保留最近 2 轮）
             logger.warning(
-                "Auto compact: CRITICAL — %d tokens exceeds blocking limit %d",
+                "Auto compact: CRITICAL — %d tokens (estimate %d) exceeds blocking limit %d",
+                context.effective_tokens,
                 context.estimated_tokens,
                 blocking_limit,
             )
@@ -73,7 +75,9 @@ class AutoCompactStage:
         else:
             # 超过 80% 阈值但未到阻塞上限 —— 激进截断（剥离 thinking + 截断 tool results）
             logger.info(
-                "Auto compact: %d tokens above threshold, applying aggressive truncation",
+                "Auto compact: %d tokens (estimate %d) above threshold, "
+                "applying aggressive truncation",
+                context.effective_tokens,
                 context.estimated_tokens,
             )
             # Moderate: truncate all tool results and long texts

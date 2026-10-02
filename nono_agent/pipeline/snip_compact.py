@@ -51,7 +51,7 @@ class SnipCompactStage:
     def should_run(self, messages: list[Message], context: PipelineContext) -> bool:
         # 仅在 token 超过 snip 阈值时运行（阈值基于配置的上下文窗口）
         limit = int(context.context_window * self._threshold)
-        return bool(context.estimated_tokens > limit)
+        return bool(context.effective_tokens > limit)
 
     async def execute(
         self,

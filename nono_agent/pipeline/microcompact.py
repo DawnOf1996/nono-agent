@@ -54,7 +54,7 @@ class MicroCompactStage:
         context: PipelineContext,
     ) -> bool:
         # 仅在上下文使用率超过阈值时触发（阈值基于配置的上下文窗口）
-        return context.estimated_tokens > int(context.context_window * MICROCOMPACT_THRESHOLD)
+        return context.effective_tokens > int(context.context_window * MICROCOMPACT_THRESHOLD)
 
     async def execute(
         self,

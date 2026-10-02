@@ -698,6 +698,8 @@ class QueryEngine:
         请求前的一致性门禁会报 desync。事件在下一个 await 点随队列落盘。
         """
         self._store.replace([])
+        # 清空后旧的 provider 实测值不再描述当前上下文
+        self._token_tracker.invalidate_provider_context()
         self._stage_event(
             EVENT_COMPACT_BOUNDARY,
             content="[Session cleared.]",
@@ -739,6 +741,8 @@ class QueryEngine:
         )
         recent = messages[-keep_recent:]
         self._store.replace([boundary] + recent)
+        # 压缩后旧的 provider 实测值不再描述当前上下文
+        self._token_tracker.invalidate_provider_context()
         self._stage_event(
             EVENT_COMPACT_BOUNDARY,
             content=content,

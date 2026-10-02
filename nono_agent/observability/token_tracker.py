@@ -101,6 +101,10 @@ class TokenTracker:
     # 上下文用量快照历史 —— 每次 record_context_usage 追加一条，可回看占用趋势
     _context_usage_history: list[dict[str, Any]] = field(default_factory=list)
 
+    # provider 实测的最近一次请求输入量（input + cache_read + cache_creation）——
+    # 作为压缩管线的兜底下界，见 PipelineContext.provider_floor_tokens。
+    _last_provider_context: int = 0
+
     # ------------------------------------------------------------------
     # 记录方法 —— 累加每次 API 响应的用量
     # ------------------------------------------------------------------
@@ -117,6 +121,14 @@ class TokenTracker:
         mu.cache_read_tokens += usage.cache_read_input_tokens
         mu.cache_creation_tokens += usage.cache_creation_input_tokens
         mu.num_requests += 1
+
+        # provider 实测输入量：本次请求真正带进去的上下文大小。
+        # 注意不是四桶求和 —— output_tokens 不属于上下文。
+        self._last_provider_context = (
+            usage.input_tokens
+            + usage.cache_read_input_tokens
+            + usage.cache_creation_input_tokens
+        )
 
         self._step_usages.append(
             {
@@ -144,6 +156,22 @@ class TokenTracker:
         snapshot = dict(usage)
         self._latest_context_usage = snapshot
         self._context_usage_history.append(snapshot)
+
+    def provider_context_floor(self) -> int:
+        """最近一次 provider 实测的上下文大小 —— 0 表示还没有实测样本。
+
+        压缩管线的兜底下界：引擎估算偏低时用它兜住，避免阈值偏晚触发。
+        压缩边界创建后由 :meth:`invalidate_provider_context` 清零。
+        """
+        return self._last_provider_context
+
+    def invalidate_provider_context(self) -> None:
+        """清空兜底下界 —— 压缩边界创建后调用。
+
+        旧值描述的是**压缩前**的上下文，继续拿它当下界会让压缩反复触发
+        （压缩后估算值已远低于旧值，max() 仍被旧值拉高）。
+        """
+        self._last_provider_context = 0
 
     def record_tool_duration(self, duration_ms: float) -> None:
         """记录工具执行耗时。"""

@@ -217,11 +217,17 @@ async def agentic_loop(
         message_tokens = estimate_messages_tokens(
             [m.message for m in messages if hasattr(m, "message")]
         )
+        # provider_floor_tokens: 最近一次请求 provider 实测的输入量。
+        # 估算偏低时由它兜底（见 PipelineContext.provider_floor_tokens）。
+        provider_floor = (
+            token_tracker.provider_context_floor() if token_tracker is not None else 0
+        )
         pipeline_ctx = PipelineContext(
             model_id=current_model,
             context_window=config.effective_model_context,
             overhead_tokens=overhead_tokens,
             estimated_tokens=overhead_tokens + message_tokens,
+            provider_floor_tokens=provider_floor,
         )
 
         # 执行预处理管线，可能返回压缩后的消息
@@ -232,6 +238,9 @@ async def agentic_loop(
         if pipeline_result.compact_boundary_created:
             store.replace(messages)
             store.gc_before_boundary()
+            # 兜底下界描述的是压缩前的上下文，不清零会让压缩反复触发
+            if token_tracker is not None:
+                token_tracker.invalidate_provider_context()
             emit_state_replaced(
                 "pipeline",
                 "[Context compacted by preprocess pipeline.]",
@@ -412,6 +421,9 @@ async def agentic_loop(
 
                 # 恢复策略若替换了会话状态，先把新窗口写进事件流
                 if recovery_effect.state_replaced:
+                    # 兜底下界描述的是压缩前的上下文，不清零会让压缩反复触发
+                    if token_tracker is not None:
+                        token_tracker.invalidate_provider_context()
                     emit_state_replaced(
                         recovery_effect.strategy,
                         f"[Context recovered after {error_type} error.]",

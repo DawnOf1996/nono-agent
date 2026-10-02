@@ -208,3 +208,158 @@ class TestAutoCompactStage:
             [m.message for m in result if hasattr(m, "message")]
         )
         assert result_ctx.estimated_tokens == message_only + 1_234
+
+
+class TestProviderFloorTokens:
+    """provider 实测下界参与阈值判定 —— 防止估算偏低导致压缩触发过晚。
+
+    背景：``estimated_tokens`` 是引擎估算，会因 tokenizer 差异、富内容块
+    未建模等原因系统性偏低。provider 上报的 ``input + cache_read +
+    cache_creation`` 是**实际**带进请求的上下文大小，一轮内单调增长，
+    因此可作为下一次请求的合法下界。
+    """
+
+    def test_effective_is_estimate_when_no_floor(self):
+        ctx = PipelineContext(estimated_tokens=1000)
+        assert ctx.effective_tokens == 1000
+
+    def test_effective_takes_max_with_floor(self):
+        ctx = PipelineContext(estimated_tokens=1000, provider_floor_tokens=2500)
+        assert ctx.effective_tokens == 2500
+
+        # 估算高于下界时以估算为准
+        ctx2 = PipelineContext(estimated_tokens=9000, provider_floor_tokens=2500)
+        assert ctx2.effective_tokens == 9000
+
+    def test_floor_not_zero_falsy_default(self):
+        """默认 0 —— 没有实测样本时行为与改造前完全一致。"""
+        assert PipelineContext().provider_floor_tokens == 0
+        assert PipelineContext(estimated_tokens=42).effective_tokens == 42
+
+    def test_reestimate_does_not_clobber_floor(self):
+        """关键设计：stage 整体重算 estimated_tokens 时兜底值必须存活。
+
+        snip_compact / auto_compact 会用 _reestimate() 把 estimated_tokens
+        重算成新的纯估算值；兜底值必须独立，否则会被立刻冲掉。
+        """
+        ctx = PipelineContext(
+            estimated_tokens=1_000_000, provider_floor_tokens=900_000
+        )
+        ctx.estimated_tokens = 500  # 模拟 stage 重算
+        assert ctx.effective_tokens == 900_000
+
+    def test_microcompact_triggers_earlier_with_floor(self):
+        """估算低于 50% 但 provider 实测超 50% 时，MicroCompact 必须触发。"""
+        stage = MicroCompactStage()
+        window = 100_000
+        msgs = [make_user_msg(f"m{i}") for i in range(40)]
+
+        below = PipelineContext(
+            context_window=window, estimated_tokens=int(window * 0.4)
+        )
+        assert stage.should_run(msgs, below) is False
+
+        raised = PipelineContext(
+            context_window=window,
+            estimated_tokens=int(window * 0.4),
+            provider_floor_tokens=int(window * 0.6),
+        )
+        assert stage.should_run(msgs, raised) is True
+
+    def test_snip_compact_triggers_earlier_with_floor(self):
+        from nono_agent.pipeline.snip_compact import SnipCompactStage as _Snip
+
+        stage = _Snip(threshold=0.3)
+        window = 100_000
+        msgs = [make_user_msg(f"m{i}") for i in range(40)]
+
+        assert stage.should_run(msgs, PipelineContext(context_window=window,
+                                                      estimated_tokens=int(window * 0.1))) is False
+        assert stage.should_run(
+            msgs,
+            PipelineContext(context_window=window,
+                            estimated_tokens=int(window * 0.1),
+                            provider_floor_tokens=int(window * 0.5)),
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_auto_compact_blocking_uses_floor(self):
+        """95% 阻塞线同样吃兜底值 —— 最后一道防线不能被低估绕过。"""
+        window = 100_000
+        msgs = [make_user_msg(f"m{i}") for i in range(20)]
+        stage = AutoCompactStage()
+
+        # 估算 70%（未到 80% 自动压缩线），但 provider 实测 97%
+        ctx = PipelineContext(
+            context_window=window,
+            estimated_tokens=int(window * 0.70),
+            provider_floor_tokens=int(window * 0.97),
+        )
+        assert stage.should_run(msgs, ctx) is True
+
+        _, new_ctx = await stage.execute(msgs, ctx)
+        # 走到了 blocking 分支 -> 创建了压缩边界
+        assert new_ctx.metadata.get("compact_boundary_created") is True
+        # 压缩后兜底值仍在字段里（由 loop/engine 在建边界时清零），
+        # 而 estimated_tokens 已被 stage 重算
+        assert new_ctx.estimated_tokens < int(window * 0.97)
+
+    @pytest.mark.asyncio
+    async def test_estimate_below_floor_does_not_trigger(self):
+        """反向护栏：兜底值没超线时，行为必须与改造前一致（不误触发）。"""
+        window = 100_000
+        msgs = [make_user_msg(f"m{i}") for i in range(4)]
+        stage = AutoCompactStage()
+        ctx = PipelineContext(
+            context_window=window,
+            estimated_tokens=int(window * 0.10),
+            provider_floor_tokens=int(window * 0.10),
+        )
+        assert stage.should_run(msgs, ctx) is False
+
+
+class TestTokenTrackerProviderFloor:
+    """TokenTracker 侧：记录 provider 实测输入量 + 压缩后清零。"""
+
+    def _usage(self, **kw):
+        from nono_agent.core.types import Usage
+
+        return Usage(**kw)
+
+    def test_starts_at_zero(self):
+        from nono_agent.observability.token_tracker import TokenTracker
+
+        assert TokenTracker().provider_context_floor() == 0
+
+    def test_records_input_buckets_only(self):
+        """只算输入三桶 —— output_tokens 不属于上下文占用。"""
+        from nono_agent.observability.token_tracker import TokenTracker
+
+        tt = TokenTracker()
+        tt.record_usage(
+            self._usage(
+                input_tokens=100,
+                cache_read_input_tokens=5_000,
+                cache_creation_input_tokens=200,
+                output_tokens=999,
+            )
+        )
+        assert tt.provider_context_floor() == 100 + 5_000 + 200
+
+    def test_tracks_latest_not_sum(self):
+        """取最近一次，不是累加 —— 一轮内每步都整段重发，累加会爆表。"""
+        from nono_agent.observability.token_tracker import TokenTracker
+
+        tt = TokenTracker()
+        tt.record_usage(self._usage(cache_read_input_tokens=1_000))
+        tt.record_usage(self._usage(cache_read_input_tokens=2_000))
+        assert tt.provider_context_floor() == 2_000
+
+    def test_invalidate_clears_floor(self):
+        from nono_agent.observability.token_tracker import TokenTracker
+
+        tt = TokenTracker()
+        tt.record_usage(self._usage(cache_read_input_tokens=8_000))
+        assert tt.provider_context_floor() == 8_000
+        tt.invalidate_provider_context()
+        assert tt.provider_context_floor() == 0
