@@ -211,6 +211,7 @@ export function GitLens({ root, visible, onShowSession }: { root: string; visibl
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [stagedOpen, setStagedOpen] = useState(true);
   const [changesOpen, setChangesOpen] = useState(true);
+  // 提交历史默认折叠，但照样预取一批：折叠标题上要能看到"有 n 条"，不然像没有历史。
   const [historyOpen, setHistoryOpen] = useState(false);
   const [log, setLog] = useState<GitLogEntry[]>([]);
   const [logEnded, setLogEnded] = useState(false);
@@ -304,8 +305,9 @@ export function GitLens({ root, visible, onShowSession }: { root: string; visibl
   }, [status?.repo, worktrees]);
 
   useEffect(() => {
-    if (historyOpen && log.length === 0 && !logEnded) void loadLog(true);
-  }, [historyOpen, log.length, logEnded, loadLog]);
+    if (!status?.is_repo || logLoading) return;
+    if (log.length === 0 && !logEnded) void loadLog(true);
+  }, [status?.is_repo, log.length, logEnded, logLoading, loadLog]);
 
   async function run(action: () => Promise<void>, after?: () => void) {
     setBusy(true);
