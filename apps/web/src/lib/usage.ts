@@ -63,8 +63,17 @@ function trimZero(value: string): string {
   return value.replace(/\.0$/, "");
 }
 
-/** 百分比：0.143 → 14%。 */
+/**
+ * 百分比：0.143 → 14%。
+ *
+ * 小于 1% 时保留一位小数：Math.round 会把 0.0048 直接抹成 "0%"，
+ * 新会话 / 小上下文下角标恒显示 0%，看不出真实占用（缓存命中率同理）。
+ * 0.0048 → 0.5%，0.014 → 1%，0 → 0%。
+ */
 export function formatPercent(ratio: number): string {
+  if (ratio > 0 && ratio < 0.01) {
+    return `${(ratio * 100).toFixed(1)}%`;
+  }
   return `${Math.round(ratio * 100)}%`;
 }
 
