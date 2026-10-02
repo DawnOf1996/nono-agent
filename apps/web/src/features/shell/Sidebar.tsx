@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowUpDown, Check, ChevronRight, Clock, Eye, EyeOff, Folder, FolderOpen, FolderPlus, FolderTree, GitFork, GripVertical, List, Loader2, MessageSquarePlus, MoreHorizontal, PanelLeftClose, Pencil, Settings, Settings2, ShieldAlert, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUpDown, Check, ChevronRight, Clock, Eye, EyeOff, Folder, FolderOpen, FolderPlus, FolderTree, GitFork, List, Loader2, MessageSquarePlus, MoreHorizontal, PanelLeftClose, Pencil, Settings, Settings2, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { SessionListItem, Workspace } from "@nono/protocol";
@@ -10,16 +10,21 @@ import { WorkspacePicker } from "@/features/session/WorkspacePicker";
 import { formatRelativeTime, sessionTitle } from "@/lib/format";
 import { sameWorkspace, workspaceLabel } from "@/lib/workspace";
 import { sessionRun, useChatStore } from "@/store/chat";
+import { blankDrag, useSidebarReorder, type RowDrag } from "@/features/shell/sidebar-drag";
 import {
   buildWorkspaceTree,
   loadListView,
   loadManualOrder,
+  loadWorkspaceOrder,
+  orderWorkspaces,
   pruneEmptyArchiveTree,
-  reorderManual,
+  reorderManualTo,
   saveListView,
   saveManualOrder,
+  saveWorkspaceOrder,
   sortSessions,
   type ArchiveFilter,
+  type DropSide,
   type GroupMode,
   type SortMode,
   type WorkspaceTreeNode,
@@ -504,12 +509,10 @@ function SessionRowMenu({
 
 function SessionRow({
   session,
-  manualSort = false,
-  onReorder,
+  drag,
 }: {
   session: SessionListItem;
-  manualSort?: boolean;
-  onReorder?: (sourceId: string, targetId: string) => void;
+  drag: RowDrag;
 }) {
   const sessionId = useChatStore((state) => state.sessionId);
   const sessionTitles = useChatStore((state) => state.sessionTitles);
@@ -527,7 +530,6 @@ function SessionRow({
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const skipCommit = useRef(false);
   const archived = session.archived === true;
@@ -558,30 +560,14 @@ function SessionRow({
 
   return (
     <li
-      className="group"
-      onDragOver={(event) => {
-        if (!manualSort || renaming) return;
-        event.preventDefault();
-        event.stopPropagation();
-        setDragOver(true);
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(event) => {
-        if (!manualSort) return;
-        event.preventDefault();
-        event.stopPropagation();
-        setDragOver(false);
-        const sourceId = event.dataTransfer.getData("text/plain");
-        if (sourceId && sourceId !== session.id) onReorder?.(sourceId, session.id);
-      }}
+      ref={drag.ref}
+      className={`group transition-opacity duration-150 ${drag.dragging ? "opacity-40" : ""}`}
+      onDragOver={drag.onDragOver}
+      onDrop={drag.onDrop}
     >
       <div
         className={`flex items-center rounded-lg ${
-          dragOver
-            ? "bg-hover ring-1 ring-accent"
-            : selected
-              ? "bg-active text-ink"
-              : "text-ink/80 hover:bg-hover"
+          selected ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
         }`}
       >
         {renaming ? (
@@ -608,18 +594,15 @@ function SessionRow({
         ) : (
           <button
             type="button"
-            draggable={manualSort}
-            title={archived ? "已归档" : manualSort ? "拖动调整顺序" : undefined}
+            draggable={drag.draggable}
+            onDragStart={drag.onDragStart}
+            onDragEnd={drag.onDragEnd}
+            title={archived ? "已归档" : drag.draggable ? "拖动调整顺序" : undefined}
             className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left text-[13px] ${
-              manualSort ? "cursor-grab active:cursor-grabbing" : ""
+              drag.draggable ? "cursor-grab active:cursor-grabbing" : ""
             }`}
-            onDragStart={(event) => {
-              event.dataTransfer.setData("text/plain", session.id);
-              event.dataTransfer.effectAllowed = "move";
-            }}
             onClick={() => void openSession(session.engine_session_id)}
           >
-            {manualSort ? <GripVertical className="size-3 shrink-0 text-faint" /> : null}
             {archived ? <Archive className="size-3 shrink-0 text-faint" /> : null}
             <span className={`truncate ${archived ? "text-muted" : ""}`}>{title}</span>
           </button>
@@ -664,8 +647,8 @@ function WorkspaceRow({
   collapsed,
   onToggle,
   onExpand,
-  manualSort,
-  onReorder,
+  drag,
+  dragSessions,
   nested,
 }: {
   workspace: Workspace;
@@ -674,8 +657,9 @@ function WorkspaceRow({
   collapsed: boolean;
   onToggle: () => void;
   onExpand: () => void;
-  manualSort: boolean;
-  onReorder: (sourceId: string, targetId: string) => void;
+  drag: RowDrag;
+  /** 工作区里那排会话自己的拖拽句柄，和工作区这一行互不干扰。 */
+  dragSessions: (session: SessionListItem) => RowDrag;
   nested?: ReactNode;
 }) {
   const newSession = useChatStore((state) => state.newSession);
@@ -721,7 +705,12 @@ function WorkspaceRow({
   }
 
   return (
-    <div className="mb-1">
+    <div
+      ref={drag.ref}
+      className={`mb-1 transition-opacity duration-150 ${drag.dragging ? "opacity-40" : ""}`}
+      onDragOver={drag.onDragOver}
+      onDrop={drag.onDrop}
+    >
       <div
         className={`flex items-center rounded-lg pr-0.5 ${
           active && !sessionId && !showDraft ? "bg-active text-ink" : "text-ink/80 hover:bg-hover"
@@ -754,8 +743,13 @@ function WorkspaceRow({
         ) : (
           <button
             type="button"
-            className="flex min-w-0 flex-1 items-center gap-1 px-2 py-1.5 text-left text-[13px]"
-            title={expanded ? "折起分组" : "展开分组"}
+            draggable={drag.draggable}
+            onDragStart={drag.onDragStart}
+            onDragEnd={drag.onDragEnd}
+            className={`flex min-w-0 flex-1 items-center gap-1 px-2 py-1.5 text-left text-[13px] ${
+              drag.draggable ? "cursor-grab active:cursor-grabbing" : ""
+            }`}
+            title={drag.draggable ? "拖动调整顺序" : expanded ? "折起分组" : "展开分组"}
             aria-expanded={expanded}
             onClick={onToggle}
           >
@@ -795,7 +789,7 @@ function WorkspaceRow({
             </li>
           ) : null}
           {sessions.map((session) => (
-            <SessionRow key={session.id} session={session} manualSort={manualSort} onReorder={onReorder} />
+            <SessionRow key={session.id} session={session} drag={dragSessions(session)} />
           ))}
         </ul>
       ) : null}
@@ -846,7 +840,7 @@ function TreeBranch({
   onToggle,
   onExpand,
   manualSort,
-  onReorder,
+  dragSessions,
 }: {
   nodes: WorkspaceTreeNode[];
   sessionsById: Map<string, SessionListItem[]>;
@@ -855,8 +849,9 @@ function TreeBranch({
   onToggle: (id: string) => void;
   onExpand: (id: string) => void;
   manualSort: boolean;
-  onReorder: (sourceId: string, targetId: string) => void;
+  dragSessions: (session: SessionListItem) => RowDrag;
 }) {
+  // 树形分组里工作区的位置由目录结构决定，交给用户拖会跟树打架，所以只放开会话。
   return (
     <>
       {nodes.map((node) =>
@@ -875,7 +870,7 @@ function TreeBranch({
               onToggle={onToggle}
               onExpand={onExpand}
               manualSort={manualSort}
-              onReorder={onReorder}
+              dragSessions={dragSessions}
             />
           </DirGroup>
         ) : (
@@ -887,8 +882,8 @@ function TreeBranch({
             collapsed={collapsed.has(node.workspace.id)}
             onToggle={() => onToggle(node.workspace.id)}
             onExpand={() => onExpand(node.workspace.id)}
-            manualSort={manualSort}
-            onReorder={onReorder}
+            drag={blankDrag}
+            dragSessions={dragSessions}
             nested={
               node.children.length ? (
                 <TreeBranch
@@ -899,7 +894,7 @@ function TreeBranch({
                   onToggle={onToggle}
                   onExpand={onExpand}
                   manualSort={manualSort}
-                  onReorder={onReorder}
+                  dragSessions={dragSessions}
                 />
               ) : null
             }
@@ -953,6 +948,9 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const [listView, setListView] = useState(loadListView);
   const [manualOrder, setManualOrder] = useState<string[]>(loadManualOrder);
+  const [workspaceOrder, setWorkspaceOrder] = useState<string[]>(loadWorkspaceOrder);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const manualSort = listView.sort === "manual";
 
   const groups = useMemo(() => {
     const ordered = sortSessions(sessions, listView.sort, manualOrder);
@@ -977,10 +975,13 @@ export function Sidebar({
     return pruneEmptyArchiveTree(tree, groups.byId);
   }, [workspaces, archiveFilter, groups.byId]);
 
-  const visibleWorkspaces =
-    archiveFilter === "only"
-      ? workspaces.filter((item) => (groups.byId.get(item.id) ?? []).length > 0)
-      : workspaces;
+  const visibleWorkspaces = useMemo(() => {
+    const listed =
+      archiveFilter === "only"
+        ? workspaces.filter((item) => (groups.byId.get(item.id) ?? []).length > 0)
+        : workspaces;
+    return orderWorkspaces(listed, workspaceOrder);
+  }, [workspaces, workspaceOrder, archiveFilter, groups.byId]);
 
   function toggleCollapsed(id: string) {
     setCollapsed((current) => {
@@ -1020,18 +1021,44 @@ export function Sidebar({
     });
   }
 
-  function reorderSession(sourceId: string, targetId: string) {
+  function reorderSession(sourceId: string, targetId: string, side: DropSide) {
     setManualOrder((current) => {
-      const next = reorderManual(
+      const next = reorderManualTo(
         current,
         sortSessions(sessions, "recent", []).map((item) => item.id),
         sourceId,
         targetId,
+        side,
       );
       saveManualOrder(next);
       return next;
     });
   }
+
+  function reorderWorkspace(sourceId: string, targetId: string, side: DropSide) {
+    setWorkspaceOrder((current) => {
+      const next = reorderManualTo(
+        current,
+        workspaces.map((item) => item.id),
+        sourceId,
+        targetId,
+        side,
+      );
+      saveWorkspaceOrder(next);
+      return next;
+    });
+  }
+
+  const { bind, scrollerProps, line } = useSidebarReorder({
+    scrollerRef,
+    onCommit: (source, target) => {
+      if (source.kind === "session") reorderSession(source.id, target.id, target.side);
+      else reorderWorkspace(source.id, target.id, target.side);
+    },
+  });
+
+  const dragSession = (session: SessionListItem) => bind("session", session.id, manualSort);
+  const dragWorkspace = (item: Workspace) => bind("workspace", item.id, manualSort);
 
   function startNewSession() {
     const listed = workspaces.some((item) => sameWorkspace(item.path, workspace));
@@ -1108,7 +1135,13 @@ export function Sidebar({
         </Button>
       </div>
 
-      <div className="flex-1 overflow-auto px-2 pb-3">
+      {line}
+      <div
+        ref={scrollerRef}
+        className="flex-1 overflow-auto px-2 pb-3"
+        onDragOver={scrollerProps.onDragOver}
+        onDrop={scrollerProps.onDrop}
+      >
         <div className="mb-1 flex items-center justify-between px-2">
           <span className="text-[11px] font-medium text-faint">工作区</span>
           <div className="flex items-center">
@@ -1135,12 +1168,7 @@ export function Sidebar({
           groups.ordered.length ? (
             <ul>
               {groups.ordered.map((session) => (
-                <SessionRow
-                  key={session.id}
-                  session={session}
-                  manualSort={listView.sort === "manual"}
-                  onReorder={reorderSession}
-                />
+                <SessionRow key={session.id} session={session} drag={dragSession(session)} />
               ))}
             </ul>
           ) : null
@@ -1152,8 +1180,8 @@ export function Sidebar({
             collapsed={collapsed}
             onToggle={toggleCollapsed}
             onExpand={expandGroup}
-            manualSort={listView.sort === "manual"}
-            onReorder={reorderSession}
+            manualSort={manualSort}
+            dragSessions={dragSession}
           />
         ) : (
           visibleWorkspaces.map((item) => (
@@ -1165,8 +1193,8 @@ export function Sidebar({
               collapsed={collapsed.has(item.id)}
               onToggle={() => toggleCollapsed(item.id)}
               onExpand={() => expandGroup(item.id)}
-              manualSort={listView.sort === "manual"}
-              onReorder={reorderSession}
+              drag={dragWorkspace(item)}
+              dragSessions={dragSession}
             />
           ))
         )}
@@ -1193,12 +1221,7 @@ export function Sidebar({
             {ungroupedOpen ? (
               <ul className="ml-3 border-l border-line pl-2">
                 {groups.unbound.map((session) => (
-                  <SessionRow
-                    key={session.id}
-                    session={session}
-                    manualSort={listView.sort === "manual"}
-                    onReorder={reorderSession}
-                  />
+                  <SessionRow key={session.id} session={session} drag={dragSession(session)} />
                 ))}
               </ul>
             ) : null}

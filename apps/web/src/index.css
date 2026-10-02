@@ -16,6 +16,8 @@
   --color-card: #f4f5f7;
   --color-danger: #d94841;
   --color-accent: #111827;
+  /* 拖拽落点线：与中性墨色区分开，拖动时一眼能看见插在哪。 */
+  --color-drag: #4176e6;
 }
 
 html,

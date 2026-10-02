@@ -3,9 +3,12 @@ import type { SessionListItem, Workspace } from "@nono/protocol";
 export type GroupMode = "workspace" | "tree" | "flat";
 export type SortMode = "manual" | "recent";
 export type ArchiveFilter = "hide" | "all" | "only";
+/** 落点相对目标行的位置：上沿插入还是下沿插入。 */
+export type DropSide = "before" | "after";
 
 const VIEW_KEY = "nono.sidebar.listView";
 const ORDER_KEY = "nono.sidebar.sessionOrder";
+const WORKSPACE_ORDER_KEY = "nono.sidebar.workspaceOrder";
 const ARCHIVE_KEY = "nono.sidebar.archiveFilter";
 
 export function loadArchiveFilter(): ArchiveFilter {
@@ -47,9 +50,9 @@ export function saveListView(view: { group: GroupMode; sort: SortMode }) {
   }
 }
 
-export function loadManualOrder(): string[] {
+function loadIds(key: string): string[] {
   try {
-    const raw = localStorage.getItem(ORDER_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -59,9 +62,25 @@ export function loadManualOrder(): string[] {
   }
 }
 
+export function loadManualOrder(): string[] {
+  return loadIds(ORDER_KEY);
+}
+
 export function saveManualOrder(ids: string[]) {
   try {
     localStorage.setItem(ORDER_KEY, JSON.stringify(ids));
+  } catch {
+    // private mode / blocked storage
+  }
+}
+
+export function loadWorkspaceOrder(): string[] {
+  return loadIds(WORKSPACE_ORDER_KEY);
+}
+
+export function saveWorkspaceOrder(ids: string[]) {
+  try {
+    localStorage.setItem(WORKSPACE_ORDER_KEY, JSON.stringify(ids));
   } catch {
     // private mode / blocked storage
   }
@@ -76,14 +95,29 @@ export function mergeManualOrder(saved: string[], ids: string[]): string[] {
   return [...fresh, ...known];
 }
 
-export function reorderManual(saved: string[], ids: string[], sourceId: string, targetId: string): string[] {
+/**
+ * 把 source 挪到 target 的上沿或下沿。
+ *
+ * `ids` 可以只传当前可见的那些行：手动顺序是全序，插进可见的邻居之间，
+ * 隐藏行仍然留在原来的相对位置上。source 紧挨着落点时是空操作。
+ */
+export function reorderManualTo(
+  saved: string[],
+  ids: string[],
+  sourceId: string,
+  targetId: string,
+  side: DropSide,
+): string[] {
   const base = mergeManualOrder(saved, ids);
   const from = base.indexOf(sourceId);
   const to = base.indexOf(targetId);
-  if (from < 0 || to < 0 || from === to) return base;
+  if (from < 0 || to < 0) return base;
+  // 摘掉 source 之后 target 会前移一位，插它前面要跟着退一位。
+  const at = side === "after" ? to : to > from ? to - 1 : to;
+  if (at === from) return base;
   const next = base.slice();
   const [moved] = next.splice(from, 1);
-  next.splice(to, 0, moved);
+  next.splice(at, 0, moved);
   return next;
 }
 
@@ -99,6 +133,17 @@ export function sortSessions(sessions: SessionListItem[], mode: SortMode, order:
     ).map((id, index) => [id, index]),
   );
   return [...sessions].sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+}
+
+/** 工作区没有“最近更新”以外的排法，一直按拖出来的顺序排，没排过的沿用列表原序。 */
+export function orderWorkspaces<T extends { id: string }>(workspaces: T[], order: string[]): T[] {
+  const rank = new Map(
+    mergeManualOrder(
+      order,
+      workspaces.map((item) => item.id),
+    ).map((id, index) => [id, index]),
+  );
+  return [...workspaces].sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
 }
 
 export type WorkspaceTreeNode =
