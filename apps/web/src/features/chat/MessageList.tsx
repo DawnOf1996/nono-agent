@@ -1,20 +1,46 @@
 import type { TurnChanges } from "@nono/protocol";
-import { ChevronDown, Copy, FileDown, GitFork } from "lucide-react";
+import { ChevronDown, FileDown, GitFork } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { writeMarkdownFile } from "@/api/client";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { MarkdownText } from "@/components/MarkdownText";
+import { CopyButton } from "@/features/chat/CopyButton";
 import { QuoteCard } from "@/features/chat/QuoteCard";
 import { ReasoningRow } from "@/features/chat/ReasoningRow";
 import { SelectionQuote } from "@/features/chat/SelectionQuote";
 import { TurnChangesCard, turnForMessage } from "@/features/chat/TurnChangesCard";
 import { TurnRail, groupChatTurns } from "@/features/chat/TurnRail";
+import { TurnUsageStat } from "@/features/chat/TurnUsageStat";
 import { splitQuotedMessage } from "@/lib/quote";
 import { WorkspacePicker } from "@/features/session/WorkspacePicker";
+import { formatFullTime, formatMessageTime } from "@/lib/format";
 import { suggestMarkdownFileName } from "@/lib/markdown-file";
 import type { ChatImage, ChatMessage } from "@/store/chat";
 import { useChatStore } from "@/store/chat";
+
+/** 气泡旁的时刻。缺时间戳就不占位。 */
+function MessageStamp({ at }: { at?: number }) {
+  const label = formatMessageTime(at);
+  if (!label) return null;
+  return (
+    <span className="text-[12px] tabular-nums text-faint" title={formatFullTime(at)}>
+      {label}
+    </span>
+  );
+}
+
+/**
+ * 用户消息复制出去的内容。
+ *
+ * 原文里夹着引用标记（<quoted-from-assistant-message>…），粘到别处是乱码 ——
+ * 把引用原文摊平成普通段落，和正文一起给出去。
+ */
+function userCopyText(text: string): string {
+  const { quotes, body } = splitQuotedMessage(text);
+  if (!quotes.length) return body || text;
+  return [...quotes, body].filter(Boolean).join("\n\n");
+}
 
 function MessageImages({ images, messageId }: { images: ChatImage[]; messageId: string }) {
   const [preview, setPreview] = useState<string | null>(null);
@@ -78,6 +104,10 @@ const MessageBlock = memo(function MessageBlock({
               <MarkdownText text={quoted.body} />
             </div>
           ) : null}
+          <div className="flex items-center gap-2 pr-1">
+            <MessageStamp at={message.createdAt} />
+            {message.text ? <CopyButton text={userCopyText(message.text)} /> : null}
+          </div>
         </div>
       </div>
     );
@@ -109,15 +139,9 @@ const MessageBlock = memo(function MessageBlock({
       ) : null}
       {changes ? <TurnChangesCard turn={changes} /> : null}
       {answer && !message.streaming ? (
-        <div className="mt-2 flex items-center gap-2">
-          <button
-            type="button"
-            className="text-faint hover:text-ink"
-            title="复制"
-            onClick={() => void navigator.clipboard.writeText(answer)}
-          >
-            <Copy className="size-3.5" />
-          </button>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <MessageStamp at={message.createdAt} />
+          <CopyButton text={answer} />
           <button
             type="button"
             className="text-faint hover:text-ink"
@@ -141,6 +165,13 @@ const MessageBlock = memo(function MessageBlock({
               <GitFork className="size-3.5" />
             </button>
           ) : null}
+          {message.usage ? <TurnUsageStat usage={message.usage} /> : null}
+        </div>
+      ) : message.createdAt && !message.streaming ? (
+        // 没有正文的轮次（只调了工具、或者中途失败）：时间照样要落在那儿。
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <MessageStamp at={message.createdAt} />
+          {message.usage ? <TurnUsageStat usage={message.usage} /> : null}
         </div>
       ) : null}
     </div>

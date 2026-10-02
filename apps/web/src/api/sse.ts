@@ -1,3 +1,5 @@
+import { usageTotal, type TurnTokens } from "@/lib/usage";
+
 export type SseFrame = {
   event: string;
   data: string;
@@ -237,9 +239,7 @@ export function foldAssistantTurn(parts: ReplayStep[]): {
   };
 }
 
-export function messagesFromEvents(
-  events: Array<{ seq: number; type: string; data: Record<string, unknown>; timestamp?: number }>,
-): Array<{
+export type ReplayMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
@@ -248,20 +248,38 @@ export function messagesFromEvents(
   steps?: ReplayStep[];
   durationMs?: number;
   seq?: number;
-}> {
-  const messages: Array<{
-    id: string;
-    role: "user" | "assistant";
-    text: string;
-    images?: ReplayImage[];
-    thinking?: string;
-    steps?: ReplayStep[];
-    durationMs?: number;
-    seq?: number;
-  }> = [];
+  /** 事件时间戳（毫秒）—— 气泡上的时刻。 */
+  createdAt?: number;
+  /** 本轮的 token 用量（只挂在 AI 消息上）。 */
+  usage?: TurnTokens;
+};
+
+/** 从 ``usage`` 事件里读一份 usage 字典。字段缺失按 0 算。 */
+function readUsageEvent(data: Record<string, unknown>): TurnTokens | null {
+  const payload = data.usage;
+  if (!payload || typeof payload !== "object") return null;
+  const num = (key: string): number => {
+    const value = (payload as Record<string, unknown>)[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  };
+  return {
+    inputTokens: num("input_tokens"),
+    outputTokens: num("output_tokens"),
+    cacheReadTokens: num("cache_read_input_tokens"),
+    cacheCreationTokens: num("cache_creation_input_tokens"),
+    model: typeof data.model === "string" && data.model ? data.model : undefined,
+  };
+}
+
+export function messagesFromEvents(
+  events: Array<{ seq: number; type: string; data: Record<string, unknown>; timestamp?: number }>,
+): ReplayMessage[] {
+  const messages: ReplayMessage[] = [];
   let pending: ReplayStep[] = [];
   let pendingThinking = "";
   let pendingSeq = 0;
+  let pendingAt: number | undefined;
+  let pendingUsage: TurnTokens | null = null;
   let turnStartedAt: number | null = null;
 
   const takeChunkThinking = (raw: Record<string, unknown>): string => {
@@ -270,7 +288,29 @@ export function messagesFromEvents(
     return extractThinkingDelta({ event: chunk });
   };
 
+  /**
+   * 一轮里可能有多次 API 调用（工具往返），每次都会发一条 usage 事件 ——
+   * 累加起来才是本轮的量，不能只取最后一条。
+   */
+  const addUsage = (incoming: TurnTokens) => {
+    if (!pendingUsage) {
+      pendingUsage = { ...incoming };
+      return;
+    }
+    pendingUsage.inputTokens += incoming.inputTokens;
+    pendingUsage.outputTokens += incoming.outputTokens;
+    pendingUsage.cacheReadTokens += incoming.cacheReadTokens;
+    pendingUsage.cacheCreationTokens += incoming.cacheCreationTokens;
+    if (incoming.model) pendingUsage.model = incoming.model;
+  };
+
   const flushAssistant = (durationMs?: number, boundarySeq?: number) => {
+    // 这一刻和这份用量只属于本条消息：先摘出来，下面每条早退分支都得一起带走，
+    // 否则上一轮的时间戳/用量会漏到下一条消息上。
+    const at = pendingAt;
+    const tokens = pendingUsage;
+    pendingAt = undefined;
+    pendingUsage = null;
     if (!pending.length && !pendingThinking.trim()) {
       pendingThinking = "";
       return;
@@ -289,6 +329,10 @@ export function messagesFromEvents(
       id: last.id,
       role: "assistant",
       seq: seq > 0 ? seq : undefined,
+      // 取最后一条内容的落定时间：它才是「这条回复写完」的时刻。
+      createdAt: at,
+      // 四个桶全为 0 说明这条 usage 事件没带数，挂在气泡上只是个「0 tok」。
+      usage: tokens && usageTotal(tokens) > 0 ? tokens : undefined,
       ...foldAssistantTurn(pending),
       durationMs: durationMs && durationMs > 0 ? durationMs : undefined,
     });
@@ -300,6 +344,12 @@ export function messagesFromEvents(
     const content = event.data.content;
     if (event.type === "assistant/chunk") {
       pendingThinking += takeChunkThinking(event.data);
+      if (typeof event.timestamp === "number") pendingAt = event.timestamp;
+      continue;
+    }
+    if (event.type === "usage") {
+      const tokens = readUsageEvent(event.data);
+      if (tokens) addUsage(tokens);
       continue;
     }
     if (event.type === "user/message") {
@@ -314,6 +364,7 @@ export function messagesFromEvents(
         text,
         images: images.length ? images : undefined,
         seq: event.seq,
+        createdAt: typeof event.timestamp === "number" ? event.timestamp : undefined,
       });
     } else if (event.type === "assistant/message") {
       const step = stepFromContent(`evt-${event.seq}`, content);
@@ -324,6 +375,7 @@ export function messagesFromEvents(
         pendingThinking = "";
         pending.push(step);
         pendingSeq = event.seq;
+        if (typeof event.timestamp === "number") pendingAt = event.timestamp;
       }
     } else if (event.type === "turn/start") {
       turnStartedAt = typeof event.timestamp === "number" ? event.timestamp : null;
