@@ -97,7 +97,16 @@ class EditFileTool(ToolBase):
                 "refusing to edit to avoid corrupting the file.",
             )
 
-        count = original.count(old_string)
+        # 换行归一：模型看到的正文来自 read_file 的 splitlines()（不带 \r），
+        # 磁盘上却是 CRLF。拿原样去比，跨行的 old_string 在 Windows 上永远匹配不上 ——
+        # 模型会把 read_file 的输出原样贴回来，于是每次多行编辑都报"找不到"。
+        # 匹配统一在 LF 空间里做，写回时按文件原有约定还原；混排的文件不动它。
+        crlf = b"\r\n" in data and data.count(b"\r\n") == data.count(b"\n")
+        target = original.replace("\r\n", "\n") if crlf else original
+        needle = old_string.replace("\r\n", "\n")
+        replacement = new_string.replace("\r\n", "\n")
+
+        count = target.count(needle)
         if count == 0:
             return error_result(
                 self._name,
@@ -110,7 +119,9 @@ class EditFileTool(ToolBase):
                 "Provide a more specific old_string or set replace_all=true.",
             )
 
-        updated = original.replace(old_string, new_string)
+        updated = target.replace(needle, replacement)
+        if crlf:
+            updated = updated.replace("\n", "\r\n")
 
         try:
             with open(file_path, "w", encoding="utf-8", newline="") as f:

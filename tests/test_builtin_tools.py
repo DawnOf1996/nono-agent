@@ -184,6 +184,38 @@ class TestEdit:
         assert not result.is_error
         assert (tmp_path / "f.txt").read_text() == "cc bb cc\n"
 
+    async def test_edit_matches_across_crlf(self, ctx, tmp_path):
+        """CRLF 文件 + 模型给的 LF old_string：必须能匹配上，且写回仍是 CRLF。
+
+        模型看到的正文来自 read_file 的 splitlines()（不带 \\r），直接贴回来就是 LF；
+        不做归一的话，Windows 上每一次跨行编辑都会报 old_string not found。
+        """
+        path = tmp_path / "crlf.txt"
+        path.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+        e = EditFileTool()
+        result = await e.execute(
+            {"path": "crlf.txt", "old_string": "two\nthree", "new_string": "TWO\nTHREE"}, ctx
+        )
+        assert not result.is_error
+        assert path.read_bytes() == b"one\r\nTWO\r\nTHREE\r\n"
+
+    async def test_edit_keeps_lf_file_lf(self, ctx, tmp_path):
+        path = tmp_path / "lf.txt"
+        path.write_bytes(b"a\nb\n")
+        e = EditFileTool()
+        result = await e.execute({"path": "lf.txt", "old_string": "a\nb", "new_string": "A\nB"}, ctx)
+        assert not result.is_error
+        assert path.read_bytes() == b"A\nB\n"
+
+    async def test_edit_accepts_crlf_old_string_on_lf_file(self, ctx, tmp_path):
+        """反过来也要认：模型偶尔自己带上 \\r\\n。"""
+        path = tmp_path / "lf2.txt"
+        path.write_bytes(b"a\nb\n")
+        e = EditFileTool()
+        result = await e.execute({"path": "lf2.txt", "old_string": "a\r\nb", "new_string": "A\nB"}, ctx)
+        assert not result.is_error
+        assert path.read_bytes() == b"A\nB\n"
+
     async def test_edit_gbk_file_rewrites_utf8(self, ctx, tmp_path):
         path = tmp_path / "gbk.txt"
         path.write_bytes("你好世界".encode("gbk"))
