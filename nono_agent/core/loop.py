@@ -45,6 +45,7 @@ from nono_agent.core.types import (
     SystemMessage,
     ToolResult,
     ToolUseBlock,
+    UIToolResultMessage,
     Usage,
     UserMessage,
 )
@@ -617,12 +618,27 @@ async def agentic_loop(
                 exec_result.duration_ms, exec_result.result.is_error,
             )
 
-            # 为每个工具完成发出进度通知
+            # 为每个工具完成发出进度通知（带上结果，客户端可以立刻贴回工具行）
             yield SystemMessage(
                 subtype="tool_result",
                 content=f"Tool '{exec_result.tool_name}' completed "
                         f"({exec_result.duration_ms:.0f}ms)",
+                tool_use_id=exec_result.tool_use_id,
+                tool_result=result.content
+                if isinstance(result.content, str)
+                else json.dumps(result.content, ensure_ascii=False),
+                tool_is_error=result.is_error,
             )
+
+            # 工具给 UI 的结构化附件（文件差异等）。单独一条消息而不是塞进上面那个
+            # 通知：那份通知的 content 是给模型看的，附件只对界面有意义。
+            # 不入 store，所以不会进上下文。
+            if result.ui:
+                yield UIToolResultMessage(
+                    tool_use_id=exec_result.tool_use_id,
+                    tool_name=exec_result.tool_name,
+                    ui=result.ui,
+                )
 
         # 工具执行完成后检查取消信号
         if signal.aborted:

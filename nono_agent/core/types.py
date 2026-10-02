@@ -216,6 +216,11 @@ class SystemMessage(BaseModel):
     max_retries: int | None = None             # API 最大重试次数
     retry_in_ms: int | None = None             # 重试等待时间
     error: dict[str, Any] | None = None        # 错误详情
+    # subtype="tool_result" 时带上这次调用的结果，客户端（对话 UI）据此把
+    # 结果挂到正在跑的那次工具调用上，不必等整轮结束再回放事件流。
+    tool_use_id: str | None = None
+    tool_result: str | None = None
+    tool_is_error: bool = False
 
 
 class AttachmentMessage(BaseModel):
@@ -236,6 +241,25 @@ class ProgressMessage(BaseModel):
     content: str = ""
 
 
+class UIToolResultMessage(BaseModel):
+    """工具结果给 UI 的附件 —— 只走事件流，绝不进模型上下文。
+
+    工具把结构化结果（现在是文件的前后差异）放在 ``ToolResult.ui`` 里，loop 在
+    工具跑完后 yield 本消息，引擎据此落一条 ``ignorable`` 事件并推给客户端。
+
+    为什么不塞进 ToolResult.content：那份内容是要喂给模型的，多一行就是多一份
+    token；而行号只有客户端需要。本消息既不入 store（不进上下文），
+    ``message_to_derived`` 也不认它（不参与重建），所以对模型完全不可见。
+    """
+
+    type: Literal["ui_tool_result"] = "ui_tool_result"
+    uuid: str = Field(default_factory=_new_uuid)
+    timestamp: float = Field(default_factory=_now_ms)
+    tool_use_id: str = ""
+    tool_name: str = ""
+    ui: dict[str, Any] = Field(default_factory=dict)
+
+
 # 所有内部消息类型的联合类型 —— agentic loop 操作的消息都是 Message
 # 通过 type 字段判别具体类型，避免 isinstance 链
 Message = (
@@ -244,6 +268,7 @@ Message = (
     | SystemMessage
     | AttachmentMessage
     | ProgressMessage
+    | UIToolResultMessage
 )
 
 
@@ -335,6 +360,9 @@ class ToolResult(BaseModel):
     content: str | list[dict[str, Any]]
     is_error: bool = False
     tool_name: str = ""
+    # 只给客户端 UI 的结构化附件，**不进 content**，所以永远不会进模型上下文。
+    # 目前只有文件工具用：整文件的前后差异（真实行号），对话里的 diff 卡片靠它渲染。
+    ui: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +455,21 @@ class SDKSystemMessage(BaseModel):
     error_status: int | None = None
     error: str | None = None
     content: str | None = None  # 系统消息内容（如 tool_result 完成通知）
+    # subtype="tool_result" 时的工具结果三件套（见 SystemMessage 同名字段）
+    tool_use_id: str | None = None
+    tool_result: str | None = None
+    tool_is_error: bool = False
+
+
+class SDKUIToolResultMessage(BaseModel):
+    """SDK 协议格式的 UI 附件消息 —— 工具结果给界面的结构化数据。"""
+
+    type: Literal["ui_tool_result"] = "ui_tool_result"
+    session_id: str
+    uuid: str = Field(default_factory=_new_uuid)
+    tool_use_id: str = ""
+    tool_name: str = ""
+    ui: dict[str, Any] = Field(default_factory=dict)
 
 
 class SDKToolUseSummary(BaseModel):
@@ -474,6 +517,7 @@ SDKMessage = (
     | SDKStreamEventMessage
     | SDKSystemMessage
     | SDKToolUseSummary
+    | SDKUIToolResultMessage
     | SDKResultMessage
 )
 

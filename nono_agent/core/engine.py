@@ -43,11 +43,13 @@ from nono_agent.core.types import (
     SDKStreamEventMessage,
     SDKSystemMessage,
     SDKToolUseSummary,
+    SDKUIToolResultMessage,
     SDKUserMessageReplay,
     StreamEvent,
     SystemMessage,
     TombstoneMessage,
     ToolUseSummaryMessage,
+    UIToolResultMessage,
     Usage,
     UserMessage,
 )
@@ -107,6 +109,7 @@ from nono_agent.session.events import (
     EVENT_TOOL_RESULT,
     EVENT_TURN_END,
     EVENT_TURN_START,
+    EVENT_UI_TOOL_RESULT,
     EVENT_USAGE,
     EVENT_USER_INPUT,
     EVENT_USER_MESSAGE,
@@ -605,6 +608,19 @@ class QueryEngine:
                             EVENT_USER_MESSAGE,
                             content=internal_msg.message.get("content"),
                         )
+                    await self._flush_events()
+
+                if isinstance(internal_msg, UIToolResultMessage):
+                    # 工具结果给 UI 的结构化附件：落一条 ignorable 事件。
+                    # ignorable ⇒ derive_messages 不折叠它 ⇒ 重开历史会话拿得到，
+                    # 而模型上下文里从头到尾没有它。
+                    self._stage_event(
+                        EVENT_UI_TOOL_RESULT,
+                        ignorable=True,
+                        call_id=internal_msg.tool_use_id,
+                        tool_name=internal_msg.tool_name,
+                        ui=internal_msg.ui,
+                    )
                     await self._flush_events()
 
                 # 检测终止信号: agentic loop 通过 subtype="loop_terminal" 通知结束
@@ -1537,6 +1553,20 @@ class QueryEngine:
                     compact_metadata=msg.compact_metadata,
                     error=msg.error.get("message") if msg.error else None,
                     content=msg.content if msg.content else None,
+                    tool_use_id=msg.tool_use_id,
+                    tool_result=msg.tool_result,
+                    tool_is_error=msg.tool_is_error,
+                )
+            ]
+
+        if isinstance(msg, SDKUIToolResultMessage) or isinstance(msg, UIToolResultMessage):
+            return [
+                SDKUIToolResultMessage(
+                    session_id=self._session_id,
+                    uuid=msg.uuid,
+                    tool_use_id=msg.tool_use_id,
+                    tool_name=msg.tool_name,
+                    ui=msg.ui,
                 )
             ]
 

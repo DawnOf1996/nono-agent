@@ -183,6 +183,28 @@ export type SdkResultMessage = {
   errors?: string[];
 };
 
+/** 工具结果给 UI 的结构化附件（不进模型上下文）。 */
+export type FileDiffUi = {
+  kind: "file_diff";
+  path: string;
+  /** 写之前文件不存在（新建）。 */
+  created: boolean;
+  added: number;
+  removed: number;
+  /** unified diff（含 @@ 头，行号是文件里的真实行号）；超限时为 null。 */
+  diff: string | null;
+  truncated: boolean;
+};
+
+export type SdkUiToolResultMessage = {
+  type: "ui_tool_result";
+  session_id?: string;
+  uuid?: string;
+  tool_use_id?: string;
+  tool_name?: string;
+  ui?: FileDiffUi;
+};
+
 export type SessionEvent = {
   seq: number;
   type: string;

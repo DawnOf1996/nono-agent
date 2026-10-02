@@ -32,6 +32,9 @@ EVENT_PERMISSION_CHANGED = "permission/changed"
 EVENT_MEMORY_WRITE = "memory/write"
 EVENT_MEMORY_RETRIEVE = "memory/retrieve"
 EVENT_USAGE = "usage"
+# 工具结果给 UI 的结构化附件（文件差异等）。ignorable：不参与消息重建，
+# 也就永远不会进模型上下文 —— 它只是给界面的。
+EVENT_UI_TOOL_RESULT = "ui/tool-result"
 
 # 本版本认识的全部事件类型。读日志时遇到不在此集合内且未标 ignorable 的事件
 # 视为「更高版本写入的必读事件」，拒绝重建（见 derive_messages）。
@@ -56,6 +59,7 @@ KNOWN_EVENT_TYPES: frozenset[str] = frozenset(
         EVENT_MEMORY_WRITE,
         EVENT_MEMORY_RETRIEVE,
         EVENT_USAGE,
+        EVENT_UI_TOOL_RESULT,
     }
 )
 

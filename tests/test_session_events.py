@@ -23,6 +23,7 @@ from nono_agent.session.events import (
     EVENT_TOOL_RESULT,
     EVENT_TURN_END,
     EVENT_TURN_START,
+    EVENT_UI_TOOL_RESULT,
     EVENT_USER_MESSAGE,
     last_turn_number,
 )
@@ -55,6 +56,42 @@ class TestSessionEvent:
     def test_ignorable_flag(self):
         ev = _ev(1, "future/type", ignorable=True)
         assert ev.ignorable is True
+
+    def test_ui_tool_result_event_stays_out_of_model_context(self):
+        """UI 附件事件是 ignorable 的：不折叠进消息，也就永远不进模型上下文。
+
+        它落在会话日志里（重开历史能还原差异卡片），但对 derive 是隐形的 ——
+        这正是"给界面的数据不喂给模型"这条约束的落点。
+        """
+        ui = {
+            "kind": "file_diff",
+            "path": "a.py",
+            "added": 1,
+            "removed": 0,
+            "diff": "@@ -1 +1 @@",
+        }
+        events = [
+            _ev(1, EVENT_USER_MESSAGE, content="改一下"),
+            _ev(
+                2,
+                EVENT_ASSISTANT_MESSAGE,
+                content=[{"type": "tool_use", "id": "t1", "name": "edit_file"}],
+            ),
+            _ev(
+                3,
+                EVENT_UI_TOOL_RESULT,
+                ignorable=True,
+                call_id="t1",
+                tool_name="edit_file",
+                ui=ui,
+            ),
+            _ev(4, EVENT_TOOL_RESULT, call_id="t1", result="ok", is_error=False),
+        ]
+        derived = derive_messages(events)
+        assert [m["role"] for m in derived] == ["user", "assistant", "user"]
+        assert "file_diff" not in repr(derived)
+        # 事件本身还在：重开历史会话时前端照样拿得到差异。
+        assert [e for e in events if e.type == EVENT_UI_TOOL_RESULT][0].data["ui"] == ui
 
 
 class TestDeriveMessages:

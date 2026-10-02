@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from nono_agent.core.types import SDKResultMessage
+from nono_agent.core.types import SDKResultMessage, ToolResult
 from tests.helpers import MockTool, create_test_engine
 
 
@@ -73,6 +73,68 @@ class TestQueryEngine:
             # Verify final result
             result = messages[-1]
             assert isinstance(result, SDKResultMessage)
+
+    @pytest.mark.asyncio
+    async def test_tool_result_progress_carries_result(self):
+        """工具跑完的进度帧要带上结果 —— 客户端据此把输出贴回工具行。"""
+        tool = MockTool(name="calculator", response="42")
+        engine = create_test_engine(
+            responses=[
+                {
+                    "text": "",
+                    "tool_calls": [
+                        {"name": "calculator", "id": "tc_1", "input": {"query": "6*7"}}
+                    ],
+                },
+                {"text": "done", "tool_calls": []},
+            ],
+            tools=[tool],
+        )
+
+        async with engine:
+            messages = [msg async for msg in engine.submit_message("What is 6*7?")]
+
+        notices = [
+            msg
+            for msg in messages
+            if msg.type == "system" and msg.subtype == "tool_result"
+        ]
+        assert len(notices) == 1
+        assert notices[0].tool_use_id == "tc_1"
+        assert notices[0].tool_result == "42"
+        assert notices[0].tool_is_error is False
+
+    @pytest.mark.asyncio
+    async def test_tool_result_progress_marks_error(self):
+        """失败的工具在进度帧里标出 is_error。"""
+
+        class FailingTool(MockTool):
+            async def execute(self, input_params, context):
+                self.call_count += 1
+                return ToolResult(
+                    tool_use_id="", content="boom", is_error=True, tool_name=self.name
+                )
+
+        tool = FailingTool(name="flaky", response="unused")
+        engine = create_test_engine(
+            responses=[
+                {"text": "", "tool_calls": [{"name": "flaky", "id": "tc_2", "input": {}}]},
+                {"text": "done", "tool_calls": []},
+            ],
+            tools=[tool],
+        )
+
+        async with engine:
+            messages = [msg async for msg in engine.submit_message("go")]
+
+        notices = [
+            msg
+            for msg in messages
+            if msg.type == "system" and msg.subtype == "tool_result"
+        ]
+        assert len(notices) == 1
+        assert notices[0].tool_result == "boom"
+        assert notices[0].tool_is_error is True
 
     @pytest.mark.asyncio
     async def test_abort(self):
