@@ -22,7 +22,7 @@ export function FigurePlaceholder({ label }: { label: string }) {
 const actionClass =
   "inline-flex h-7 cursor-pointer items-center gap-1 rounded-lg border border-line bg-white px-2 text-[12px] text-muted shadow-[0_4px_14px_rgba(15,17,21,0.06)] hover:bg-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-ink/15 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40";
 
-/** Mermaid / SVG 图块：复制源码、下载 PNG，以及查看代码、加进当前对话。 */
+/** Mermaid / SVG 图块：复制源码、把图加进当前对话，以及下载 PNG、查看代码。 */
 export function FigureCard({
   svg,
   source,
@@ -61,6 +61,13 @@ export function FigureCard({
     return svgToPngBlob(svg);
   }
 
+  async function attachPng() {
+    const blob = await exportPng();
+    const file = new File([blob], filename, { type: "image/png" });
+    const images = await encodeImages([file]);
+    useChatStore.getState().addAttachments(images);
+  }
+
   return (
     <div className="relative my-3 overflow-hidden rounded-lg border border-line bg-white">
       <div className="absolute top-2 right-2 z-10 flex max-w-[calc(100%-1rem)] flex-wrap justify-end gap-1.5 select-none">
@@ -79,18 +86,18 @@ export function FigureCard({
           <button
             type="button"
             className={actionClass}
-            title="下载图片"
+            title="添加到对话"
             disabled={busy}
             onClick={() => {
               setBusy(true);
-              void exportPng()
-                .then((blob) => downloadBlob(blob, filename))
+              void attachPng()
+                .then(() => setNotice("已添加到对话"))
                 .catch(() => setNotice("导出失败"))
                 .finally(() => setBusy(false));
             }}
           >
-            <Download className="size-3.5" />
-            下载图片
+            <MessageSquarePlus className="size-3.5" />
+            添加到对话
           </button>
         ) : null}
         {notice ? (
@@ -120,18 +127,13 @@ export function FigureCard({
                 setMenuOpen(false);
                 setBusy(true);
                 void exportPng()
-                  .then(async (blob) => {
-                    const file = new File([blob], filename, { type: "image/png" });
-                    const images = await encodeImages([file]);
-                    useChatStore.getState().addAttachments(images);
-                    setNotice("已添加到对话");
-                  })
+                  .then((blob) => downloadBlob(blob, filename))
                   .catch(() => setNotice("导出失败"))
                   .finally(() => setBusy(false));
               }}
             >
-              <MessageSquarePlus className="mt-0.5 size-3.5 shrink-0 text-muted" />
-              <span className="text-[13px]">添加到对话</span>
+              <Download className="mt-0.5 size-3.5 shrink-0 text-muted" />
+              <span className="text-[13px]">下载图片</span>
             </DropdownItem>
             <DropdownItem
               onClick={() => {
