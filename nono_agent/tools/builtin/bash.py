@@ -70,6 +70,10 @@ class BashTool(ToolBase):
         "Use this for running build/test commands, inspecting the filesystem, "
         "or manipulating files. Prefer dedicated tools (read_file, write_file, "
         "edit_file, glob, grep) when they exist. "
+        "Every call must carry a short `description` saying what the command "
+        "does in the user's terms (5-10 words) — the conversation UI shows it "
+        "next to the command, so it must read as prose, not as the command "
+        "itself. "
         "Commands with destructive side effects (rm -rf, mkfs, shutdown, sudo, "
         "etc.) are classified as dangerous and require elevated permission."
     )
@@ -80,6 +84,14 @@ class BashTool(ToolBase):
                 "type": "string",
                 "description": "The shell command to execute.",
             },
+            "description": {
+                "type": "string",
+                "description": (
+                    "Clear, concise description of what this command does, in 5-10 words, "
+                    'shown in the UI next to the command. Examples: "ls" -> "List files in '
+                    'the current directory"; "pytest -q" -> "Run the test suite quietly".'
+                ),
+            },
             "workdir": {
                 "type": "string",
                 "description": "Working directory for the command (relative to cwd or absolute).",
@@ -89,7 +101,7 @@ class BashTool(ToolBase):
                 "description": f"Timeout in seconds (default {_DEFAULT_TIMEOUT}).",
             },
         },
-        "required": ["command"],
+        "required": ["command", "description"],
     }
     _is_concurrent_safe = False
     _has_write_side_effects = True

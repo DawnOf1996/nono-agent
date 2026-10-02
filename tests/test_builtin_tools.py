@@ -443,6 +443,12 @@ class TestBash:
         assert b.should_prompt_for_permission({"command": "ls -la"}, None) is False
         assert b.should_prompt_for_permission({"command": "rm -rf /tmp/x"}, None) is True
 
+    def test_bash_requires_description(self):
+        """命令功能描述是必填 —— 对话界面靠它把「运行命令」这行说成人话。"""
+        schema = BashTool().input_schema
+        assert "description" in schema["properties"]
+        assert "description" in schema["required"]
+
 
 class TestTodoWrite:
     async def test_valid_todos(self, ctx):
