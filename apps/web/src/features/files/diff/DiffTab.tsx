@@ -510,11 +510,20 @@ function CommitDiff({ target, visible }: { target: Extract<DiffTarget, { source:
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const openFile = usePanelStore((state) => state.openFile);
-  const loaded = detail !== null;
+  // 底部的预览会复用同一个组件：换提交时要把上一条清掉再取新的，否则旧内容会一直顶着。
+  // 这个 ref 只用来判断「换目标了没有」，不能拿来挡掉这次取数——StrictMode 下 effect 挂载时
+  // 会跑两遍（第一遍的请求被 cleanup 中止），在这里提前 return 就没有第二次请求了。
+  const shownFor = useRef("");
 
   useEffect(() => {
-    if (!visible || loaded) return;
+    if (!visible) return;
+    if (shownFor.current !== target.hash) {
+      shownFor.current = target.hash;
+      setCollapsed(new Set());
+    }
     const controller = new AbortController();
+    setDetail(null);
+    setError(null);
     void fetchGitCommit(target.root, target.repo, target.hash, controller.signal)
       .then((next) => {
         if (!controller.signal.aborted) setDetail(next);
@@ -523,7 +532,7 @@ function CommitDiff({ target, visible }: { target: Extract<DiffTarget, { source:
         if (!controller.signal.aborted) setError(errorText(cause, "无法读取提交"));
       });
     return () => controller.abort();
-  }, [target.root, target.repo, target.hash, visible, loaded]);
+  }, [target.root, target.repo, target.hash, visible]);
 
   const totals = useMemo(
     () =>
