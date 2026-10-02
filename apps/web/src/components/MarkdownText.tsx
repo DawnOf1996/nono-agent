@@ -15,7 +15,27 @@ import {
 
 const remarkPlugins = [remarkGfm];
 
+/**
+ * 表格外面套一层横向滚动壳。
+ *
+ * react-markdown 只把 <table> 的 children（thead/tbody）交给组件，<table> 元素本身得
+ * 补回去：只渲染 children 的话表格元素就没了，浏览器兜出一个匿名 table（width: auto），
+ * 表格缩成内容宽，.prose-md table 的 width: 100% 也无处可落。
+ *
+ * CSS 里表格铺满正文列（width: 100%）。这层壳是兜底 —— 列多到 min-content 加起来都超过
+ * 列宽时表格会溢出，那时横滚，别让溢出顶到消息列表上。
+ * linkComponents 里也必须带：流式渲染会切到那套组件，缺了壳宽表会在流到一半时把整页撑宽。
+ */
+const tableComponents: Components = {
+  table: ({ children }) => (
+    <div className="table-scroll">
+      <table>{children}</table>
+    </div>
+  ),
+};
+
 const linkComponents: Components = {
+  ...tableComponents,
   a: ({ href, children }) => (
     <a href={href} target="_blank" rel="noreferrer">
       {children}

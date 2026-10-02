@@ -33,7 +33,8 @@ export function CodeFence({ children }: { children: ReactNode }) {
 
   return (
     <div className="code-fence my-[0.85em] max-w-full overflow-hidden rounded-xl border border-line bg-code">
-      <div className="flex items-center justify-between gap-3 px-3.5 pt-2.5 select-none">
+      {/* 头部和代码体同色，只靠一条极淡的线分开：语言名/复制不至于浮在代码上。 */}
+      <div className="flex items-center justify-between gap-3 border-b border-line/70 px-3.5 pt-2.5 pb-1.5 select-none">
         <span className="min-w-0 truncate text-[13px] text-muted">{language}</span>
         <button
           type="button"

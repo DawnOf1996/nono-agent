@@ -365,35 +365,63 @@ textarea {
   line-height: 1.65;
 }
 
+/* 表格只留横线、不画框。竖线和表头底色去掉之后，长表扫读时眼睛不会被一格一格的
+   边框绊住，跟引用块、分割线是同一套语言：细线 + 留白。 */
+.prose-md .table-scroll {
+  margin: 0.85em 0;
+  overflow-x: auto;
+  /* 表格横滚到头时别把滚动"传"给外层消息列表，否则整个会话会跟着横向晃一下。 */
+  overscroll-behavior-x: contain;
+}
+
+/* 表格铺满正文列（width: 100%），跟正文左右缘对齐。宽度不够分时才在格内折行，
+   折点交给浏览器按词/CJK 边界找：下面那条 break-word 就是为此准备的。
+   外层 .table-scroll 只是兜底 —— 列多到 min-content 加起来都超过列宽时（每格一个
+   长标识符），表格会溢出，那时横滚，别让溢出顶到消息列表上。 */
 .prose-md table {
   width: 100%;
-  margin: 0.85em 0;
+  margin: 0;
   border-collapse: collapse;
+  border-spacing: 0;
   font-size: 0.92em;
 }
 
 .prose-md th,
 .prose-md td {
-  border: 1px solid var(--color-line);
-  padding: 0.4em 0.65em;
+  border: 0;
+  border-bottom: 1px solid var(--color-line);
+  padding: 0.5em 1.15em 0.5em 0;
   text-align: left;
   vertical-align: top;
+  /* 正文那条 anywhere 会把 min-content 压到 0，列就被挤扁、词被从中间劈开；
+     break-word 只在"这个词自己都放不下"时才断，断点落在词与词之间。 */
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .prose-md th {
-  background: var(--color-sidebar);
+  border-bottom-color: var(--color-line-strong);
+  background: transparent;
   font-weight: 600;
+}
+
+/* 末列不留右内边距：表格右缘跟正文右缘齐平，横向滚动时不会拖着一截空白。 */
+.prose-md th:last-child,
+.prose-md td:last-child {
+  padding-right: 0;
+}
+
+/* 表格正文走等宽：文件路径、字段名、命令这类内容和正文混排时，等宽才分得清哪个是标识符。
+   中文不受影响（--font-mono 末尾兜底到雅黑，和正文同一款）；不想要这层"终端表格"观感
+   就删掉这一行。 */
+.prose-md td {
+  font-family: var(--font-mono);
 }
 
 /* 文件预览是"读文档"，不是"看对话"，固定 14px：跟着会话字号走，README 会跟着忽大忽小。 */
 .file-preview .prose-md {
   font-size: 14px;
   overflow-wrap: break-word;
-}
-
-.file-preview .prose-md table {
-  width: max-content;
-  min-width: 100%;
 }
 
 .file-preview .prose-md details {

@@ -7,6 +7,7 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 
 import { httpUrl } from "@/features/files/BrowserPane";
+import { CodeFence } from "@/components/CodeFence";
 import { usePanelStore } from "@/features/files/panel-store";
 import { MdToc } from "@/features/files/preview/markdown/MdToc";
 import { previewImageSrc } from "@/features/files/preview/markdown/media";
@@ -45,12 +46,20 @@ function previewComponents(root: string, filePath: string): Components {
   if (hit) return hit;
   if (componentCache.size > 32) componentCache.clear();
   const created: Components = {
+    // 和对话里同一个滚动壳。注意 <table> 本身要补回去：react-markdown 只给 children
+    // （thead/tbody），少了 <table> 浏览器会兜一个匿名 table，表格就缩成内容宽了。
+    table: ({ children }) => (
+      <div className="table-scroll">
+        <table>{children}</table>
+      </div>
+    ),
     pre: ({ children }) => {
       const mermaid = mermaidBlockSource(children);
       if (mermaid !== null) return <MermaidDiagram code={mermaid} />;
       const svg = svgBlockSource(children);
       if (svg !== null) return <SvgFigure markup={svg} />;
-      return <pre>{children}</pre>;
+      // 和对话里同一个围栏组件：语言名 + 复制按钮 + 头部那条细线，预览和聊天长得一样。
+      return <CodeFence>{children}</CodeFence>;
     },
     img: ({ src, alt }) => {
       const resolved = previewImageSrc(root, filePath, typeof src === "string" ? src : undefined);
