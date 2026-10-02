@@ -17,6 +17,7 @@ from nono_agent.tools.builtin._common import (
     LOSSY_ENCODING,
     decode_text,
     error_result,
+    file_diff_ui,
     is_binary,
     is_utf8_family,
     ok_result,
@@ -130,10 +131,14 @@ class EditFileTool(ToolBase):
             return error_result(self._name, f"Failed to write '{file_path}': {exc}")
 
         replaced = count if replace_all else 1
-        note = ""
-        if not is_utf8_family(encoding):
-            note = f" Rewrote as UTF-8 (was {encoding})."
-        return ok_result(
+        # 结果文本保持一句话：命中行号和整文件差异都走 ui 附件，不占模型 token。
+        # 差异必须是**整文件**的：卡片要显示"第几行被改了"，
+        # 拿入参里的 old_string/new_string 自己算只能得到片段内的相对编号。
+        result = ok_result(
             self._name,
-            f"Edited {file_path}: replaced {replaced} occurrence(s).{note}",
+            f"Edited {file_path}: replaced {replaced} occurrence(s).",
         )
+        result.ui = file_diff_ui(file_path, target, updated)
+        if not is_utf8_family(encoding):
+            result.content += f" Rewrote as UTF-8 (was {encoding})."
+        return result

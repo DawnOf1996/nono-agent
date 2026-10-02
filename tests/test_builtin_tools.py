@@ -154,6 +154,61 @@ class TestWriteAndRead:
         await w.execute({"path": "sub/dir/x.txt", "content": "hi"}, ctx)
         assert (tmp_path / "sub/dir/x.txt").read_text() == "hi"
 
+    async def test_write_new_file_is_marked(self, ctx, tmp_path):
+        """新建：整篇都是新增，结果标 created，UI 自己就能算出来，不必再附差异。"""
+        w = WriteFileTool()
+        result = await w.execute({"path": "new.py", "content": "a\nb\n"}, ctx)
+        assert not result.is_error
+        assert result.ui["created"] is True
+        assert result.ui["added"] == 2
+        assert "@@" in result.ui["diff"]
+
+    async def test_write_overwrite_carries_unified_diff(self, ctx, tmp_path):
+        """覆盖写：ui 附件里带 @@ 段和真实的 +N/-M，卡片才能渲染真差异。"""
+        (tmp_path / "c.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+        w = WriteFileTool()
+        result = await w.execute(
+            {"path": "c.py", "content": "a = 1\nb = 20\nc = 3\n"}, ctx
+        )
+        assert not result.is_error
+        assert result.ui["added"] == 1 and result.ui["removed"] == 1
+        assert "-b = 2" in result.ui["diff"]
+        assert "+b = 20" in result.ui["diff"]
+
+    async def test_write_result_text_has_no_diff(self, ctx, tmp_path):
+        """差异只走 ui 附件：结果文本回到一句话，不占模型 token。"""
+        (tmp_path / "c.py").write_text("a = 1\n", encoding="utf-8")
+        w = WriteFileTool()
+        result = await w.execute({"path": "c.py", "content": "a = 2\n"}, ctx)
+        assert result.content.count("\n") == 0
+        assert "@@" not in result.content
+
+    async def test_write_overwrite_big_diff_keeps_stats_only(self, ctx, tmp_path):
+        """差异过大时只留统计（diff=None + truncated），模型不必为一张卡片重读整份文件。"""
+        before = "\n".join(f"line {i}" for i in range(400))
+        after = "\n".join(f"LINE {i}" for i in range(400))
+        (tmp_path / "big.txt").write_text(before, encoding="utf-8")
+        w = WriteFileTool()
+        result = await w.execute({"path": "big.txt", "content": after}, ctx)
+        assert not result.is_error
+        assert result.ui["added"] == 400 and result.ui["removed"] == 400
+        assert result.ui["diff"] is None
+        assert result.ui["truncated"] is True
+
+    async def test_write_binary_baseline_unavailable(self, ctx, tmp_path):
+        """基线是二进制：读不出来就没有差异，不硬凑一个假的。"""
+        (tmp_path / "b.bin").write_bytes(b"\x00\x01old")
+        w = WriteFileTool()
+        result = await w.execute({"path": "b.bin", "content": "new"}, ctx)
+        assert not result.is_error
+        assert result.ui is None
+
+    async def test_write_rejects_non_string_content(self, ctx, tmp_path):
+        w = WriteFileTool()
+        result = await w.execute({"path": "x.txt", "content": 42}, ctx)
+        assert result.is_error
+        assert "must be a string" in result.content
+
 
 class TestEdit:
     async def test_edit_unique_match(self, ctx, tmp_path):
@@ -184,6 +239,59 @@ class TestEdit:
         assert not result.is_error
         assert (tmp_path / "f.txt").read_text() == "cc bb cc\n"
 
+    async def test_edit_reports_first_match_line(self, ctx, tmp_path):
+        """ui 附件里的差异带真实行号。"""
+        (tmp_path / "f.txt").write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+        e = EditFileTool()
+        result = await e.execute(
+            {"path": "f.txt", "old_string": "three", "new_string": "THREE"}, ctx
+        )
+        assert not result.is_error
+        assert result.ui["added"] == 1 and result.ui["removed"] == 1
+        assert "-three" in result.ui["diff"] and "+THREE" in result.ui["diff"]
+
+    async def test_edit_ui_diff_is_whole_file(self, ctx, tmp_path):
+        """行号必须是**整文件**的：改第 20 行，hunk 就得以 17 打头（前面带 3 行上下文），
+        而不是从 1 重新数 —— 这正是拿 old_string/new_string 自己算做不到的地方。"""
+        body = "\n".join(f"line{i}" for i in range(1, 41))
+        (tmp_path / "f.txt").write_text(body, encoding="utf-8")
+        e = EditFileTool()
+        result = await e.execute(
+            {"path": "f.txt", "old_string": "line20", "new_string": "LINE20"}, ctx
+        )
+        assert not result.is_error
+        header = next(
+            line for line in result.ui["diff"].splitlines() if line.startswith("@@")
+        )
+        assert header.startswith("@@ -17,7 +17,7 @@"), header
+
+    async def test_edit_result_text_has_no_diff(self, ctx, tmp_path):
+        (tmp_path / "f.txt").write_text("a\nb\n", encoding="utf-8")
+        e = EditFileTool()
+        result = await e.execute({"path": "f.txt", "old_string": "a", "new_string": "A"}, ctx)
+        assert result.content.count("\n") == 0
+        assert "@@" not in result.content
+
+    async def test_edit_error_has_no_ui_diff(self, ctx, tmp_path):
+        """失败就没有差异：文件没动过，不能画一条"打算怎么改"。"""
+        (tmp_path / "f.txt").write_text("alpha\n", encoding="utf-8")
+        e = EditFileTool()
+        result = await e.execute(
+            {"path": "f.txt", "old_string": "gamma", "new_string": "GAMMA"}, ctx
+        )
+        assert result.is_error
+        assert result.ui is None
+
+    async def test_edit_multi_line_match_reports_start_line(self, ctx, tmp_path):
+        (tmp_path / "f.txt").write_bytes(b"a\nb\nc\nd\ne\n")
+        e = EditFileTool()
+        result = await e.execute(
+            {"path": "f.txt", "old_string": "c\nd", "new_string": "C\nD"}, ctx
+        )
+        assert not result.is_error
+        assert result.ui["added"] == 2 and result.ui["removed"] == 2
+        assert "-c" in result.ui["diff"] and "+C" in result.ui["diff"]
+
     async def test_edit_matches_across_crlf(self, ctx, tmp_path):
         """CRLF 文件 + 模型给的 LF old_string：必须能匹配上，且写回仍是 CRLF。
 
@@ -198,12 +306,19 @@ class TestEdit:
         )
         assert not result.is_error
         assert path.read_bytes() == b"one\r\nTWO\r\nTHREE\r\n"
+        # 差异在 LF 空间里算，行号不受 CRLF 影响：改的是第 2 行，hunk 从 1 起（3 行上下文）。
+        header = next(
+            line for line in result.ui["diff"].splitlines() if line.startswith("@@")
+        )
+        assert header.startswith("@@ -1,3 +1,3 @@"), header
 
     async def test_edit_keeps_lf_file_lf(self, ctx, tmp_path):
         path = tmp_path / "lf.txt"
         path.write_bytes(b"a\nb\n")
         e = EditFileTool()
-        result = await e.execute({"path": "lf.txt", "old_string": "a\nb", "new_string": "A\nB"}, ctx)
+        result = await e.execute(
+            {"path": "lf.txt", "old_string": "a\nb", "new_string": "A\nB"}, ctx
+        )
         assert not result.is_error
         assert path.read_bytes() == b"A\nB\n"
 
@@ -212,7 +327,9 @@ class TestEdit:
         path = tmp_path / "lf2.txt"
         path.write_bytes(b"a\nb\n")
         e = EditFileTool()
-        result = await e.execute({"path": "lf2.txt", "old_string": "a\r\nb", "new_string": "A\nB"}, ctx)
+        result = await e.execute(
+            {"path": "lf2.txt", "old_string": "a\r\nb", "new_string": "A\nB"}, ctx
+        )
         assert not result.is_error
         assert path.read_bytes() == b"A\nB\n"
 

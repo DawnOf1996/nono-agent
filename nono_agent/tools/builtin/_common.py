@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import locale
 from typing import Any
 
@@ -9,6 +10,77 @@ from nono_agent.core.types import ToolResult
 
 # 所有 strict 候选均失败时的占位编码名（utf-8 + replace）
 LOSSY_ENCODING = "utf-8-replace"
+
+# UI 附件（文件差异）的大小上限。这份数据不进模型上下文，但要进 SSE 和会话日志，
+# 所以仍然要封顶：4 KB 的差异最多几百行，够卡片显示，超了就只给统计。
+_UI_DIFF_MAX_LINES = 200
+_UI_DIFF_MAX_CHARS = 8000
+# 取"写之前正文"的体积上限：更大的文件不取基线（不为了画卡片去读半个 GB）。
+_UI_BASELINE_MAX_BYTES = 1_000_000
+
+
+def file_diff_ui(
+    path: str,
+    before: str | None,
+    after: str,
+) -> dict[str, Any]:
+    """整文件前后差异 —— 给 UI 的附件（ToolResult.ui），不进模型上下文。
+
+    行号必须是**整文件**的：对话里的 diff 卡片要显示"第几行被改了"，
+    拿工具入参（old_string/new_string）自己算只能得到片段内的相对编号，
+    和文件对不上。所以这里对写前/写后的完整正文做 unified diff，
+    @@ 头里的起止行号就是文件里的真实行号。
+
+    Args:
+        path: 目标文件路径（原样回给前端，不做归一）。
+        before: 写之前的正文；None 表示文件原先不存在（新建）。
+        after: 写之后的正文。
+
+    Returns:
+        ``{"kind": "file_diff", ...}``。差异超限时 diff 为 None、truncated 为 True，
+        前端据此退化成"只给新内容"，不拿增删配色糊弄。
+    """
+    before_lines = [] if before is None else before.splitlines()
+    after_lines = after.splitlines()
+    diff = list(
+        difflib.unified_diff(
+            before_lines, after_lines, fromfile="a", tofile="b", lineterm="", n=3
+        )
+    )
+    added = sum(1 for line in diff if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in diff if line.startswith("-") and not line.startswith("---"))
+    payload: dict[str, Any] = {
+        "kind": "file_diff",
+        "path": path,
+        "created": before is None,
+        "added": added,
+        "removed": removed,
+        "diff": None,
+        "truncated": True,
+    }
+    if 0 < len(diff) <= _UI_DIFF_MAX_LINES:
+        text = "\n".join(diff)
+        if len(text) <= _UI_DIFF_MAX_CHARS:
+            payload["diff"] = text
+            payload["truncated"] = False
+    return payload
+
+
+def read_baseline(path: str) -> str | None:
+    """读一个文件当前正文作为差异基线。
+
+    读不到（不存在/二进制/太大/非 UTF-8 系）返回 None，调用方据此按"没有基线"处理。
+    """
+    try:
+        with open(path, "rb") as f:
+            data = f.read(_UI_BASELINE_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > _UI_BASELINE_MAX_BYTES or is_binary(data):
+        return None
+    text, encoding = decode_text(data)
+    return None if encoding == LOSSY_ENCODING else text
+
 
 _UTF8_FAMILY = frozenset({"utf-8", "utf8", "utf-8-sig"})
 _ASCII_FAMILY = frozenset({"ascii", "us-ascii", "ansi-x3.4-1968"})
