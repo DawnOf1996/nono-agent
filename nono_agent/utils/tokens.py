@@ -61,11 +61,118 @@ def count_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _count_unknown_block(block: dict[str, Any]) -> int:
+    """未知块类型的保守估计 —— 递归统计所有非空字段。
+
+    宁可略高估也不要漏算：漏算会让 analyze_context_usage 低报占用，
+    从而把 MicroCompact/AutoCompact 的触发阈值整体推迟。
+    """
+    total = 0
+    for key, value in block.items():
+        if key == "type" or value in (None, "", {}, []):
+            continue
+        if isinstance(value, str):
+            total += count_tokens(value)
+        elif isinstance(value, bool):
+            total += 1
+        elif isinstance(value, (int, float)):
+            total += 1
+        else:
+            try:
+                total += count_tokens(json.dumps(value, ensure_ascii=False))
+            except (TypeError, ValueError):
+                total += count_tokens(str(value))
+    return total
+
+
+def _count_tool_result_content(content: Any) -> int:
+    """估算 tool_result.content 的 token 数。
+
+    ``ToolResultContentBlock.content`` 的类型是 ``str | list[dict]``：
+    纯文本走 str 分支；富内容（图片 base64、多段文本等）走 list 分支。
+    历史实现只认 str，list 形态会整块漏算。
+    """
+    if not content:
+        return 0
+    if isinstance(content, str):
+        return count_tokens(content)
+    if isinstance(content, list):
+        # 元素仍是内容块，递归复用同一套分派逻辑。
+        return sum(_count_content_block(item) for item in content)
+    try:
+        return count_tokens(json.dumps(content, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return count_tokens(str(content))
+
+
+def _count_content_block(block: Any) -> int:
+    """估算单个内容块的 token 数 —— 按 ``type`` 分派。
+
+    覆盖 ``nono_agent/core/types.py`` 中 ContentBlock 联合类型的全部形状：
+
+    ===================  ====================================
+    块 type               取值字段
+    ===================  ====================================
+    ``text``              ``text``
+    ``tool_use``          ``name`` + ``input``
+    ``tool_result``       ``content``（str **或** 富内容 list）
+    ``thinking``          ``thinking``（**不是** ``text``）
+    ``redacted_thinking`` ``data``（**不是** ``text``）
+    ===================  ====================================
+
+    历史实现是无脑读 ``block["text"]``：thinking / redacted_thinking 因键名
+    对不上而计 0，list 型 tool_result 因非 str 而整块漏算，导致上下文占用
+    显著低估（实测 -33%），进而让压缩阈值全部偏晚触发。
+    """
+    if isinstance(block, str):
+        return count_tokens(block)
+    if not isinstance(block, dict):
+        return count_tokens(str(block))
+
+    block_type = block.get("type", "")
+
+    if block_type == "thinking":
+        # 扩展思考正文 —— 键名是 thinking，这是历史漏算的主因。
+        return count_tokens(block.get("thinking", "") or "")
+
+    if block_type == "redacted_thinking":
+        # 服务端加密的思考内容，密文在 data 字段。
+        return count_tokens(block.get("data", "") or "")
+
+    if block_type == "tool_use":
+        # 入参：流式累积期是 JSON 字符串，Messages API 形态是 dict，统一按 JSON 计数。
+        raw_input = block.get("input", "")
+        total = 0
+        if raw_input:
+            if isinstance(raw_input, str):
+                total += count_tokens(raw_input)
+            else:
+                try:
+                    total += count_tokens(json.dumps(raw_input, ensure_ascii=False))
+                except (TypeError, ValueError):
+                    total += count_tokens(str(raw_input))
+        # 工具名本身也占 token（模型看到的 name 字段）
+        name = block.get("name", "")
+        if name:
+            total += count_tokens(str(name))
+        return total
+
+    if block_type == "tool_result":
+        return _count_tool_result_content(block.get("content", ""))
+
+    if block_type == "text":
+        text = block.get("text", "")
+        return count_tokens(text) if text else 0
+
+    return _count_unknown_block(block)
+
+
 def estimate_message_tokens(message: dict[str, Any]) -> int:
     """估算单条消息的 token 数。
 
     包含 role、content blocks 和消息开销。
-    支持文本、工具调用输入和工具结果等各种内容块类型。
+    支持 text / thinking / redacted_thinking / tool_use / tool_result
+    以及富内容 tool_result（list）等全部内容块类型。
     """
     total = 4  # 消息开销（role + 分隔符等）
     role = message.get("role", "")
@@ -76,20 +183,7 @@ def estimate_message_tokens(message: dict[str, Any]) -> int:
         total += count_tokens(content)
     elif isinstance(content, list):
         for block in content:
-            if isinstance(block, dict):
-                text = block.get("text", "")
-                if text:
-                    total += count_tokens(text)
-                # 工具调用输入参数
-                inp = block.get("input", "")
-                if inp:
-                    total += count_tokens(json.dumps(inp, ensure_ascii=False))
-                # 工具结果内容
-                result_content = block.get("content", "")
-                if isinstance(result_content, str) and result_content:
-                    total += count_tokens(result_content)
-            elif isinstance(block, str):
-                total += count_tokens(block)
+            total += _count_content_block(block)
 
     return total
 

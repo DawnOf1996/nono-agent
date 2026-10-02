@@ -1,5 +1,7 @@
 """Tests for context window config resolution + context usage analysis."""
 
+import json
+
 import pytest
 
 from nono_agent.core.config import EngineConfig, ProviderConfig
@@ -10,6 +12,8 @@ from nono_agent.utils.tokens import (
     BLOCKING_LIMIT_THRESHOLD,
     DEFAULT_CONTEXT_WINDOW,
     analyze_context_usage,
+    count_tokens,
+    estimate_message_tokens,
     estimate_messages_tokens,
     estimate_system_prompt_tokens,
     estimate_tools_tokens,
@@ -184,3 +188,175 @@ class TestOverheadAccounting:
 
         assert result_messages[0] is messages[0]  # 未丢弃任何消息
         assert result_ctx.estimated_tokens == 500 + 1_000  # 估算未被改写
+
+
+class TestBlockTypeCoverage:
+    """每种内容块都必须计入估算 —— 漏算会让压缩阈值偏晚触发。
+
+    背景：历史实现无脑读 ``block["text"]``，而 thinking 的正文在
+    ``block["thinking"]``、redacted_thinking 在 ``block["data"]``，
+    两个键都对不上，导致每一步的思考内容计 0；tool_result 的
+    ``content`` 为富内容 list 时也整块漏算。
+    """
+
+    def test_thinking_block_is_counted(self):
+        """thinking 正文在 block['thinking'] 而非 block['text']。"""
+        thought = "推理内容 " * 300
+        msg = {
+            "role": "assistant",
+            "content": [{"type": "thinking", "thinking": thought, "signature": "sig"}],
+        }
+        estimated = estimate_message_tokens(msg)
+        truth = count_tokens(thought)
+        # 至少要覆盖正文本身（允许少量结构性误差，不允许漏算主体）
+        assert truth > 500, "测试数据要足够大才有区分度"
+        assert estimated >= truth * 0.9, f"thinking 漏算: {estimated} < {truth}"
+
+    def test_redacted_thinking_is_counted(self):
+        """redacted_thinking 的密文在 block['data']。"""
+        data = "ENC" * 1000
+        msg = {"role": "assistant", "content": [{"type": "redacted_thinking", "data": data}]}
+        assert estimate_message_tokens(msg) >= count_tokens(data) * 0.9
+
+    def test_tool_result_list_content_is_counted(self):
+        """富内容 list 形态的 tool_result 不能整块漏算。"""
+        text = "文件内容 " * 500
+        as_str = {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": text}],
+        }
+        as_list = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": [{"type": "text", "text": text}],
+                }
+            ],
+        }
+        truth = count_tokens(text)
+        assert estimate_message_tokens(as_str) >= truth * 0.9
+        assert estimate_message_tokens(as_list) >= truth * 0.9
+
+    def test_tool_use_input_both_forms_counted(self):
+        """流式期 input 是 JSON 字符串，API 期是 dict，两者都要计入。"""
+        payload = {"path": "a" * 2000, "limit": 100}
+        as_dict = {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t1", "name": "read", "input": payload}],
+        }
+        as_json = {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "read",
+                    "input": json.dumps(payload, ensure_ascii=False),
+                }
+            ],
+        }
+        truth = count_tokens(json.dumps(payload, ensure_ascii=False))
+        assert estimate_message_tokens(as_dict) >= truth * 0.9
+        assert estimate_message_tokens(as_json) >= truth * 0.9
+
+    def test_text_block_unchanged(self):
+        """回归护栏：text 块的估算口径不应被改动。"""
+        msg = {"role": "assistant", "content": [{"type": "text", "text": "hello world"}]}
+        assert estimate_message_tokens(msg) == 4 + count_tokens("assistant") + count_tokens(
+            "hello world"
+        )
+
+    def test_unknown_block_is_conservatively_counted(self):
+        """未知块类型走保守估计 —— 高估可接受，漏算不可接受。"""
+        msg = {
+            "role": "assistant",
+            "content": [{"type": "some_future_block", "payload": "y" * 2000}],
+        }
+        assert estimate_message_tokens(msg) >= count_tokens("y" * 2000) * 0.9
+
+    def test_mixed_blocks_all_counted(self):
+        """一条典型 agent 消息：thinking + text + tool_use 全部计入。"""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "思考 " * 200},
+                {"type": "text", "text": "正文 " * 100},
+                {"type": "tool_use", "id": "t1", "name": "read", "input": {"p": "z" * 500}},
+            ],
+        }
+        only_text = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "正文 " * 100}],
+        }
+        # 有 thinking/tool_use 的消息必须明显更大
+        assert estimate_message_tokens(msg) > estimate_message_tokens(only_text) + 200
+
+    def test_analyze_context_usage_includes_thinking(self):
+        """端到端：analyze_context_usage 必须把 thinking 算进 total_tokens。"""
+        thought = "深度推理 " * 400
+        base = [{"role": "user", "content": "问题"}]
+        with_thinking = base + [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": thought},
+                    {"type": "text", "text": "答案"},
+                ],
+            }
+        ]
+        without = base + [{"role": "assistant", "content": [{"type": "text", "text": "答案"}]}]
+
+        a = analyze_context_usage(with_thinking, model_context=1_000_000)
+        b = analyze_context_usage(without, model_context=1_000_000)
+        delta = a["total_tokens"] - b["total_tokens"]
+        assert delta >= count_tokens(thought) * 0.9, f"analyze 漏算 thinking: {delta}"
+
+    def test_never_underestimates_truth(self):
+        """综合护栏：估算值不得低于独立计算的真值。"""
+
+        def truth(msg):
+            total = 4 + count_tokens(msg.get("role", ""))
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                return total + count_tokens(content)
+            for b in content:
+                if b["type"] == "thinking":
+                    total += count_tokens(b["thinking"])
+                elif b["type"] == "text":
+                    total += count_tokens(b["text"])
+                elif b["type"] == "tool_use":
+                    total += count_tokens(json.dumps(b["input"], ensure_ascii=False))
+                elif b["type"] == "tool_result":
+                    c = b["content"]
+                    total += (
+                        count_tokens(c)
+                        if isinstance(c, str)
+                        else count_tokens(json.dumps(c, ensure_ascii=False))
+                    )
+            return total
+
+        messages = [
+            {"role": "user", "content": "起始问题"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "思考链 " * 300},
+                    {"type": "text", "text": "我去查一下 " * 50},
+                    {"type": "tool_use", "id": "t1", "name": "read", "input": {"p": "q" * 300}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [{"type": "text", "text": "输出 " * 400}],
+                    }
+                ],
+            },
+        ]
+        usage = analyze_context_usage(messages, model_context=1_000_000)
+        assert usage["messages_tokens"] >= sum(truth(m) for m in messages) * 0.95
