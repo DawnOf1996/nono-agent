@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,29 @@ logger = logging.getLogger(__name__)
 ENV_PERMISSION_TIMEOUT = "NONO_PERMISSION_TIMEOUT"
 
 _pending: dict[str, tuple[dict[str, Any], asyncio.Future[bool]]] = {}
+
+# 待办列表的订阅者。队列一变就扇出，消费端（HTTP SSE）据此推送，
+# 客户端不必自己轮询 /app/permissions。
+_listeners: set[Callable[[], None]] = set()
+
+
+def subscribe(listener: Callable[[], None]) -> Callable[[], None]:
+    """订阅待办变化。返回退订函数。"""
+    _listeners.add(listener)
+
+    def unsubscribe() -> None:
+        _listeners.discard(listener)
+
+    return unsubscribe
+
+
+def _notify() -> None:
+    """通知所有订阅者「列表变了」，由它们各自去读最新值。"""
+    for listener in list(_listeners):
+        try:
+            listener()
+        except Exception:  # noqa: BLE001 - 一个坏订阅者不能拖垮授权流程
+            logger.warning("Permission change listener failed", exc_info=True)
 
 
 def _timeout_seconds() -> float | None:
@@ -54,6 +78,7 @@ async def request_permission(
         "created_at": time.time(),
     }
     _pending[request_id] = (info, future)
+    _notify()
     logger.info("Permission requested: %s (%s) session=%s", tool_name, request_id, session_id)
     timeout = _timeout_seconds()
     try:
@@ -65,6 +90,7 @@ async def request_permission(
         return False
     finally:
         _pending.pop(request_id, None)
+        _notify()
 
 
 def make_permission_checker(session_id: str) -> Any:
@@ -101,4 +127,8 @@ def cancel_session_permissions(session_id: str) -> int:
             continue
         future.set_result(False)
         cancelled += 1
+    if cancelled:
+        # 等待方各自在 finally 里摘掉条目并通知；这里先报一次，
+        # 让弹窗不必等到那几条协程被调度。
+        _notify()
     return cancelled

@@ -17,8 +17,8 @@ import { ComposerMenu } from "@/features/chat/ComposerMenu";
 import { ModelSelect } from "@/features/chat/ModelSelect";
 import { PermissionModeSelect } from "@/features/chat/PermissionModeSelect";
 import { QuoteChip } from "@/features/chat/QuoteCard";
+import { SessionStatChips } from "@/features/chat/SessionStatChips";
 import { FALLBACK_COMMANDS } from "@/lib/commands";
-import { formatDuration, formatTokens } from "@/lib/format";
 import {
   ACCEPT_IMAGE,
   encodeImages,
@@ -37,7 +37,9 @@ export function Composer() {
   const streaming = useChatStore((state) => state.streaming);
   const commands = useChatStore((state) => state.commands);
   const error = useChatStore((state) => state.error);
-  const usage = useChatStore((state) => state.usage);
+  const stats = useChatStore((state) =>
+    state.sessionId ? state.sessionStats[state.sessionId] : undefined,
+  );
   const attachments = useChatStore((state) => state.attachments);
   const addAttachments = useChatStore((state) => state.addAttachments);
   const removeAttachment = useChatStore((state) => state.removeAttachment);
@@ -297,15 +299,10 @@ export function Composer() {
             </div>
           </div>
         </div>
-        {usage ? (
-          <div className="mt-1.5 px-2 font-mono text-[11px] text-faint">
-            {usage.durationMs ? `${formatDuration(usage.durationMs)} · ` : ""}
-            {formatTokens(usage.inputTokens + usage.outputTokens)} tok
-            {usage.contextRatio != null
-              ? ` · 上下文 ${Math.round(usage.contextRatio * 100)}%`
-              : ""}
-          </div>
-        ) : null}
+        {/* 常驻：统计还没回来（或还没有会话）时也占位，底部不会忽有忽无。 */}
+        <div className="mt-1 flex justify-center px-1.5">
+          <SessionStatChips stats={stats} />
+        </div>
       </div>
       <ImageLightbox src={preview} onClose={() => setPreview(null)} />
     </div>

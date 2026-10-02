@@ -170,7 +170,11 @@ export type SdkResultMessage = {
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
   };
+  /** 按模型分项的累计用量。 */
+  model_usage?: Record<string, Record<string, number>>;
   context_usage?: {
     usage_ratio?: number;
     total_tokens?: number;
@@ -185,6 +189,48 @@ export type SessionEvent = {
   data: Record<string, unknown>;
   timestamp: number;
   ignorable?: boolean;
+};
+
+/** 会话累计 token 用量（四个互不重叠的桶）。 */
+export type SessionUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  total_tokens: number;
+  /** 读回 / (读回 + 新鲜输入)；无输入时为 null。 */
+  cache_hit_ratio: number | null;
+};
+
+/**
+ * 上下文占用快照。
+ *
+ * 三个分项来自引擎当次的 `analyze_context_usage`；旧版本日志没有，
+ * 此时分项为 null，只有 total_tokens 能从最后一次请求的输入量兜底得出。
+ */
+export type SessionContext = {
+  context_window: number;
+  total_tokens: number;
+  usage_ratio: number;
+  system_prompt_tokens: number | null;
+  tools_tokens: number | null;
+  messages_tokens: number | null;
+  message_count: number | null;
+};
+
+/** 会话级统计 —— 由服务端从事件流推导（GET /session/{id}/stats）。 */
+export type SessionStats = {
+  turns: number;
+  steps: number;
+  model_duration_ms: number;
+  tool_duration_ms: number;
+  /** 首 token 平均耗时；没有可用样本时为 null。 */
+  ttft_ms: number | null;
+  /** 输出速度；这轮没有流式分片可量时为 null。 */
+  tps: number | null;
+  model: string | null;
+  usage: SessionUsage;
+  context: SessionContext | null;
 };
 
 export type FsEntry = {

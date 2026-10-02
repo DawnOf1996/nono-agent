@@ -45,6 +45,7 @@ from nono_agent.session.request_header import (
     header_equals,
     next_reason,
 )
+from nono_agent.session.stats import build_session_stats
 from nono_agent.session.store import MessageStore
 from nono_agent.session.transcript import (
     DEFAULT_SESSION_DIR,
@@ -73,6 +74,7 @@ __all__ = [
     "canonical_header",
     "check_format_version",
     "create_transcript_writer",
+    "build_session_stats",
     "derive_messages",
     "derived_to_messages",
     "first_user_prompt",

@@ -1,18 +1,23 @@
-"""Git HTTP：状态、对比、暂存、提交与历史。"""
+"""Git HTTP：状态、对比、暂存、提交与历史，以及状态变化时的 SSE 推送。"""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import (
     APIRouter,
     HTTPException,
     Query,
+    Request,
 )
+from fastapi.responses import StreamingResponse
 
 from nono_app_server.common.gitcmd import (
     GitError,
-    path_identity,
     run_git,
 )
 from nono_app_server.common.textdiff import (
@@ -25,133 +30,131 @@ from nono_app_server.features.git.service import (
     COMMIT_FILES_LIMIT,
     DIFF_MAX_BYTES,
     MAX_CONTEXT,
-    STATUS_LIMIT,
-    UNTRACKED_COUNT_LIMIT,
-    _count_lines,
     _git_http_error,
     _has_head,
     _is_untracked,
-    _list_worktrees,
     _parse_log,
-    _parse_numstat,
-    _parse_status_v2,
     _paths_args,
     _repo_relative,
     _require_repo,
-    _resolve_repo,
-    _stat_dict,
+    status_payload,
+    workspace_signature,
+    worktrees_payload,
 )
+from nono_app_server.features.git.watch import notify_changed
+from nono_app_server.features.git.watch import subscribe as subscribe_changes
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# 签名检查的节奏。服务端自己知道改动时会立刻叫醒这条流（``notify_changed``），
+# 所以这个间隔只是兜底：安静时放慢省 CPU，附近有动静时盯紧一点。
+_ACTIVE_CHECK_S = 2.0
+_IDLE_CHECK_S = 8.0
+_ACTIVE_WINDOW_S = 15.0
+_PING_S = 15.0
 
 
 @router.get("/git/status")
 async def git_status(root: str = Query(), repo: str | None = Query(default=None)) -> dict[str, Any]:
     """工作树状态：暂存区与工作区两侧的改动，含未跟踪文件和行数统计。"""
-    workspace, selected, roots = await _resolve_repo(root, repo)
-    if selected is None:
-        return {
-            "is_repo": False,
-            "workspace": str(workspace),
-            "repo": None,
-            "repositories": [],
-            "branch": None,
-            "head": None,
-            "upstream": None,
-            "ahead": 0,
-            "behind": 0,
-            "entries": [],
-            "truncated": False,
-        }
-    try:
-        status = await run_git(
-            selected, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"
-        )
-        unstaged = await run_git(selected, "diff", "--no-ext-diff", "--numstat", "-z")
-        staged = await run_git(selected, "diff", "--no-ext-diff", "--cached", "--numstat", "-z")
-    except GitError as exc:
-        raise _git_http_error(exc) from exc
-    branch, parsed = _parse_status_v2(status.stdout)
-    unstaged_stats = _parse_numstat(unstaged.stdout)
-    staged_stats = _parse_numstat(staged.stdout)
-    truncated = len(parsed) > STATUS_LIMIT
-    entries: list[dict[str, Any]] = []
-    counted = 0
-    for item in parsed[:STATUS_LIMIT]:
-        xy = item["xy"]
-        index_letter = " " if xy[0] in ".?" else xy[0]
-        tree_letter = "?" if xy == "??" else (" " if xy[1] == "." else xy[1])
-        untracked = xy == "??"
-        abs_path = selected / item["path"]
-        unstaged_stat = _stat_dict(unstaged_stats.get(item["path"]))
-        if untracked and counted < UNTRACKED_COUNT_LIMIT:
-            counted += 1
-            lines, binary = _count_lines(abs_path)
-            unstaged_stat = (
-                {"added": lines or 0, "deleted": 0, "binary": binary}
-                if lines is not None or binary
-                else None
-            )
-        entries.append(
-            {
-                "path": item["path"],
-                "orig_path": item.get("orig_path"),
-                "abs_path": str(abs_path),
-                "index": index_letter,
-                "worktree": tree_letter,
-                "staged": index_letter != " ",
-                "unstaged": tree_letter != " ",
-                "untracked": untracked,
-                "conflicted": bool(item.get("conflicted")),
-                "staged_stat": _stat_dict(staged_stats.get(item["path"])),
-                "unstaged_stat": unstaged_stat,
-            }
-        )
-    return {
-        "is_repo": True,
-        "workspace": str(workspace),
-        "repo": str(selected),
-        "repositories": [str(item) for item in roots],
-        **branch,
-        "entries": entries,
-        "truncated": truncated,
-    }
+    return await status_payload(root, repo)
 
 
 @router.get("/git/worktrees")
 async def git_worktrees(root: str = Query()) -> dict[str, Any]:
     """工作区里所有仓库的 checkout（主工作树 + linked worktree）及其改动数。"""
-    _workspace, _selected, roots = await _resolve_repo(root, None)
-    items: list[dict[str, Any]] = []
-    for repo_root in roots:
-        trees = await _list_worktrees(repo_root) or [
-            {"path": str(repo_root), "branch": "HEAD", "locked": False}
-        ]
-        for tree in trees:
+    return await worktrees_payload(root)
+
+
+@router.get("/git/stream")
+async def stream_git(
+    request: Request,
+    root: str = Query(),
+    repo: str | None = Query(default=None),
+) -> StreamingResponse:
+    """工作树状态有变化才推一条，浏览器不用自己问。
+
+    判定变化靠一条 ``git status --porcelain`` 的指纹，不是定时全量重算：指纹
+    没动就直接跳过；真正的状态（还要两条 diff、还要数未跟踪文件的行数）只在
+    确实变了的时候才算一次。服务端自己知道改动时（对话轮结束、暂存、提交）
+    会直接叫醒这条流，不用等下一次兜底检查。
+    """
+
+    async def events() -> AsyncIterator[str]:
+        changed = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def on_change() -> None:
+            # 工具可能在工作线程里回调过来，跨线程必须走回事件循环。
             try:
-                status = await run_git(
-                    tree["path"], "status", "--porcelain", "-z", "--untracked-files=all", timeout=10
-                )
-                changes = len(
-                    [
-                        token
-                        for token in status.stdout.split(b"\0")
-                        if len(token) > 3 and token[2:3] == b" "
-                    ]
-                )
-            except GitError:
-                changes = 0
-            items.append(
-                {
-                    "path": tree["path"],
-                    "branch": tree["branch"],
-                    "repo": str(repo_root),
-                    "main": path_identity(tree["path"]) == path_identity(repo_root),
-                    "locked": tree["locked"],
-                    "changes": changes,
-                }
-            )
-    return {"worktrees": items}
+                loop.call_soon_threadsafe(changed.set)
+            except RuntimeError:
+                return
+
+        unsubscribe = subscribe_changes(on_change)
+        try:
+            signature = await workspace_signature(root)
+            yield _snapshot(await _snapshot_payload(root, repo))
+            quiet_since = loop.time()
+            while True:
+                if await request.is_disconnected():
+                    return
+                # 刚有过动静就盯紧一点，安静下来就放慢：省的是没人看时的 CPU。
+                active = loop.time() - quiet_since < _ACTIVE_WINDOW_S
+                woken = False
+                try:
+                    await asyncio.wait_for(
+                        changed.wait(), timeout=_ACTIVE_CHECK_S if active else _IDLE_CHECK_S
+                    )
+                    changed.clear()
+                    woken = True
+                except TimeoutError:
+                    pass
+                if loop.time() - quiet_since >= _PING_S:
+                    # 纯注释帧：只为保活，不是数据。
+                    yield ": ping\n\n"
+                current = await workspace_signature(root)
+                if current == signature:
+                    # 通知来了但状态没变（刚跑完一条只读命令）：不算动静。
+                    continue
+                signature = current
+                if woken:
+                    quiet_since = loop.time()
+                try:
+                    payload = await _snapshot_payload(root, repo)
+                except (GitError, HTTPException, OSError):
+                    logger.warning("Git stream: recompute failed for %s", root, exc_info=True)
+                    continue
+                yield _snapshot(payload)
+                quiet_since = loop.time()
+        except asyncio.CancelledError:
+            # 客户端断开：正常路径，不是错误。
+            raise
+        finally:
+            unsubscribe()
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _frame(event: str, payload: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _snapshot(payload: dict[str, Any]) -> str:
+    return _frame("status", payload["status"]) + _frame("worktrees", payload["worktrees"])
+
+
+async def _snapshot_payload(root: str, repo: str | None) -> dict[str, Any]:
+    return {
+        "status": await status_payload(root, repo),
+        "worktrees": await worktrees_payload(root),
+    }
 
 
 @router.get("/git/diff")
@@ -194,6 +197,7 @@ async def git_stage(body: PathsBody) -> dict[str, Any]:
         await run_git(repo, "add", "-A", *_paths_args(repo, body.paths))
     except GitError as exc:
         raise _git_http_error(exc) from exc
+    notify_changed()
     return {"ok": True}
 
 
@@ -207,6 +211,7 @@ async def git_unstage(body: PathsBody) -> dict[str, Any]:
             await run_git(repo, "rm", "--cached", "-r", "-q", *_paths_args(repo, body.paths))
     except GitError as exc:
         raise _git_http_error(exc) from exc
+    notify_changed()
     return {"ok": True}
 
 
@@ -221,6 +226,7 @@ async def git_discard(body: DiscardBody) -> dict[str, Any]:
             await run_git(repo, "clean", "-f", "-q", *_paths_args(repo, body.untracked))
     except GitError as exc:
         raise _git_http_error(exc) from exc
+    notify_changed()
     return {"ok": True}
 
 
@@ -238,6 +244,7 @@ async def git_commit(body: CommitBody) -> dict[str, Any]:
         head = await run_git(repo, "rev-parse", "--short", "HEAD", timeout=10)
     except GitError as exc:
         raise _git_http_error(exc) from exc
+    notify_changed()
     return {"ok": True, "head": head.text.strip()}
 
 

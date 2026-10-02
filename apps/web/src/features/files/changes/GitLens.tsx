@@ -19,11 +19,11 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   fetchGitLog,
   fetchGitStatus,
-  fetchGitWorktrees,
   gitCommit,
   gitDiscard,
   gitStage,
   gitUnstage,
+  watchGitStatus,
 } from "@/api/client";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Dropdown, DropdownItem } from "@/components/ui/dropdown";
@@ -33,8 +33,6 @@ import { formatRelativeTime } from "@/lib/format";
 import { baseName, parentPath, sameWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
 
-const POLL_MS = 3000;
-const WORKTREE_EVERY = 10;
 const LOG_BATCH = 30;
 
 type Confirm = { title: string; description: string; confirmLabel: string; run: () => Promise<void> };
@@ -218,7 +216,6 @@ export function GitLens({ root, visible, onShowSession }: { root: string; visibl
   const [logEnded, setLogEnded] = useState(false);
   const [logLoading, setLogLoading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const revision = usePanelStore((state) => state.revision);
   const tabs = usePanelStore((state) => state.tabs);
   const active = usePanelStore((state) => state.active);
   const setChangePreview = usePanelStore((state) => state.setChangePreview);
@@ -227,7 +224,6 @@ export function GitLens({ root, visible, onShowSession }: { root: string; visibl
   const bumpRevision = usePanelStore((state) => state.bumpRevision);
   const setGitCount = usePanelStore((state) => state.setGitCount);
   const chosenByUser = useRef(false);
-  const ticks = useRef(0);
   const inFlight = useRef(false);
   const generation = useRef(0);
 
@@ -258,17 +254,6 @@ export function GitLens({ root, visible, onShowSession }: { root: string; visibl
     }
   }, [root, repo, setGitCount]);
 
-  const refreshWorktrees = useCallback(async () => {
-    const current = generation.current;
-    try {
-      const listed = await fetchGitWorktrees(root);
-      if (current !== generation.current) return;
-      setWorktrees(listed);
-    } catch {
-      // 旧版 git 没有 worktree 列表：只显示当前仓库
-    }
-  }, [root]);
-
   const loadLog = useCallback(
     async (reset: boolean) => {
       if (!status?.is_repo) return;
@@ -287,25 +272,26 @@ export function GitLens({ root, visible, onShowSession }: { root: string; visibl
     [root, status?.is_repo, status?.repo, log.length],
   );
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh, revision]);
-
-  useEffect(() => {
-    void refreshWorktrees();
-  }, [refreshWorktrees, revision]);
-
+  // 状态与 worktree 列表都等服务端推：连接时先各给一帧，之后只在索引真的动了才来，
+  // 断线由 watchGitStatus 自己重连，所以这里不必也不该再挂定时器。
   useEffect(() => {
     if (!visible) return;
-    void refresh();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      ticks.current += 1;
-      void refresh();
-      if (ticks.current % WORKTREE_EVERY === 0) void refreshWorktrees();
-    }, POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [visible, refresh, refreshWorktrees]);
+    const controller = new AbortController();
+    const current = generation.current;
+    void watchGitStatus(root, repo, controller.signal, {
+      onStatus: (next) => {
+        if (current !== generation.current) return;
+        setStatus(next);
+        setError(null);
+        setGitCount(next.entries.length);
+      },
+      onWorktrees: (listed) => {
+        if (current !== generation.current) return;
+        setWorktrees(listed);
+      },
+    });
+    return () => controller.abort();
+  }, [visible, root, repo, setGitCount]);
 
   // 智能体常在 linked worktree 里干活而会话仍停在干净的主工作树：只有一个脏的 worktree 时自动切过去。
   useEffect(() => {

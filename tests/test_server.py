@@ -268,3 +268,282 @@ class TestSessionEventChannel:
             body = self._read_sse(client, "/session/sid/events?follow=false")
 
         assert "event: error" in body
+
+    def _write_chunk_session(self, tmp_path, monkeypatch):
+        """写一条同时含思考增量与正文增量的会话。"""
+        from nono_agent.session.events import (
+            EVENT_ASSISTANT_CHUNK,
+            EVENT_TURN_END,
+            EVENT_USER_MESSAGE,
+        )
+
+        return self._write_session(
+            tmp_path,
+            monkeypatch,
+            [
+                (EVENT_USER_MESSAGE, {"content": "hi"}),
+                (
+                    EVENT_ASSISTANT_CHUNK,
+                    {
+                        "chunk": {
+                            "type": "content_block_delta",
+                            "delta": {"type": "thinking_delta", "thinking": "想一下"},
+                        }
+                    },
+                ),
+                (
+                    EVENT_ASSISTANT_CHUNK,
+                    {
+                        "chunk": {
+                            "type": "content_block_delta",
+                            "delta": {"type": "text_delta", "text": "正文分片"},
+                        }
+                    },
+                ),
+                (EVENT_TURN_END, {"turn": 1, "reason": "COMPLETED"}),
+            ],
+        )
+
+    def test_chunks_all_is_the_default_and_keeps_text_deltas(self, tmp_path, monkeypatch):
+        self._write_chunk_session(tmp_path, monkeypatch)
+        with _client(api_key=None) as client:
+            body = self._read_sse(client, "/session/sid/events?follow=false")
+
+        assert "thinking_delta" in body
+        assert "text_delta" in body
+
+    def test_chunks_thinking_drops_text_deltas_but_keeps_thinking(self, tmp_path, monkeypatch):
+        """正文分片在 web 端只会被丢弃，assistant/message 里已有完整正文。"""
+        self._write_chunk_session(tmp_path, monkeypatch)
+        with _client(api_key=None) as client:
+            body = self._read_sse(client, "/session/sid/events?follow=false&chunks=thinking")
+
+        assert "thinking_delta" in body
+        assert "text_delta" not in body
+        # 非分片事件一条都不能少
+        assert "user/message" in body
+        assert "turn/end" in body
+        assert body.count("event: session_event") == 3
+
+    def test_unknown_chunks_mode_falls_back_to_all(self, tmp_path, monkeypatch):
+        self._write_chunk_session(tmp_path, monkeypatch)
+        with _client(api_key=None) as client:
+            body = self._read_sse(client, "/session/sid/events?follow=false&chunks=bogus")
+
+        assert "text_delta" in body
+
+    def test_chunks_thinking_honours_after_seq(self, tmp_path, monkeypatch):
+        self._write_chunk_session(tmp_path, monkeypatch)
+        with _client(api_key=None) as client:
+            body = self._read_sse(
+                client, "/session/sid/events?follow=false&chunks=thinking&after_seq=1"
+            )
+
+        assert "user/message" not in body
+        assert "thinking_delta" in body
+
+    def test_repeated_reads_serve_identical_frames(self, tmp_path, monkeypatch):
+        """命中帧缓存后内容必须和首次一致。"""
+        from nono_agent.session.events import EVENT_USER_MESSAGE
+
+        self._write_chunk_session(tmp_path, monkeypatch)
+        with _client(api_key=None) as client:
+            first = self._read_sse(client, "/session/sid/events?follow=false&chunks=thinking")
+            second = self._read_sse(client, "/session/sid/events?follow=false&chunks=thinking")
+
+        assert first == second
+        assert EVENT_USER_MESSAGE in first
+
+    def test_appended_event_is_served_after_cache_warm(self, tmp_path, monkeypatch):
+        """缓存热了以后再追加事件，新事件仍要能读到（缓存按 mtime/大小失效）。"""
+        import asyncio as _asyncio
+
+        from nono_agent.session.events import EVENT_USER_MESSAGE, SessionEvent
+
+        writer = self._write_chunk_session(tmp_path, monkeypatch)
+        with _client(api_key=None) as client:
+            self._read_sse(client, "/session/sid/events?follow=false&chunks=thinking")
+
+        _asyncio.run(
+            writer.append_event(SessionEvent.make(0, EVENT_USER_MESSAGE, content="再来一条"))
+        )
+        with _client(api_key=None) as client:
+            third = self._read_sse(client, "/session/sid/events?follow=false&chunks=thinking")
+
+        assert "再来一条" in third
+
+    def test_cache_is_bounded(self, tmp_path):
+        """缓存条目数封顶，防止长会话挨个打开把内存吃光。"""
+        from nono_app_server.engine import event_frames
+
+        event_frames.clear_cache()
+        for i in range(event_frames.CACHE_MAX_ENTRIES + 5):
+            f = tmp_path / f"fake-{i}.jsonl"
+            f.write_text("{}", encoding="utf-8")
+            event_frames.store_frames(f, "all", [(1, "{}")])
+        assert len(event_frames._cache) == event_frames.CACHE_MAX_ENTRIES
+        event_frames.clear_cache()
+
+    def test_cache_misses_when_file_changes(self, tmp_path):
+        """缓存以 (路径, mtime, 大小) 为键，文件被追加后必须重算。"""
+        from nono_app_server.engine import event_frames
+
+        event_frames.clear_cache()
+        f = tmp_path / "sid.jsonl"
+        f.write_text("{}", encoding="utf-8")
+        event_frames.store_frames(f, "all", [(1, "old")])
+        assert event_frames.cached_frames(f, "all") == [(1, "old")]
+
+        f.write_text('{"seq":1}\n{"seq":2}\n', encoding="utf-8")
+        assert event_frames.cached_frames(f, "all") is None
+        event_frames.clear_cache()
+
+
+class TestSessionStats:
+    """GET /session/{id}/stats 与 /stats/stream —— 会话统计的一次性读取与推送。"""
+
+    def _write_session(self, tmp_path, monkeypatch, events=()):
+        import asyncio
+
+        from nono_agent.session import transcript as transcript_module
+        from nono_agent.session.events import SessionEvent
+        from nono_agent.session.transcript import LocalFileTranscriptWriter
+
+        session_dir = tmp_path / "sessions"
+        monkeypatch.setattr(transcript_module, "DEFAULT_SESSION_DIR", session_dir)
+        writer = LocalFileTranscriptWriter(session_dir / "sid.jsonl")
+
+        async def write():
+            for type_, data, ts in events:
+                await writer.append_event(
+                    SessionEvent(seq=0, type=type_, data=data, timestamp=ts)
+                )
+
+        asyncio.run(write())
+        return writer
+
+    @staticmethod
+    def _stream_events():
+        from nono_agent.session.events import (
+            EVENT_ASSISTANT_CHUNK,
+            EVENT_STEP_END,
+            EVENT_STEP_START,
+            EVENT_TURN_START,
+            EVENT_USAGE,
+        )
+
+        return [
+            (EVENT_TURN_START, {}, 0.0),
+            (EVENT_STEP_START, {}, 100.0),
+            (EVENT_ASSISTANT_CHUNK, {"chunk": {}}, 200.0),
+            (EVENT_ASSISTANT_CHUNK, {"chunk": {}}, 400.0),
+            (EVENT_STEP_END, {}, 900.0),
+            (
+                EVENT_USAGE,
+                {
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 20,
+                        "cache_read_input_tokens": 100,
+                        "cache_creation_input_tokens": 0,
+                    },
+                    "model": "m",
+                },
+                900.0,
+            ),
+        ]
+
+    def test_stats_reflects_the_log(self, tmp_path, monkeypatch):
+        self._write_session(tmp_path, monkeypatch, self._stream_events())
+        with _client(api_key=None) as client:
+            data = client.get("/session/sid/stats").json()
+        assert data["turns"] == 1
+        assert data["steps"] == 1
+        assert data["usage"]["total_tokens"] == 130
+        assert data["model"] == "m"
+
+    def test_stats_404s_for_unknown_session(self, tmp_path, monkeypatch):
+        self._write_session(tmp_path, monkeypatch, [])
+        with _client(api_key=None) as client:
+            assert client.get("/session/nope/stats").status_code == 404
+
+    def test_stream_404s_for_unknown_session(self, tmp_path, monkeypatch):
+        self._write_session(tmp_path, monkeypatch, [])
+        with _client(api_key=None) as client:
+            assert client.get("/session/nope/stats/stream").status_code == 404
+
+    def test_stream_is_registered(self):
+        """推送流是无限流：TestClient 读到第一帧就会一直挂着等下一帧，
+        所以这里只断言路由存在，真收发在 runtime-test 里对着真服务器验。"""
+        from nono_app_server.engine.routers import sessions
+
+        paths = {route.path for route in sessions.router.routes}
+        assert "/session/{session_id}/stats/stream" in paths
+        assert "/session/{session_id}/stats" in paths
+
+
+class TestStatsPushFanout:
+    """SessionManager 的订阅扇出 —— 消费端不轮询，靠引擎回调。"""
+
+    @staticmethod
+    def _manager_with_subscriber(session_id="s1", count=1):
+        """直接铺好订阅者集合来测扇出本身。
+
+        走 ``subscribe_stats`` 需要真实存在的会话（它要判断该给谁推），
+        那是端点层的职责，这里只关心「有订阅者时怎么推」。
+        """
+        import asyncio
+
+        from nono_app_server.engine.session_manager import SessionManager
+
+        manager = SessionManager(default_config=None, permission_checker=None)
+        queues = [asyncio.Queue(maxsize=8) for _ in range(count)]
+        manager._stats_subscribers[session_id] = set(queues)
+        return manager, queues
+
+    def test_pushes_reach_every_subscriber(self):
+        manager, queues = self._manager_with_subscriber(count=2)
+        manager._fanout_stats("s1", {"steps": 3})
+        assert all(q.get_nowait() == {"steps": 3} for q in queues)
+
+    def test_unsubscribe_stops_delivery(self):
+        import asyncio
+
+        from nono_app_server.engine.session_manager import SessionManager
+
+        manager = SessionManager(default_config=None, permission_checker=None)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+        manager._stats_subscribers["s1"] = {queue}
+        manager.unsubscribe_stats("s1", queue)
+        manager._fanout_stats("s1", {"steps": 1})
+        assert queue.empty()
+        assert "s1" not in manager._stats_subscribers
+
+    def test_unsubscribe_keeps_listening_while_others_remain(self):
+        import asyncio
+
+        from nono_app_server.engine.session_manager import SessionManager
+
+        manager = SessionManager(default_config=None, permission_checker=None)
+        leaving: asyncio.Queue = asyncio.Queue(maxsize=8)
+        staying: asyncio.Queue = asyncio.Queue(maxsize=8)
+        manager._stats_subscribers["s1"] = {leaving, staying}
+        manager.unsubscribe_stats("s1", leaving)
+        manager._fanout_stats("s1", {"steps": 2})
+        assert leaving.empty()
+        assert staying.get_nowait() == {"steps": 2}
+        assert manager._stats_subscribers["s1"] == {staying}
+
+    def test_unknown_session_cannot_subscribe(self):
+        from nono_app_server.engine.session_manager import SessionManager
+
+        manager = SessionManager(default_config=None, permission_checker=None)
+        assert manager.subscribe_stats("nope") is None
+
+    def test_slow_subscriber_drops_oldest_instead_of_blocking(self):
+        manager, (queue,) = self._manager_with_subscriber(count=1)
+        for step in range(1, 20):  # 远超队列容量
+            manager._fanout_stats("s1", {"steps": step})
+        # 不能把对话卡住：容量封顶，且留下的一定是最近的。
+        assert queue.qsize() <= 8
+        assert queue.get_nowait()["steps"] >= 12

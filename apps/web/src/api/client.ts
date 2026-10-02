@@ -18,6 +18,7 @@ import type {
   SessionEvent,
   SessionInfo,
   SessionListItem,
+  SessionStats,
   McpServerInfo,
   McpServerUpsert,
   McpSnapshot,
@@ -57,6 +58,22 @@ async function readJson<T>(response: Response): Promise<T> {
     throw new Error(errorMessage(text, `${response.status} ${response.statusText}`));
   }
   return (await response.json()) as T;
+}
+
+/** 坏帧丢掉即可：下一帧会覆盖，也不值得为它断开整条流。 */
+function readFrame<T>(data: string): T | null {
+  try {
+    return JSON.parse(data) as T;
+  } catch {
+    return null;
+  }
+}
+
+/** 流断了以后的等待：让服务端有时间重启，又不至于让弹窗明显迟到。 */
+const RECONNECT_MS = 1000;
+
+function reconnectDelay(): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, RECONNECT_MS));
 }
 
 export async function fetchHealth(): Promise<{ status: string; sessions: number }> {
@@ -427,9 +444,15 @@ export function postChat(
 }
 
 export async function fetchSessionEvents(sessionId: string): Promise<SessionEvent[]> {
-  const response = await fetch(`/session/${encodeURIComponent(sessionId)}/events?follow=false`, {
-    headers: { Accept: "text/event-stream" },
-  });
+  // chunks=thinking：正文分片（text_delta）在这条链路上只会被丢弃——完整正文
+  // 已经包含在 assistant/message 里（见 sse.ts 的 extractThinkingDelta），
+  // 长会话里这部分能占到事件流的九成，让服务端别发过来。
+  const response = await fetch(
+    `/session/${encodeURIComponent(sessionId)}/events?follow=false&chunks=thinking`,
+    {
+      headers: { Accept: "text/event-stream" },
+    },
+  );
   if (!response.ok) return [];
   const events: SessionEvent[] = [];
   for await (const frame of parseSse(response)) {
@@ -442,6 +465,82 @@ export async function fetchSessionEvents(sessionId: string): Promise<SessionEven
     }
   }
   return events;
+}
+
+export async function fetchSessionStats(sessionId: string): Promise<SessionStats | null> {
+  const response = await fetch(`/session/${encodeURIComponent(sessionId)}/stats`);
+  if (!response.ok) return null;
+  return (await response.json()) as SessionStats;
+}
+
+/**
+ * 订阅某个会话的统计推送。
+ *
+ * 服务端在引擎每落一步事件时推一帧，所以调用方不用轮询。返回的函数用来关闭连接 ——
+ * 只该给**正在浏览**的那一个会话开，切走时立刻关掉。
+ */
+export function openSessionStatsStream(
+  sessionId: string,
+  onStats: (stats: SessionStats) => void,
+): () => void {
+  const source = new EventSource(`/session/${encodeURIComponent(sessionId)}/stats/stream`);
+  const handle = (event: MessageEvent<string>) => {
+    try {
+      onStats(JSON.parse(event.data) as SessionStats);
+    } catch {
+      // 坏帧丢掉即可：下一帧会覆盖
+    }
+  };
+  source.addEventListener("stats", handle as EventListener);
+  return () => {
+    source.removeEventListener("stats", handle as EventListener);
+    source.close();
+  };
+}
+
+export type ControlHealth = { status: string; sessions: number };
+
+/**
+ * 订阅全局控制流：服务端的健康与待授权请求。
+ *
+ * 连接时先各推一帧，之后只在变化时推，客户端不必轮询。断线后由这里自己重连，
+ * ``onOpen``/``onClose`` 报的是「这一条连接」的状态：每次重连成功再开一次。
+ */
+export async function watchControl(
+  signal: AbortSignal,
+  handlers: {
+    onHealth: (health: ControlHealth) => void;
+    onPermissions: (permissions: PermissionRequest[]) => void;
+    onOpen?: () => void;
+    onClose?: () => void;
+  },
+): Promise<void> {
+  while (!signal.aborted) {
+    try {
+      const response = await fetch("/app/control/stream", {
+        headers: { Accept: "text/event-stream" },
+        signal,
+      });
+      if (!response.ok || !response.body) throw new Error("控制流连接失败");
+      handlers.onOpen?.();
+      for await (const frame of parseSse(response)) {
+        if (!frame.data) continue;
+        if (frame.event === "health") {
+          const health = readFrame<ControlHealth>(frame.data);
+          if (health) handlers.onHealth(health);
+        } else if (frame.event === "permissions") {
+          // 重连时服务端会把当前待授权集合整份推回来，不必再补一次请求
+          const payload = readFrame<{ permissions?: PermissionRequest[] }>(frame.data);
+          if (payload) handlers.onPermissions(payload.permissions ?? []);
+        }
+      }
+    } catch {
+      // 断线（含 abort）都走下面的重连
+    }
+    handlers.onClose?.();
+    if (signal.aborted) return;
+    await reconnectDelay();
+  }
 }
 
 export async function fetchDirectory(path?: string | null): Promise<FsListing> {
@@ -533,9 +632,44 @@ export async function fetchGitStatus(root: string, repo?: string | null, signal?
   return readJson(await fetch(`/app/git/status?${gitQuery(root, repo)}`, { signal }));
 }
 
-export async function fetchGitWorktrees(root: string): Promise<GitWorktree[]> {
-  const data = await readJson<{ worktrees: GitWorktree[] }>(await fetch(`/app/git/worktrees?${gitQuery(root, null)}`));
-  return data.worktrees;
+/**
+ * 订阅某个工作区的 Git 状态与 worktree 列表。
+ *
+ * 服务端只在索引真的动了才推，连接时先各补一帧，所以面板不用定时去问。
+ * 断线后由这里自己重连。
+ */
+export async function watchGitStatus(
+  root: string,
+  repo: string | null | undefined,
+  signal: AbortSignal,
+  handlers: {
+    onStatus: (status: GitStatus) => void;
+    onWorktrees: (worktrees: GitWorktree[]) => void;
+  },
+): Promise<void> {
+  while (!signal.aborted) {
+    try {
+      const response = await fetch(`/app/git/stream?${gitQuery(root, repo)}`, {
+        headers: { Accept: "text/event-stream" },
+        signal,
+      });
+      if (!response.ok || !response.body) throw new Error("Git 状态流连接失败");
+      for await (const frame of parseSse(response)) {
+        if (!frame.data) continue;
+        if (frame.event === "status") {
+          const status = readFrame<GitStatus>(frame.data);
+          if (status) handlers.onStatus(status);
+        } else if (frame.event === "worktrees") {
+          const payload = readFrame<{ worktrees?: GitWorktree[] }>(frame.data);
+          if (payload) handlers.onWorktrees(payload.worktrees ?? []);
+        }
+      }
+    } catch {
+      // 断线（含 abort）都走下面的重连
+    }
+    if (signal.aborted) return;
+    await reconnectDelay();
+  }
 }
 
 export async function fetchGitDiff(

@@ -11,15 +11,24 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
 from nono_agent.session.header import VersionMismatchError, normalize_permission_mode
-from nono_agent.session.redact import redact_events
+from nono_agent.session.stats import build_session_stats
 from nono_agent.session.transcript import list_session_files
 from nono_app_server.engine.deps import get_session_manager
+from nono_app_server.engine.event_frames import (
+    CHUNK_MODE_ALL,
+    CHUNK_MODE_THINKING,
+    build_frames,
+    cached_frames,
+    done_payload,
+    store_frames,
+)
 from nono_app_server.engine.schemas import (
     AnswerRequest,
     NewSessionRequest,
     PermissionModeBody,
     ResumeRequest,
     SessionInfo,
+    SessionStats,
 )
 from nono_app_server.engine.session_manager import SessionManager
 from nono_app_server.engine.views import (
@@ -149,34 +158,127 @@ async def session_events(
     after_seq: int = 0,
     follow: bool = True,
     poll_interval: float = 0.5,
+    chunks: str = "all",
     manager: SessionManager = Depends(get_session_manager),
 ) -> Any:
-    """按 SSE 推送该会话的事件流 —— 可观测性的读取通道。"""
+    """按 SSE 推送该会话的事件流 —— 可观测性的读取通道。
+
+    ``chunks=thinking`` 只推送思考增量，省掉正文分片那九成体积；会话查看器
+    需要完整分片，默认仍为 ``all``。
+    """
     writer = manager.events_writer(session_id)
     if writer is None:
         raise HTTPException(status_code=404, detail="Session log not found")
 
+    chunk_mode = chunks if chunks in (CHUNK_MODE_ALL, CHUNK_MODE_THINKING) else CHUNK_MODE_ALL
+    session_file = getattr(writer, "session_file", None)
+
+    async def load_frames() -> list[tuple[int, str]]:
+        """脱敏后的 ``(seq, json)`` 帧；同一份文件只算一次。"""
+        if session_file is None:
+            return build_frames(await writer.read_events_from(1), chunk_mode)
+        hit = cached_frames(session_file, chunk_mode)
+        if hit is not None:
+            return hit
+        frames = build_frames(await writer.read_events(), chunk_mode)
+        store_frames(session_file, chunk_mode, frames)
+        return frames
+
     async def event_generator() -> Any:
+        try:
+            frames = await load_frames()
+        except VersionMismatchError as exc:
+            yield {"event": "error", "data": json.dumps({"error": str(exc)})}
+            return
+
         cursor = after_seq
+        for seq, payload in frames:
+            if seq <= after_seq:
+                continue
+            cursor = seq
+            yield {"event": "session_event", "id": str(seq), "data": payload}
+
+        if not follow:
+            yield {"event": "done", "data": done_payload(cursor)}
+            return
+
         while True:
+            await asyncio.sleep(poll_interval)
             try:
-                events = await writer.read_events_from(cursor + 1)
+                new_frames = build_frames(
+                    await writer.read_events_from(cursor + 1), chunk_mode
+                )
             except VersionMismatchError as exc:
                 yield {"event": "error", "data": json.dumps({"error": str(exc)})}
                 return
+            for seq, payload in new_frames:
+                cursor = seq
+                yield {"event": "session_event", "id": str(seq), "data": payload}
 
-            for event in redact_events(events):
-                cursor = event.seq
+    return EventSourceResponse(event_generator())
+
+
+@router.get("/session/{session_id}/stats")
+async def session_stats(
+    session_id: str,
+    manager: SessionManager = Depends(get_session_manager),
+) -> SessionStats:
+    """会话级统计 —— 轮/步/用时/TTFT/TPS/token 用量/上下文占用。
+
+    活跃会话直接问引擎的增量累加器（O(1)，每一步之后都可以取）；
+    历史会话没有引擎实例，才回退成读整份 transcript 再折叠 —— 那是 O(全量)，
+    长会话要几百毫秒，不适合放在轮询里。两条路走的是
+    ``nono_agent.session.stats`` 里的同一份实现，口径一致。
+    """
+    engine = manager.sessions.get(session_id)
+    if engine is not None:
+        return SessionStats.model_validate(engine.session_stats())
+    writer = manager.events_writer(session_id)
+    if writer is None:
+        raise HTTPException(status_code=404, detail="Session log not found")
+    try:
+        events = await writer.read_events()
+    except VersionMismatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return SessionStats.model_validate(build_session_stats(events))
+
+
+@router.get("/session/{session_id}/stats/stream")
+async def stream_session_stats(
+    session_id: str,
+    manager: SessionManager = Depends(get_session_manager),
+) -> Any:
+    """按 SSE 推送会话统计 —— 引擎每落一步事件推一次。
+
+    消费端不用轮询：``QueryEngine`` 在事件落盘后回调 ``SessionManager`` 扇出，
+    这里只是把队列里的快照原样转发。客户端只应订阅**正在浏览**的那一个会话，
+    切会话时关掉旧流即可。
+    """
+    queue = manager.subscribe_stats(session_id)
+    if queue is None:
+        raise HTTPException(status_code=404, detail="Session log not found")
+
+    async def event_generator() -> Any:
+        try:
+            engine = manager.sessions.get(session_id)
+            if engine is not None:
+                # 先补一帧当前值，避免客户端要等到下一次落盘才有数。
+                yield {"event": "stats", "data": json.dumps(engine.session_stats())}
+            else:
+                writer = manager.events_writer(session_id)
+                events = await writer.read_events() if writer is not None else []
                 yield {
-                    "event": "session_event",
-                    "id": str(event.seq),
-                    "data": event.model_dump_json(),
+                    "event": "stats",
+                    "data": json.dumps(build_session_stats(events)),
                 }
-
-            if not follow:
-                yield {"event": "done", "data": json.dumps({"last_seq": cursor})}
-                return
-            await asyncio.sleep(poll_interval)
+            while True:
+                snapshot = await queue.get()
+                yield {"event": "stats", "data": json.dumps(snapshot)}
+        except asyncio.CancelledError:
+            # 客户端断开：正常路径，不是错误。
+            raise
+        finally:
+            manager.unsubscribe_stats(session_id, queue)
 
     return EventSourceResponse(event_generator())
 

@@ -33,6 +33,7 @@ from nono_agent.hooks.middleware import MiddlewareBase
 from nono_agent.paths import user_home
 from nono_app_server.common.gitcmd import GitError, git_available, git_path, repo_toplevel, run_git
 from nono_app_server.common.textdiff import count_changes, diff_contents
+from nono_app_server.features.git.watch import notify_changed
 
 logger = logging.getLogger(__name__)
 
@@ -441,6 +442,8 @@ class WorkspaceChangesService:
         finally:
             if snap is not None:
                 snap.cleanup()
+        # 这一轮动过工作树 —— 让 git 状态那条流立刻重算，浏览器不用等兜底检查。
+        notify_changed()
         if not files:
             return None
         files.sort(key=lambda item: item["display"])

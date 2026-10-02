@@ -4,34 +4,34 @@ import { PermissionDialog } from "@/features/permissions/PermissionDialog";
 import { NewTaskDialog } from "@/features/session/NewTaskDialog";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
 import { Workbench } from "@/features/shell/Workbench";
-import { anyStreaming, useChatStore } from "@/store/chat";
+import { useChatStore } from "@/store/chat";
 
 export function App() {
   const refresh = useChatStore((state) => state.refresh);
-  const refreshHealth = useChatStore((state) => state.refreshHealth);
-  const refreshPermissions = useChatStore((state) => state.refreshPermissions);
-  // 任意会话在跑就继续轮询：后台会话的授权请求也要被收上来。
-  const streaming = useChatStore(anyStreaming);
+  const watchControl = useChatStore((state) => state.watchControl);
+  const unwatchControl = useChatStore((state) => state.unwatchControl);
+  const watchSessionStats = useChatStore((state) => state.watchSessionStats);
+  const unwatchSessionStats = useChatStore((state) => state.unwatchSessionStats);
+  const sessionId = useChatStore((state) => state.sessionId);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
+  // 健康与待授权请求都走这一条常驻流：后台会话的授权请求也得被收上来，
+  // 所以跟有没有会话在跑无关，整条应用存活期都开着。
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      void refreshHealth();
-    }, 15_000);
-    return () => window.clearInterval(timer);
-  }, [refreshHealth]);
+    watchControl();
+    return () => unwatchControl();
+  }, [watchControl, unwatchControl]);
 
+  // 底部统计只订阅**正在浏览**的那个会话：服务端在引擎每落一步事件时推一帧，
+  // 这里既不轮询也不订阅别的会话。切换会话时关掉旧流再开新流。
   useEffect(() => {
-    if (!streaming) return;
-    void refreshPermissions();
-    const timer = window.setInterval(() => {
-      void refreshPermissions();
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [streaming, refreshPermissions]);
+    if (!sessionId) return;
+    watchSessionStats(sessionId);
+    return () => unwatchSessionStats();
+  }, [sessionId, watchSessionStats, unwatchSessionStats]);
 
   return (
     <div className="flex h-full min-h-0 bg-bg">

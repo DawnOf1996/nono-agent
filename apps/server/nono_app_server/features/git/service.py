@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from pathlib import Path
@@ -322,3 +323,177 @@ def _parse_log(output: str) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+# ── 推送用的状态快照 ───────────────────────────────────────────────────
+# 下面两个 payload 同时供一次性 HTTP 读取和 SSE 推送使用：走同一条实现，
+# 客户端从轮询切到推送后，看到的数据不会因为换了条路而变形。
+
+
+async def status_payload(root_raw: str, repo_raw: str | None) -> dict[str, Any]:
+    """工作树状态：暂存区与工作区两侧的改动，含未跟踪文件和行数统计。"""
+    workspace, selected, roots = await _resolve_repo(root_raw, repo_raw)
+    if selected is None:
+        return {
+            "is_repo": False,
+            "workspace": str(workspace),
+            "repo": None,
+            "repositories": [],
+            "branch": None,
+            "head": None,
+            "upstream": None,
+            "ahead": 0,
+            "behind": 0,
+            "entries": [],
+            "truncated": False,
+        }
+    try:
+        status = await run_git(
+            selected, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"
+        )
+        unstaged = await run_git(selected, "diff", "--no-ext-diff", "--numstat", "-z")
+        staged = await run_git(selected, "diff", "--no-ext-diff", "--cached", "--numstat", "-z")
+    except GitError as exc:
+        raise _git_http_error(exc) from exc
+    branch, parsed = _parse_status_v2(status.stdout)
+    unstaged_stats = _parse_numstat(unstaged.stdout)
+    staged_stats = _parse_numstat(staged.stdout)
+    truncated = len(parsed) > STATUS_LIMIT
+    entries: list[dict[str, Any]] = []
+    counted = 0
+    for item in parsed[:STATUS_LIMIT]:
+        xy = item["xy"]
+        index_letter = " " if xy[0] in ".?" else xy[0]
+        tree_letter = "?" if xy == "??" else (" " if xy[1] == "." else xy[1])
+        untracked = xy == "??"
+        abs_path = selected / item["path"]
+        unstaged_stat = _stat_dict(unstaged_stats.get(item["path"]))
+        if untracked and counted < UNTRACKED_COUNT_LIMIT:
+            counted += 1
+            lines, binary = _count_lines(abs_path)
+            unstaged_stat = (
+                {"added": lines or 0, "deleted": 0, "binary": binary}
+                if lines is not None or binary
+                else None
+            )
+        entries.append(
+            {
+                "path": item["path"],
+                "orig_path": item.get("orig_path"),
+                "abs_path": str(abs_path),
+                "index": index_letter,
+                "worktree": tree_letter,
+                "staged": index_letter != " ",
+                "unstaged": tree_letter != " ",
+                "untracked": untracked,
+                "conflicted": bool(item.get("conflicted")),
+                "staged_stat": _stat_dict(staged_stats.get(item["path"])),
+                "unstaged_stat": unstaged_stat,
+            }
+        )
+    return {
+        "is_repo": True,
+        "workspace": str(workspace),
+        "repo": str(selected),
+        "repositories": [str(item) for item in roots],
+        **branch,
+        "entries": entries,
+        "truncated": truncated,
+    }
+
+
+async def worktrees_payload(root_raw: str) -> dict[str, Any]:
+    """工作区里所有仓库的 checkout（主工作树 + linked worktree）及其改动数。"""
+    _workspace, _selected, roots = await _resolve_repo(root_raw, None)
+    items: list[dict[str, Any]] = []
+    for repo_root in roots:
+        trees = await _list_worktrees(repo_root) or [
+            {"path": str(repo_root), "branch": "HEAD", "locked": False}
+        ]
+        for tree in trees:
+            try:
+                status = await run_git(
+                    tree["path"], "status", "--porcelain", "-z", "--untracked-files=all", timeout=10
+                )
+                changes = len(
+                    [
+                        token
+                        for token in status.stdout.split(b"\0")
+                        if len(token) > 3 and token[2:3] == b" "
+                    ]
+                )
+            except GitError:
+                changes = 0
+            items.append(
+                {
+                    "path": tree["path"],
+                    "branch": tree["branch"],
+                    "repo": str(repo_root),
+                    "main": path_identity(tree["path"]) == path_identity(repo_root),
+                    "locked": tree["locked"],
+                    "changes": changes,
+                }
+            )
+    return {"worktrees": items}
+
+
+def _untracked_fingerprint(repo: Path, porcelain: bytes) -> str:
+    """未跟踪文件的大小和 mtime。
+
+    ``git status`` 对未跟踪文件只报路径，文件内容被改过时输出纹丝不动 ——
+    但状态卡片上的行数是从文件内容数出来的，不带上这一项就会漏掉这种改动。
+    """
+    parts: list[str] = []
+    for token in porcelain.split(b"\0"):
+        if not token.startswith(b"??"):
+            continue
+        # porcelain v1 的未跟踪行是「?? 空格 路径」，切掉状态位和那个分隔空格。
+        rel = token[3:].decode("utf-8", errors="replace")
+        if not rel:
+            continue
+        try:
+            info = (repo / rel).stat()
+        except OSError:
+            # 刚被删掉：路径本身已经在 porcelain 里，删掉这一项不会漏。
+            continue
+        parts.append(f"{rel}:{info.st_size}:{info.st_mtime_ns}")
+    return "|".join(parts)
+
+
+async def workspace_signature(root_raw: str) -> str:
+    """工作区里所有工作树的廉价指纹，用来判断「要不要重算状态」。
+
+    一次 ``git status --porcelain`` 就能盖住暂存区、工作区、未跟踪文件集、
+    HEAD 和分支 —— 也就是状态卡片会显示的一切。算指纹只跑这一条命令，
+    比真的要出状态（还要两条 diff、还要数未跟踪文件的行数）便宜得多。
+    """
+    workspace = _workspace_root(root_raw)
+    roots = await _discover(workspace)
+    if not roots:
+        return ""
+    parts: list[str] = []
+    for repo_root in roots:
+        trees = await _list_worktrees(repo_root) or [
+            {"path": str(repo_root), "branch": "HEAD", "locked": False}
+        ]
+        for tree in trees:
+            try:
+                result = await run_git(
+                    tree["path"],
+                    "status",
+                    "--porcelain",
+                    "--branch",
+                    "-z",
+                    "--untracked-files=all",
+                    timeout=10,
+                )
+            except GitError:
+                # git 报错本身也是一种变化（仓库被删、索引损坏），换指纹重试。
+                parts.append(f"{path_identity(tree['path'])}:error")
+                continue
+            parts.append(
+                f"{path_identity(tree['path'])}:"
+                f"{hashlib.sha1(result.stdout).hexdigest()}:"
+                f"{_untracked_fingerprint(Path(tree['path']), result.stdout)}"
+            )
+    return "|".join(parts)

@@ -64,10 +64,68 @@ class SessionManager:
         self.sessions: dict[str, QueryEngine] = {}
         self.lock = asyncio.Lock()
         self.last_activity: dict[str, float] = {}
+        # 每个会话的统计订阅者。引擎每落一步事件就回调这里扇出，
+        # 消费端（HTTP SSE）据此推送，消费端不需要轮询。
+        self._stats_subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
+        self._stats_disposers: dict[str, Callable[[], None]] = {}
         self.pending_questions: dict[
             str, tuple[list[dict[str, Any]], asyncio.Future[dict[str, Any]]]
         ] = {}
         self.ask_signal: dict[str, asyncio.Queue[dict[str, Any]]] = {}
+
+    def _attach_stats_listener(self, session_id: str, engine: QueryEngine) -> None:
+        """把引擎的统计变化接到本会话的订阅者上。
+
+        引擎是懒建的：先开订阅、之后才发消息的话，``get_or_create`` 会在这里补挂，
+        已经建立的流不用重连。
+        """
+        if not self._stats_subscribers.get(session_id):
+            # 当前没人订阅，等真有订阅者时再挂（省一个常驻回调）。
+            return
+        if self._stats_disposers.get(session_id) is not None:
+            return
+        self._stats_disposers[session_id] = engine.add_stats_listener(
+            lambda snapshot: self._fanout_stats(session_id, snapshot)
+        )
+
+    def _fanout_stats(self, session_id: str, snapshot: dict[str, Any]) -> None:
+        """把快照推给该会话的所有订阅者。
+
+        满了就丢最旧的一条：订阅者跟不上时，宁可给它旧的也不能反压对话。
+        """
+        for queue in list(self._stats_subscribers.get(session_id, ())):
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            queue.put_nowait(snapshot)
+
+    def subscribe_stats(self, session_id: str) -> asyncio.Queue[dict[str, Any]] | None:
+        """订阅某会话的统计推送。返回 None 表示该会话既没有引擎也没有日志。"""
+        if not self.sessions.get(session_id) and self.events_writer(session_id) is None:
+            return None
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=8)
+        self._stats_subscribers.setdefault(session_id, set()).add(queue)
+        engine = self.sessions.get(session_id)
+        if engine is not None:
+            self._stats_disposers[session_id] = engine.add_stats_listener(
+                lambda snapshot: self._fanout_stats(session_id, snapshot)
+            )
+        return queue
+
+    def unsubscribe_stats(self, session_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        """退订；该会话没人订阅了就把引擎上的回调摘掉。"""
+        subscribers = self._stats_subscribers.get(session_id)
+        if not subscribers:
+            return
+        subscribers.discard(queue)
+        if subscribers:
+            return
+        self._stats_subscribers.pop(session_id, None)
+        dispose = self._stats_disposers.pop(session_id, None)
+        if dispose is not None:
+            dispose()
 
     def touch(self, session_id: str) -> None:
         self.last_activity[session_id] = time.monotonic()
@@ -178,6 +236,7 @@ class SessionManager:
             )
             await engine.initialize()
             self.sessions[session_id] = engine
+            self._attach_stats_listener(session_id, engine)
             self.touch(session_id)
             return engine
 
@@ -202,6 +261,11 @@ class SessionManager:
                         except Exception:
                             logger.exception("Error closing expired session %s", sid)
                         self.last_activity.pop(sid, None)
+                        # 引擎没了，这个会话的推送不会再有；把回调摘掉，
+                        # 订阅者留在原地（等重新建引擎时由 _attach_stats_listener 补挂）。
+                        dispose = self._stats_disposers.pop(sid, None)
+                        if dispose is not None:
+                            dispose()
                         logger.info("Session %s expired (TTL)", sid)
 
     async def reload_mcp_for_cwd(self, cwd: str | None) -> None:
@@ -263,4 +327,5 @@ class SessionManager:
 
         async with self.lock:
             self.sessions[session_id] = engine
+        self._attach_stats_listener(session_id, engine)
         return engine, messages

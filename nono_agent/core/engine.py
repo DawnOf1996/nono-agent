@@ -122,6 +122,7 @@ from nono_agent.session.header import (
     summarize_user_prompt,
 )
 from nono_agent.session.request_header import canonical_header, next_reason
+from nono_agent.session.stats import StatsAccumulator
 from nono_agent.session.store import MessageStore
 from nono_agent.session.transcript import (
     LocalFileTranscriptWriter,
@@ -225,6 +226,10 @@ class QueryEngine:
 
         # 事件溯源会话日志：待写事件队列（同步 stage + 异步 flush，保证追加顺序）
         self._pending_events: list[SessionEvent] = []
+        # 会话统计的增量累加器：事件落盘后逐条喂进来，每步就能 O(1) 出一次快照，
+        # 不用重读整份日志（5 万条事件重读一次约 0.7s，且随会话一直变大）。
+        self._stats = StatsAccumulator()
+        self._stats_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._header_logged = False           # 本实例是否已写过 request/header
         self._last_header: dict[str, Any] | None = None
         self._last_system_prompt: str = ""    # 最近一次组装的系统提示词（供上下文分析复用）
@@ -318,6 +323,7 @@ class QueryEngine:
                 await self._transcript_writer.flush()
         while self._observer_disposers:
             self._observer_disposers.pop()()
+        self._stats_listeners.clear()
         logger.info("QueryEngine closed (session=%s)", self._session_id)
 
     def apply_model_config(
@@ -571,6 +577,10 @@ class QueryEngine:
                             EVENT_USAGE,
                             usage=usage_dict,
                             model=self._config.effective_model,
+                            # 上下文快照一并落盘：analyze_context_usage 只在请求
+                            # 当下算一次，不写事件的话重开历史会话就再也拼不出
+                            # 「系统提示词 / 工具定义 / 对话消息」这三项了。
+                            context=context_usage,
                         )
                     await self._flush_events()
 
@@ -800,6 +810,44 @@ class QueryEngine:
     def token_tracker(self) -> TokenTracker:
         return self._token_tracker
 
+    def session_stats(self) -> dict[str, Any]:
+        """本会话的累计统计（轮/步/用时/TTFT/TPS/token/上下文）。
+
+        直接从事件落盘时喂养的增量累加器出结果，O(1) —— 调用方（HTTP 层）
+        可以在每一步之后取一次，不必重读整份日志。
+        """
+        return self._stats.snapshot()
+
+    def add_stats_listener(self, listener: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        """订阅「统计有变化」，返回取消订阅的函数。
+
+        每次事件落盘并喂进累加器后触发一次 —— 也就是**每一步**都会推，
+        消费端不用轮询。快照是现成的，listener 只管拿。
+
+        监听器在引擎的事件循环里被同步调用，**不要**在里面 await；
+        要发到别处（如 asyncio.Queue）就 ``put_nowait``。
+        """
+        self._stats_listeners.append(listener)
+
+        def dispose() -> None:
+            try:
+                self._stats_listeners.remove(listener)
+            except ValueError:
+                pass
+
+        return dispose
+
+    def _notify_stats_listeners(self) -> None:
+        if not self._stats_listeners:
+            return
+        snapshot = self._stats.snapshot()
+        for listener in list(self._stats_listeners):
+            try:
+                listener(snapshot)
+            except Exception:
+                # 订阅方的问题不能反过来打断对话。
+                logger.exception("session stats listener failed")
+
     @property
     def tool_registry(self) -> ToolRegistry:
         return self._tool_registry
@@ -932,11 +980,16 @@ class QueryEngine:
         batch = self._pending_events
         self._pending_events = []
         try:
-            await self._transcript_writer.append_events(batch)
+            written = await self._transcript_writer.append_events(batch)
             self._persisted = True
         except BaseException:
             self._pending_events = list(batch) + self._pending_events
             raise
+        # 统计只认「已落盘」的事件：flush 失败会把这批放回队首重试，
+        # 若在 stage 时就喂，重试会把它算两遍。append_events 会回填 seq。
+        for event in written if written else batch:
+            self._stats.feed(event)
+        self._notify_stats_listeners()
 
     async def _verify_log_matches_state(self) -> None:
         """请求前一致性门禁 —— 校验事件流能重建出当前运行时消息状态。
@@ -1065,6 +1118,9 @@ class QueryEngine:
         writer = self._transcript_writer
         events = await writer.read_events() if writer is not None else []
         messages = derived_to_messages(derive_messages(events))
+        # 统计要把恢复出来的整段历史算进去，否则只统计「本次 resume 之后」的部分。
+        self._stats.reset()
+        self._stats.feed_all(events)
 
         # 可选过滤临时系统消息
         if skip_system:

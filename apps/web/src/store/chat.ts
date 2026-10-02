@@ -10,6 +10,7 @@ import type {
   SdkResultMessage,
   SessionEvent,
   SessionListItem,
+  SessionStats,
   SettingsTab,
   SlashCommandInfo,
   TurnChanges,
@@ -40,7 +41,9 @@ import {
   fetchPermissions,
   fetchSessionEvents,
   fetchSessionList,
+  fetchSessionStats,
   fetchTurnChanges,
+  openSessionStatsStream,
   fetchWorkspaces,
   forkAppSession,
   patchAppSession,
@@ -54,6 +57,7 @@ import {
   setMcpEnabled as patchMcpEnabled,
   setSessionPermission,
   upsertWorkspace,
+  watchControl as watchControlStream,
 } from "@/api/client";
 import {
   extractAssistantText,
@@ -82,6 +86,7 @@ import {
   saveDraftWorkspace,
 } from "@/lib/workspace";
 import { MAX_PENDING_IMAGES, toApiAttachments, type PendingImage } from "@/lib/images";
+import type { TurnTokens } from "@/lib/usage";
 import {
   MAX_QUOTE_CHARS,
   MAX_QUOTES,
@@ -118,15 +123,10 @@ export type ChatMessage = {
   seq?: number;
   /** 流式过程中收到的本轮文件变更摘要 id；历史消息按 seq 区间匹配。 */
   changesId?: string;
-};
-
-export type TurnUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  durationMs: number;
-  contextRatio: number | null;
-  contextTotal: number | null;
-  contextWindow: number | null;
+  /** 这条消息落定的时刻（毫秒）。历史消息取事件时间戳，本地新建的取发送时间。 */
+  createdAt?: number;
+  /** 本轮 token 用量 —— 挂在 AI 消息上，渲染成气泡下方的用量角标。 */
+  usage?: TurnTokens;
 };
 
 /** 单个会话的运行态。多会话并发时各自独立，互不覆盖。 */
@@ -134,7 +134,6 @@ export type SessionRun = {
   messages: ChatMessage[];
   events: SessionEvent[];
   streaming: boolean;
-  usage: TurnUsage | null;
   error: string | null;
   ask: AskUserSignal | null;
   historyReveal: boolean;
@@ -145,7 +144,6 @@ const EMPTY_RUN: SessionRun = {
   messages: [],
   events: [],
   streaming: false,
-  usage: null,
   error: null,
   ask: null,
   historyReveal: false,
@@ -186,13 +184,21 @@ type ChatState = {
   settingsOpen: boolean;
   settingsTab: SettingsTab;
   view: MainView;
-  usage: TurnUsage | null;
   commands: SlashCommandInfo[];
   historyReveal: boolean;
   historyLoading: boolean;
   /** 各会话每轮的文件变更摘要（按时间先后）。 */
   turnChanges: Record<string, TurnChanges[]>;
+  /** 各会话的服务端统计（轮/步/用时/TTFT/TPS/token/上下文）。 */
+  sessionStats: Record<string, SessionStats>;
   loadTurnChanges: (sessionId: string) => Promise<void>;
+  loadSessionStats: (sessionId: string) => Promise<void>;
+  /** 订阅某会话的统计推送（服务端 push，非轮询）。返回的关闭函数存在模块级。 */
+  watchSessionStats: (sessionId: string) => void;
+  unwatchSessionStats: () => void;
+  /** 订阅全局控制流（健康 + 授权请求，服务端 push）。整条链路只开一条。 */
+  watchControl: () => void;
+  unwatchControl: () => void;
   setInput: (value: string) => void;
   setError: (message: string | null) => void;
   addAttachments: (items: PendingImage[]) => void;
@@ -209,8 +215,6 @@ type ChatState = {
   setSettingsOpen: (open: boolean, tab?: SettingsTab) => void;
   setView: (view: MainView) => void;
   refresh: () => Promise<void>;
-  refreshHealth: () => Promise<void>;
-  refreshPermissions: () => Promise<void>;
   refreshMcp: () => Promise<void>;
   newSession: (opts?: { model?: string; cwd?: string }) => Promise<void>;
   openSession: (sessionId: string) => Promise<void>;
@@ -297,17 +301,6 @@ function mergeWorkspaceList(current: Workspace[], incoming: Workspace[]): Worksp
   return [...byId.values()].sort((a, b) => b.updated_at - a.updated_at);
 }
 
-function usageFromResult(result: SdkResultMessage): TurnUsage {
-  return {
-    inputTokens: result.usage?.input_tokens ?? 0,
-    outputTokens: result.usage?.output_tokens ?? 0,
-    durationMs: result.duration_ms ?? 0,
-    contextRatio: result.context_usage?.usage_ratio ?? null,
-    contextTotal: result.context_usage?.total_tokens ?? null,
-    contextWindow: result.context_usage?.context_window ?? null,
-  };
-}
-
 function newDraftKey(): string {
   return `draft:${nextId()}`;
 }
@@ -338,12 +331,23 @@ export function sessionRun(state: ChatState, sessionId: string | null): SessionR
   return state.runs[sessionId] ?? EMPTY_RUN;
 }
 
-/** 是否还有任意会话在流式输出 —— 决定是否继续轮询权限请求。 */
-export function anyStreaming(state: ChatState): boolean {
-  return Object.values(state.runs).some((run) => run.streaming);
-}
-
 let persistDraftTask: Promise<string | null> | null = null;
+
+/**
+ * 当前打开的统计订阅流的关闭函数。
+ *
+ * 刻意只保留一个：统计是「正在浏览的那个会话」才有意义的，存一格就够，
+ * 也就不存在多路连接漏关的问题。切换会话时先关旧的再开新的。
+ */
+let closeStatsStream: (() => void) | null = null;
+
+/**
+ * 控制流的关闭函数。
+ *
+ * 健康与待授权请求都是全局的，存一格就够，也就不存在多路连接漏关的问题。
+ * 重复调用 watchControl 直接忽略：这条流是常驻的，不该被第二个订阅顶掉。
+ */
+let closeControlStream: (() => void) | null = null;
 
 async function persistDraftSession(
   get: () => ChatState,
@@ -484,11 +488,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   settingsOpen: false,
   settingsTab: "general",
   view: "chat",
-  usage: null,
   commands: [],
   historyReveal: false,
   historyLoading: false,
   turnChanges: {},
+  sessionStats: {},
 
   loadTurnChanges: async (sessionId) => {
     try {
@@ -497,6 +501,46 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       // 旧版本机服务没有变更接口：不显示卡片
     }
+  },
+
+  loadSessionStats: async (sessionId) => {
+    try {
+      const stats = await fetchSessionStats(sessionId);
+      if (!stats) return;
+      set((state) => ({ sessionStats: { ...state.sessionStats, [sessionId]: stats } }));
+    } catch {
+      // 旧版本机服务没有统计接口：底部角标不显示
+    }
+  },
+
+  watchSessionStats: (sessionId) => {
+    closeStatsStream?.();
+    closeStatsStream = openSessionStatsStream(sessionId, (stats) => {
+      set((state) => ({ sessionStats: { ...state.sessionStats, [sessionId]: stats } }));
+    });
+  },
+
+  unwatchSessionStats: () => {
+    closeStatsStream?.();
+    closeStatsStream = null;
+  },
+
+  watchControl: () => {
+    if (closeControlStream) return;
+    const controller = new AbortController();
+    closeControlStream = () => controller.abort();
+    void watchControlStream(controller.signal, {
+      // 流建起来就是服务端还活着的证据；之后每一帧（含授权帧）也同理。
+      onOpen: () => set({ healthOk: true }),
+      onHealth: (health) => set({ healthOk: health.status === "ok" }),
+      onPermissions: (permissions) => set({ permissions, healthOk: true }),
+      onClose: () => set({ healthOk: false }),
+    });
+  },
+
+  unwatchControl: () => {
+    closeControlStream?.();
+    closeControlStream = null;
   },
 
   setInput: (value) => set({ input: value }),
@@ -747,23 +791,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  refreshHealth: async () => {
-    try {
-      const health = await fetchHealth();
-      set({ healthOk: health.status === "ok" });
-    } catch {
-      set({ healthOk: false });
-    }
-  },
-
-  refreshPermissions: async () => {
-    try {
-      set({ permissions: await fetchPermissions() });
-    } catch {
-      // keep last list
-    }
-  },
-
   refreshMcp: async () => {
     try {
       const mcp = await fetchMcp(get().workspace);
@@ -825,7 +852,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 正在流式输出的会话：保住现场，不清空也不重拉历史。
       const run: SessionRun = live
         ? (previous as SessionRun)
-        : { ...EMPTY_RUN, usage: previous?.usage ?? null, historyLoading: true };
+        : { ...EMPTY_RUN, historyLoading: true };
       return {
         sessionId,
         workspace: session?.cwd || state.workspace,
@@ -844,6 +871,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     usePanelStore.getState().markConversationOpen();
     void get().refreshMcp();
     void get().loadTurnChanges(sessionId);
+    void get().loadSessionStats(sessionId);
     if (live) return;
 
     // 历史只写进该会话的运行态；期间它若开始新一轮输出就让位给流式内容。
@@ -857,11 +885,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const title = titlesFromEvents(events);
       const { older, recent } = sliceLastUserTurns(all, 3);
       if (title) {
-        set((state) => ({
-          sessionTitles: { ...state.sessionTitles, [sessionId]: title },
-        }));
+        set((state) => {
+          const current = state.sessionTitles[sessionId];
+          // 用户重命名过就别用反推的标题盖回去，否则一点开会话名字就跳回原始名。
+          if (current && current !== "新会话") return {};
+          return { sessionTitles: { ...state.sessionTitles, [sessionId]: title } };
+        });
       }
-      writeHistory({ events, messages: recent, historyReveal: true, historyLoading: false });
+      writeHistory({
+        events,
+        messages: recent,
+        historyReveal: true,
+        historyLoading: false,
+      });
       if (title) {
         const mapped = get().sessions.find((item) => item.engine_session_id === sessionId);
         if (mapped && (!mapped.title.trim() || mapped.title === "新会话")) {
@@ -992,7 +1028,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         cwd: get().workspace || undefined,
       });
       if (out.name === "clear") {
-        set((state) => patchRun(state, runKey, { messages: [], events: [], usage: null }));
+        set((state) => patchRun(state, runKey, { messages: [], events: [] }));
         return;
       }
       set((state) =>
@@ -1041,11 +1077,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
     const images = pending.map((item) => ({ src: item.preview }));
+    const sentAt = Date.now();
     const userMessage: ChatMessage = {
       id: nextId(),
       role: "user",
       text,
       images: images.length ? images : undefined,
+      createdAt: sentAt,
     };
     const draftId = nextId();
     set((state) => ({
@@ -1056,11 +1094,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ...patchRun(state, runKey, {
         streaming: true,
         error: null,
-        usage: null,
         messages: [
           ...runAt(state, runKey).messages,
           userMessage,
-          { id: draftId, role: "assistant", text: "", streaming: true },
+          { id: draftId, role: "assistant", text: "", streaming: true, createdAt: sentAt },
         ],
       }),
     }));
@@ -1076,7 +1113,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return patchRun(state, runKey, {
           messages: found
             ? messages
-            : [...messages, updater({ id: draftId, role: "assistant", text: "", streaming: true })],
+            : [
+                ...messages,
+                updater({ id: draftId, role: "assistant", text: "", streaming: true, createdAt: sentAt }),
+              ],
         });
       });
     };
@@ -1268,14 +1308,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         } else if (frame.event === "result") {
           flushStream();
           const result = payload as SdkResultMessage;
-          set((state) =>
-            patchRun(state, runKey, {
-              usage: usageFromResult(result),
-              ...(result.is_error
-                ? { error: result.errors?.join("\n") || result.result || "本轮失败" }
-                : {}),
-            }),
-          );
+          if (result.is_error) {
+            set((state) =>
+              patchRun(state, runKey, {
+                error: result.errors?.join("\n") || result.result || "本轮失败",
+              }),
+            );
+          }
           if (result.duration_ms) {
             patchDraft((item) => ({ ...item, durationMs: result.duration_ms }));
           }
@@ -1302,18 +1341,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       usePanelStore.getState().bumpRevision();
       await get().refresh();
       if (sessionId) {
+        // 统计不在这里拉：开着 SSE 订阅时每一步都会推，重复补拉没有意义。
         const events = await fetchSessionEvents(sessionId).catch(() => null);
         if (events) {
           set((state) => {
             const run = runAt(state, runKey);
             // 该会话已开始下一轮：别用历史覆盖正在写入的内容。
             if (run.streaming) return {};
-            return patchRun(state, runKey, {
-              events,
-              messages: run.messages.some((item) => item.role === "system")
-                ? run.messages
-                : messagesFromEvents(events),
-            });
+            const messages = run.messages.some((item) => item.role === "system")
+              ? run.messages
+              : messagesFromEvents(events);
+            return patchRun(state, runKey, { events, messages });
           });
         }
       }
@@ -1327,10 +1365,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   resolvePermission: async (requestId, allow) => {
-    await answerPermission(requestId, allow);
+    // 先摘掉再发请求：弹窗要立刻消失。真没送达到的话，服务端下一次
+    // 推送会把它原样推回来，不用在这儿做回滚。
     set((state) => ({
       permissions: state.permissions.filter((item) => item.request_id !== requestId),
     }));
+    await answerPermission(requestId, allow);
   },
 
   resolveAsk: async (answers) => {

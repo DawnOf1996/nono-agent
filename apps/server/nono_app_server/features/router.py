@@ -13,6 +13,7 @@ from nono_app_server.config import SidecarSettings
 from nono_app_server.features.catalog.api import router as catalog_router
 from nono_app_server.features.changes.api import router as changes_router
 from nono_app_server.features.changes.service import WorkspaceChangesService
+from nono_app_server.features.control.api import router as control_router
 from nono_app_server.features.files.api import router as filesystem_router
 from nono_app_server.features.git.api import router as git_router
 from nono_app_server.features.info.api import router as info_router
@@ -46,6 +47,7 @@ def mount_product_routes(
     router.include_router(catalog_router)
     router.include_router(mcp_router)
     router.include_router(permissions_router)
+    router.include_router(control_router)
     router.include_router(filesystem_router)
     router.include_router(git_router)
     router.include_router(jobs_router)
