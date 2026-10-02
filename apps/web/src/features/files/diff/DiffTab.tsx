@@ -540,7 +540,7 @@ function CommitDiff({ target, visible }: { target: Extract<DiffTarget, { source:
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-bg">
-      <div className="border-b border-line px-3 py-2">
+      <div className="shrink-0 border-b border-line px-3 py-2">
         <div className="flex items-start gap-2">
           <p className="min-w-0 flex-1 text-[13px] font-medium leading-5">{detail.subject}</p>
           <ToolButton title={prefs.layout === "split" ? "统一视图" : "并排视图"} onClick={prefs.toggleLayout}>
