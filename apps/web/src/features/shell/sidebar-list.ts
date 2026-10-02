@@ -6,10 +6,37 @@ export type ArchiveFilter = "hide" | "all" | "only";
 /** 落点相对目标行的位置：上沿插入还是下沿插入。 */
 export type DropSide = "before" | "after";
 
+/** 一个分组默认露出多少条会话，多出来的折叠成「展开其余 N 个会话」。 */
+export const DEFAULT_VISIBLE_SESSIONS = 5;
+
+/**
+ * 分组里默认只露前 limit 条会话。
+ *
+ * 展开时原样返回。收起时当前打开的会话永远留着，免得选中项被藏进折叠区；
+ * 「新会话」草稿行不算在 limit 里，由调用方单独渲染。
+ */
+export function visibleSessionWindow<T extends { engine_session_id: string }>(
+  sessions: T[],
+  limit: number,
+  options: { expanded?: boolean; activeSessionId?: string | null } = {},
+): { shown: T[]; hidden: number } {
+  const { expanded = false, activeSessionId = null } = options;
+  if (expanded || sessions.length <= limit) {
+    return { shown: sessions, hidden: 0 };
+  }
+  const head = sessions.slice(0, limit);
+  const active = activeSessionId
+    ? sessions.find((item) => item.engine_session_id === activeSessionId)
+    : undefined;
+  if (active && !head.includes(active)) head.push(active);
+  return { shown: head, hidden: sessions.length - head.length };
+}
+
 const VIEW_KEY = "nono.sidebar.listView";
 const ORDER_KEY = "nono.sidebar.sessionOrder";
 const WORKSPACE_ORDER_KEY = "nono.sidebar.workspaceOrder";
 const ARCHIVE_KEY = "nono.sidebar.archiveFilter";
+const EXPANDED_GROUPS_KEY = "nono.sidebar.expandedSessionGroups";
 
 export function loadArchiveFilter(): ArchiveFilter {
   try {
@@ -24,6 +51,19 @@ export function loadArchiveFilter(): ArchiveFilter {
 export function saveArchiveFilter(filter: ArchiveFilter) {
   try {
     localStorage.setItem(ARCHIVE_KEY, filter);
+  } catch {
+    // private mode / blocked storage
+  }
+}
+
+/** 哪些分组被手动展开过会话折叠区，默认都是折叠的。 */
+export function loadExpandedSessionGroups(): Set<string> {
+  return new Set(loadIds(EXPANDED_GROUPS_KEY));
+}
+
+export function saveExpandedSessionGroups(ids: Set<string>) {
+  try {
+    localStorage.setItem(EXPANDED_GROUPS_KEY, JSON.stringify([...ids]));
   } catch {
     // private mode / blocked storage
   }

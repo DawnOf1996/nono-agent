@@ -13,16 +13,20 @@ import { sessionRun, useChatStore } from "@/store/chat";
 import { blankDrag, useSidebarReorder, type RowDrag } from "@/features/shell/sidebar-drag";
 import {
   buildWorkspaceTree,
+  DEFAULT_VISIBLE_SESSIONS,
+  loadExpandedSessionGroups,
   loadListView,
   loadManualOrder,
   loadWorkspaceOrder,
   orderWorkspaces,
   pruneEmptyArchiveTree,
   reorderManualTo,
+  saveExpandedSessionGroups,
   saveListView,
   saveManualOrder,
   saveWorkspaceOrder,
   sortSessions,
+  visibleSessionWindow,
   type ArchiveFilter,
   type DropSide,
   type GroupMode,
@@ -640,6 +644,66 @@ function SessionRow({
   );
 }
 
+/** 折叠区里那两枚「展开其余 N 个会话 / 收起」的按钮长得一样，样式放一处。 */
+const FOLD_ROW =
+  "flex w-full items-center rounded-lg px-2 py-1.5 text-left text-[13px] text-muted hover:bg-hover hover:text-ink";
+
+/**
+ * 一个分组下面的会话列表：默认只露前几条，多出来的折叠起来。
+ *
+ * 「新会话」草稿行由调用方通过 header 传进来，它不算在默认名额里。
+ */
+function SessionGroupList({
+  groupId,
+  sessions,
+  activeSessionId,
+  expandedGroups,
+  onToggleGroup,
+  dragSessions,
+  header,
+}: {
+  groupId: string;
+  sessions: SessionListItem[];
+  activeSessionId: string | null;
+  /** 哪些分组被手动展开过，默认都是折叠的。 */
+  expandedGroups: Set<string>;
+  onToggleGroup: (id: string) => void;
+  dragSessions: (session: SessionListItem) => RowDrag;
+  header?: ReactNode;
+}) {
+  const expanded = expandedGroups.has(groupId);
+  const { shown, hidden } = visibleSessionWindow(sessions, DEFAULT_VISIBLE_SESSIONS, {
+    expanded,
+    activeSessionId,
+  });
+  return (
+    <ul className="ml-3 border-l border-line pl-2">
+      {header}
+      {shown.map((session) => (
+        <SessionRow key={session.id} session={session} drag={dragSessions(session)} />
+      ))}
+      {hidden ? (
+        <li>
+          <button
+            type="button"
+            className={FOLD_ROW}
+            onClick={() => onToggleGroup(groupId)}
+          >
+            展开其余 {hidden} 个会话
+          </button>
+        </li>
+      ) : null}
+      {expanded && sessions.length > DEFAULT_VISIBLE_SESSIONS ? (
+        <li>
+          <button type="button" className={FOLD_ROW} onClick={() => onToggleGroup(groupId)}>
+            收起
+          </button>
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+
 function WorkspaceRow({
   workspace,
   sessions,
@@ -650,6 +714,8 @@ function WorkspaceRow({
   drag,
   dragSessions,
   nested,
+  expandedGroups,
+  onToggleSessions,
 }: {
   workspace: Workspace;
   sessions: SessionListItem[];
@@ -661,6 +727,8 @@ function WorkspaceRow({
   /** 工作区里那排会话自己的拖拽句柄，和工作区这一行互不干扰。 */
   dragSessions: (session: SessionListItem) => RowDrag;
   nested?: ReactNode;
+  expandedGroups: Set<string>;
+  onToggleSessions: (id: string) => void;
 }) {
   const newSession = useChatStore((state) => state.newSession);
   const renameWorkspace = useChatStore((state) => state.renameWorkspace);
@@ -779,19 +847,24 @@ function WorkspaceRow({
         </button>
       </div>
       {expanded ? (
-        <ul className="ml-3 border-l border-line pl-2">
-          {showDraft ? (
-            <li>
-              <div className="flex w-full items-center justify-between gap-2 rounded-lg bg-active px-2 py-1.5 text-left text-[13px] text-ink">
-                <span className="truncate">新会话</span>
-                <span className="shrink-0 text-[11px] text-faint">刚刚</span>
-              </div>
-            </li>
-          ) : null}
-          {sessions.map((session) => (
-            <SessionRow key={session.id} session={session} drag={dragSessions(session)} />
-          ))}
-        </ul>
+        <SessionGroupList
+          groupId={workspace.id}
+          sessions={sessions}
+          activeSessionId={sessionId}
+          expandedGroups={expandedGroups}
+          onToggleGroup={onToggleSessions}
+          dragSessions={dragSessions}
+          header={
+            showDraft ? (
+              <li>
+                <div className="flex w-full items-center justify-between gap-2 rounded-lg bg-active px-2 py-1.5 text-left text-[13px] text-ink">
+                  <span className="truncate">新会话</span>
+                  <span className="shrink-0 text-[11px] text-faint">刚刚</span>
+                </div>
+              </li>
+            ) : null
+          }
+        />
       ) : null}
       {expanded && nested ? <div className="ml-3 border-l border-line pl-2">{nested}</div> : null}
     </div>
@@ -841,6 +914,8 @@ function TreeBranch({
   onExpand,
   manualSort,
   dragSessions,
+  expandedGroups,
+  onToggleSessions,
 }: {
   nodes: WorkspaceTreeNode[];
   sessionsById: Map<string, SessionListItem[]>;
@@ -850,6 +925,8 @@ function TreeBranch({
   onExpand: (id: string) => void;
   manualSort: boolean;
   dragSessions: (session: SessionListItem) => RowDrag;
+  expandedGroups: Set<string>;
+  onToggleSessions: (id: string) => void;
 }) {
   // 树形分组里工作区的位置由目录结构决定，交给用户拖会跟树打架，所以只放开会话。
   return (
@@ -871,6 +948,8 @@ function TreeBranch({
               onExpand={onExpand}
               manualSort={manualSort}
               dragSessions={dragSessions}
+              expandedGroups={expandedGroups}
+              onToggleSessions={onToggleSessions}
             />
           </DirGroup>
         ) : (
@@ -884,6 +963,8 @@ function TreeBranch({
             onExpand={() => onExpand(node.workspace.id)}
             drag={blankDrag}
             dragSessions={dragSessions}
+            expandedGroups={expandedGroups}
+            onToggleSessions={onToggleSessions}
             nested={
               node.children.length ? (
                 <TreeBranch
@@ -895,6 +976,8 @@ function TreeBranch({
                   onExpand={onExpand}
                   manualSort={manualSort}
                   dragSessions={dragSessions}
+                  expandedGroups={expandedGroups}
+                  onToggleSessions={onToggleSessions}
                 />
               ) : null
             }
@@ -940,12 +1023,14 @@ export function Sidebar({
   const archiveFilter = useChatStore((state) => state.sessionArchiveFilter);
   const setSessionArchiveFilter = useChatStore((state) => state.setSessionArchiveFilter);
   const healthOk = useChatStore((state) => state.healthOk);
+  const sessionId = useChatStore((state) => state.sessionId);
   const workspace = useChatStore((state) => state.workspace);
   const workspaces = useChatStore((state) => state.workspaces);
   const setSettingsOpen = useChatStore((state) => state.setSettingsOpen);
   const newSession = useChatStore((state) => state.newSession);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(loadExpandedSessionGroups);
   const [listView, setListView] = useState(loadListView);
   const [manualOrder, setManualOrder] = useState<string[]>(loadManualOrder);
   const [workspaceOrder, setWorkspaceOrder] = useState<string[]>(loadWorkspaceOrder);
@@ -1004,6 +1089,17 @@ export function Sidebar({
   }
 
   const ungroupedOpen = !collapsed.has(UNGROUPED_ID);
+
+  /** 分组里默认只露前几条会话，这枚开关把折叠的那部分摊开或者收回去。 */
+  function toggleSessionGroup(id: string) {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      saveExpandedSessionGroups(next);
+      return next;
+    });
+  }
 
   function chooseGroup(mode: GroupMode) {
     setListView((current) => {
@@ -1182,6 +1278,8 @@ export function Sidebar({
             onExpand={expandGroup}
             manualSort={manualSort}
             dragSessions={dragSession}
+            expandedGroups={expandedGroups}
+            onToggleSessions={toggleSessionGroup}
           />
         ) : (
           visibleWorkspaces.map((item) => (
@@ -1195,6 +1293,8 @@ export function Sidebar({
               onExpand={() => expandGroup(item.id)}
               drag={dragWorkspace(item)}
               dragSessions={dragSession}
+              expandedGroups={expandedGroups}
+              onToggleSessions={toggleSessionGroup}
             />
           ))
         )}
@@ -1219,11 +1319,14 @@ export function Sidebar({
               <span className="truncate">未分组</span>
             </button>
             {ungroupedOpen ? (
-              <ul className="ml-3 border-l border-line pl-2">
-                {groups.unbound.map((session) => (
-                  <SessionRow key={session.id} session={session} drag={dragSession(session)} />
-                ))}
-              </ul>
+              <SessionGroupList
+                groupId={UNGROUPED_ID}
+                sessions={groups.unbound}
+                activeSessionId={sessionId}
+                expandedGroups={expandedGroups}
+                onToggleGroup={toggleSessionGroup}
+                dragSessions={dragSession}
+              />
             ) : null}
           </div>
         ) : null}
