@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { countChanges, diffLines, parseUnifiedDiff, splitLines, type DiffLine } from "@/lib/line-diff";
 import { cn } from "@/lib/utils";
@@ -19,9 +19,15 @@ const VERB: Record<FileToolKind, string> = {
   edit: "编辑",
 };
 
-/** 折叠时先给这么多行，剩下的一行按钮展开。 */
-const DIFF_PREVIEW = 20;
-const READ_PREVIEW = 30;
+/**
+ * 折叠时首尾各给这么多行，中间用一行按钮交代折叠了多少。
+ *
+ * 读/写/编辑三种正文一律 5 + 折叠 + 5：文件类正文动辄几百行，全展开会把一整屏对话
+ * 淹掉，而只看头部又会漏掉文件尾部的收尾（import、闭合括号、导出清单这些），所以两头
+ * 各露一点，中间那段折起来。
+ */
+const PEEK_HEAD = 5;
+const PEEK_TAIL = 5;
 
 export function fileToolKind(tool: ChatToolCall): FileToolKind | null {
   return FILE_TOOLS[tool.name] ?? null;
@@ -250,31 +256,59 @@ function ReadRow({ no, text }: { no: number; text: string }) {
   );
 }
 
-/** 折叠正文：超出的行数用一行按钮交代，不静默截断。 */
+/**
+ * 折叠正文：默认首尾各 head/tail 行，中间一行按钮交代折叠了多少行，可整段展开。
+ *
+ * 渲染交给调用方按 (行, 行序号) 出：读要按行号排版、差异要按 +/- 配色，折叠时行序号
+ * 仍得是原来的序号，所以这里给的是 index 而不是切片。
+ */
 function FoldBody<T>({
   lines,
-  limit,
+  head,
+  tail,
   render,
 }: {
   lines: readonly T[];
-  limit: number;
-  render: (shown: readonly T[]) => ReactNode;
+  head: number;
+  tail: number;
+  render: (line: T, index: number) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const foldable = lines.length > limit;
+  const hidden = lines.length - head - tail;
+  const rows = (from: number, to: number) =>
+    lines.slice(from, to).map((line, offset) => <Fragment key={from + offset}>{render(line, from + offset)}</Fragment>);
+
+  // 不足两头之和的短正文没有可折的部分，直接全给。
+  if (hidden <= 0) return <>{rows(0, lines.length)}</>;
+
+  if (expanded) {
+    return (
+      <>
+        {rows(0, lines.length)}
+        <FoldToggle label="收起" onClick={() => setExpanded(false)} />
+      </>
+    );
+  }
   return (
     <>
-      {render(expanded ? lines : lines.slice(0, limit))}
-      {foldable ? (
-        <button
-          type="button"
-          className="w-full cursor-pointer px-3 py-1.5 text-left text-[11px] text-faint hover:text-muted"
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? "收起" : `… 剩余 ${lines.length - limit} 行`}
-        </button>
-      ) : null}
+      {rows(0, head)}
+      <FoldToggle label={`… 折叠 ${hidden} 行`} onClick={() => setExpanded(true)} />
+      {rows(lines.length - tail, lines.length)}
     </>
+  );
+}
+
+/** 折叠处的那一行：上下各一条虚线，当成被折起来那段的边界。 */
+function FoldToggle({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="w-full cursor-pointer border-y border-dashed border-line/70 px-3 py-1 text-left font-sans text-[11px] text-faint hover:bg-hover hover:text-muted"
+      aria-expanded={label === "收起"}
+      onClick={onClick}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -285,14 +319,9 @@ export const FileToolBody = memo(function FileToolBody({ view }: { view: FileToo
       <div className="font-mono text-[12px] leading-[18px]">
         <FoldBody
           lines={view.lines}
-          limit={READ_PREVIEW}
-          render={(shown) => (
-            <>
-              {shown.map((text, index) => (
-                <ReadRow key={index} no={view.start + index} text={text} />
-              ))}
-            </>
-          )}
+          head={PEEK_HEAD}
+          tail={PEEK_TAIL}
+          render={(text, index) => <ReadRow no={view.start + index} text={text} />}
         />
       </div>
     );
@@ -303,19 +332,16 @@ export const FileToolBody = memo(function FileToolBody({ view }: { view: FileToo
         <p className="px-3 pb-1 font-sans text-[11px] text-faint">{view.note}</p>
         <FoldBody
           lines={view.lines}
-          limit={DIFF_PREVIEW}
-          render={(shown) => (
-            <>
-              {shown.map((text, index) => (
-                <div key={index} className="flex px-3 py-px text-ink/90">
-                  {/* 只剩新内容，行号就是新文件的 1..N。 */}
-                  <span className="w-9 shrink-0 pr-1.5 text-right text-faint/80 tabular-nums select-none">
-                    {index + 1}
-                  </span>
-                  <span className="min-w-0 flex-1 break-all whitespace-pre-wrap">{text || "\u200b"}</span>
-                </div>
-              ))}
-            </>
+          head={PEEK_HEAD}
+          tail={PEEK_TAIL}
+          render={(text, index) => (
+            <div className="flex px-3 py-px text-ink/90">
+              {/* 只剩新内容，行号就是新文件的 1..N。 */}
+              <span className="w-9 shrink-0 pr-1.5 text-right text-faint/80 tabular-nums select-none">
+                {index + 1}
+              </span>
+              <span className="min-w-0 flex-1 break-all whitespace-pre-wrap">{text || "\u200b"}</span>
+            </div>
           )}
         />
       </div>
@@ -335,14 +361,9 @@ export const FileToolBody = memo(function FileToolBody({ view }: { view: FileToo
       ) : null}
       <FoldBody
         lines={view.lines}
-        limit={DIFF_PREVIEW}
-        render={(shown) => (
-          <>
-            {shown.map((line, index) => (
-              <DiffRow key={index} line={line} />
-            ))}
-          </>
-        )}
+        head={PEEK_HEAD}
+        tail={PEEK_TAIL}
+        render={(line) => <DiffRow line={line} />}
       />
     </div>
   );
