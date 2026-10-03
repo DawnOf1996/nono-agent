@@ -4,11 +4,21 @@
     "servers": {
       "calculator": {
         "enabled": true,
-        "disabledTools": ["divide"] 
+        "disabledTools": [
+          "divide"
+        ]
       },
       "username": {
         "enabled": true
       }
+    }
+  },
+  "tools": {
+    "tavily": {
+      "enabled": true
+    },
+    "minimax-image": {
+      "enabled": true
     }
   }
 }
