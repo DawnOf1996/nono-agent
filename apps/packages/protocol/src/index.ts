@@ -473,3 +473,60 @@ export type McpServerUpsert = {
 };
 
 export type SettingsTab = "general" | "models" | "connectors" | "plugins" | "agents";
+
+/** 插件配置面板的一个字段。服务端按插件清单的 `config` 段生成，前端只负责渲染。 */
+export type ToolPluginFieldType = "string" | "number" | "boolean" | "enum" | "password";
+
+export type ToolPluginFieldChoice = { value: string; label: string };
+
+export type ToolPluginField = {
+  key: string;
+  label: string;
+  type: ToolPluginFieldType;
+  hint: string;
+  placeholder: string;
+  choices: ToolPluginFieldChoice[];
+  value: string | number | boolean | null;
+};
+
+export type ToolPluginApiKey = {
+  /** 凭据在 `~/.nono-agent/credentials` 里的键名。面板只展示它，不展示值。 */
+  env: string;
+  required: boolean;
+  configured: boolean;
+  label: string;
+  hint: string;
+  placeholder: string;
+};
+
+export type ToolPluginSource = "bundled" | "user" | "project";
+
+export type ToolPluginInfo = {
+  id: string;
+  version: string;
+  description: string;
+  source: ToolPluginSource;
+  enabled: boolean;
+  api_key: ToolPluginApiKey;
+  fields: ToolPluginField[];
+  tools: string[];
+  running: boolean;
+  error?: string | null;
+};
+
+export type ToolPluginsSnapshot = {
+  enabled: boolean;
+  credentials_path: string;
+  plugins: ToolPluginInfo[];
+};
+
+export type ToolPluginUpsert = {
+  cwd?: string;
+  enabled?: boolean;
+  options?: Record<string, unknown>;
+};
+
+export type ToolPluginApiKeyUpsert = {
+  cwd?: string;
+  api_key: string;
+};

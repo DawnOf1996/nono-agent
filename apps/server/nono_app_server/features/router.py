@@ -22,6 +22,7 @@ from nono_app_server.features.mcp.api import router as mcp_router
 from nono_app_server.features.permissions.api import router as permissions_router
 from nono_app_server.features.sessions.api import router as sessions_router
 from nono_app_server.features.terminal.api import router as terminal_router
+from nono_app_server.features.toolplugins.api import router as toolplugins_router
 from nono_app_server.features.workspaces.api import router as workspaces_router
 
 
@@ -46,6 +47,7 @@ def mount_product_routes(
     router.include_router(info_router)
     router.include_router(catalog_router)
     router.include_router(mcp_router)
+    router.include_router(toolplugins_router)
     router.include_router(permissions_router)
     router.include_router(control_router)
     router.include_router(filesystem_router)

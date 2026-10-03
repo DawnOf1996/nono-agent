@@ -14,6 +14,8 @@ import type {
   SessionStats,
   SettingsTab,
   SlashCommandInfo,
+  ToolPluginInfo,
+  ToolPluginUpsert,
   TurnChanges,
   Workspace,
 } from "@nono/protocol";
@@ -39,6 +41,7 @@ import {
   fetchCommands,
   fetchHealth,
   fetchMcp,
+  fetchToolPlugins,
   fetchPermissions,
   fetchSessionEvents,
   fetchSessionList,
@@ -55,6 +58,8 @@ import {
   saveDefaultModel,
   saveMcpServer,
   saveProvider,
+  saveToolPlugin as saveToolPluginRequest,
+  saveToolPluginApiKey as saveToolPluginApiKeyRequest,
   setMcpEnabled as patchMcpEnabled,
   setSessionPermission,
   upsertWorkspace,
@@ -163,6 +168,8 @@ type ChatState = {
   catalog: CatalogSnapshot | null;
   mcpServers: McpServerInfo[];
   mcpConfigPath: string | null;
+  toolPlugins: ToolPluginInfo[];
+  toolPluginCredentialsPath: string | null;
   sessions: SessionListItem[];
   /** 侧边栏要不要把已归档会话拉进列表。 */
   sessionArchiveFilter: ArchiveFilter;
@@ -223,6 +230,7 @@ type ChatState = {
   setView: (view: MainView) => void;
   refresh: () => Promise<void>;
   refreshMcp: () => Promise<void>;
+  refreshToolPlugins: () => Promise<void>;
   newSession: (opts?: { model?: string; cwd?: string }) => Promise<void>;
   openSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
@@ -243,6 +251,10 @@ type ChatState = {
   setMcpEnabled: (id: string, enabled: boolean) => Promise<void>;
   upsertMcpServer: (body: McpServerUpsert) => Promise<void>;
   removeMcpServer: (id: string) => Promise<void>;
+  /** 开关 / 普通配置项。密钥另走 saveToolPluginApiKey。 */
+  saveToolPlugin: (id: string, body: ToolPluginUpsert) => Promise<void>;
+  /** 写入或清除凭据（空串 = 清除）。 */
+  saveToolPluginApiKey: (id: string, apiKey: string) => Promise<void>;
 };
 
 /**
@@ -518,6 +530,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   catalog: null,
   mcpServers: [],
   mcpConfigPath: null,
+  toolPlugins: [],
+  toolPluginCredentialsPath: null,
   sessions: [],
   sessionArchiveFilter: loadArchiveFilter(),
   sessionId: null,
@@ -850,6 +864,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const mcp = await fetchMcp(get().workspace);
       set({ mcpServers: mcp.servers, mcpConfigPath: mcp.config_path });
+    } catch {
+      // keep last list
+    }
+  },
+
+  refreshToolPlugins: async () => {
+    try {
+      const snap = await fetchToolPlugins(get().workspace);
+      set({
+        toolPlugins: snap.plugins,
+        toolPluginCredentialsPath: snap.credentials_path,
+      });
     } catch {
       // keep last list
     }
@@ -1526,5 +1552,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
   removeMcpServer: async (id) => {
     const mcp = await deleteMcpServer(id, get().workspace);
     set({ mcpServers: mcp.servers, mcpConfigPath: mcp.config_path });
+  },
+
+  saveToolPlugin: async (id, body) => {
+    const snap = await saveToolPluginRequest(id, { ...body, cwd: get().workspace });
+    set({
+      toolPlugins: snap.plugins,
+      toolPluginCredentialsPath: snap.credentials_path,
+    });
+  },
+
+  saveToolPluginApiKey: async (id, apiKey) => {
+    const snap = await saveToolPluginApiKeyRequest(id, {
+      cwd: get().workspace,
+      api_key: apiKey,
+    });
+    set({
+      toolPlugins: snap.plugins,
+      toolPluginCredentialsPath: snap.credentials_path,
+    });
   },
 }));

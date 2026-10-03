@@ -1,0 +1,183 @@
+{
+  "name": "minimax-image",
+  "version": "0.1.0",
+  "description": "MiniMax 图像生成（文生图 / 图生图），产物落盘后把路径交回模型。",
+  "config": {
+    "api_key": {
+      "label": "API Key",
+      "hint": "在 MiniMax 开放平台创建，保存在本机凭据文件里，不会写进项目配置。",
+      "placeholder": "eyJhbGciOi..."
+    },
+    "fields": [
+      {
+        "key": "model",
+        "label": "模型",
+        "type": "string",
+        "placeholder": "image-01",
+        "hint": "文生图用 image-01；图生图还可以用 image-01-live。"
+      },
+      {
+        "key": "base_url",
+        "label": "API 地址",
+        "type": "string",
+        "placeholder": "https://api.minimax.cn",
+        "hint": "需要走代理或镜像时改这里。"
+      },
+      {
+        "key": "output_dir",
+        "label": "输出目录",
+        "type": "string",
+        "placeholder": ".nono-agent/images",
+        "hint": "相对工作区的路径，生成的图片会落在工作区内。"
+      }
+    ]
+  },
+  "tools": {
+    "edit_image": {
+      "kind": "http_json",
+      "prefix": "minimax",
+      "description": "Generate a new image from an existing reference image (image-to-image). Pass a local file path such as 'assets/portrait.png'; it is read from the workspace and sent as an inline data URL. Works best with a single front-facing portrait, which keeps the same subject/character in the new scene. Returns the saved file paths.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "What the new image should look like (max 1500 characters)."
+          },
+          "reference_images": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Reference image: a workspace-relative path to a JPG/PNG (under 10MB), an https URL, or a data URL. Defaults to a single image."
+          },
+          "aspect_ratio": {
+            "type": "string",
+            "enum": ["1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"],
+            "description": "Aspect ratio of the generated image. Defaults to the configured value (1:1)."
+          },
+          "n": {
+            "type": "integer",
+            "description": "Number of images to generate, 1-9. Defaults to 1."
+          },
+          "seed": {
+            "type": "integer",
+            "description": "Random seed. Reusing the same seed and parameters reproduces the image."
+          },
+          "prompt_optimizer": {
+            "type": "boolean",
+            "description": "Let the service rewrite the prompt before generating."
+          },
+          "subject_type": {
+            "type": "string",
+            "enum": ["character"],
+            "description": "Subject type. Only 'character' is supported today."
+          }
+        },
+        "required": ["prompt", "reference_images"]
+      },
+      "auth": {
+        "type": "bearer",
+        "api_key_env": "NONO_MINIMAX_IMAGE_API_KEY"
+      },
+      "defaults": {
+        "base_url": "https://api.minimax.cn",
+        "model": "image-01",
+        "output_dir": ".nono-agent/images"
+      },
+      "method": "POST",
+      "url": "${options.base_url}/v1/image_generation",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "model": "${options.model}",
+        "prompt": "${args.prompt}",
+        "subject_reference": "${args.reference_images}",
+        "aspect_ratio": "${args.aspect_ratio}",
+        "n": "${args.n}",
+        "seed": "${args.seed}",
+        "prompt_optimizer": "${args.prompt_optimizer}",
+        "response_format": "base64"
+      },
+      "inputs": {
+        "kind": "image_data_urls",
+        "arg": "reference_images",
+        "type_arg": "subject_type",
+        "max_count": 1,
+        "max_bytes": 10485760
+      },
+      "timeout_s": 180,
+      "result": {
+        "kind": "save_images",
+        "base64_path": "data.image_base64",
+        "urls_path": "data.image_urls",
+        "dir": "${options.output_dir}"
+      },
+      "is_concurrent_safe": false,
+      "has_write_side_effects": true
+    },
+    "generate_image": {
+      "kind": "http_json",
+      "prefix": "minimax",
+      "description": "Generate an image from a text prompt using MiniMax image generation and save it into the workspace. Returns the saved file paths. Use it when the user asks to draw, illustrate, render, or create a picture.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "Detailed description of the image (max 1500 characters)."
+          },
+          "aspect_ratio": {
+            "type": "string",
+            "enum": ["1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"],
+            "description": "Aspect ratio of the generated image. Defaults to the configured value (1:1)."
+          },
+          "n": {
+            "type": "integer",
+            "description": "Number of images to generate, 1-9. Defaults to 1."
+          },
+          "seed": {
+            "type": "integer",
+            "description": "Random seed. Reusing the same seed and parameters reproduces the image."
+          },
+          "prompt_optimizer": {
+            "type": "boolean",
+            "description": "Let the service rewrite the prompt before generating."
+          }
+        },
+        "required": ["prompt"]
+      },
+      "auth": {
+        "type": "bearer",
+        "api_key_env": "NONO_MINIMAX_IMAGE_API_KEY"
+      },
+      "defaults": {
+        "base_url": "https://api.minimax.cn",
+        "model": "image-01",
+        "output_dir": ".nono-agent/images"
+      },
+      "method": "POST",
+      "url": "${options.base_url}/v1/image_generation",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "model": "${options.model}",
+        "prompt": "${args.prompt}",
+        "aspect_ratio": "${args.aspect_ratio}",
+        "n": "${args.n}",
+        "seed": "${args.seed}",
+        "prompt_optimizer": "${args.prompt_optimizer}",
+        "response_format": "base64"
+      },
+      "timeout_s": 180,
+      "result": {
+        "kind": "save_images",
+        "base64_path": "data.image_base64",
+        "urls_path": "data.image_urls",
+        "dir": "${options.output_dir}"
+      },
+      "is_concurrent_safe": false,
+      "has_write_side_effects": true
+    }
+  }
+}

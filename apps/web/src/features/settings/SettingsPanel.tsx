@@ -14,6 +14,7 @@ import {
   type ProviderDraft,
 } from "@/features/settings/ProviderEditor";
 import { SidebarCards } from "@/features/settings/SidebarCards";
+import { ToolPluginSettings } from "@/features/settings/ToolPluginSettings";
 import { WorkspacePicker } from "@/features/session/WorkspacePicker";
 import {
   CONTENT_FONT_SIZE_DEFAULT,
@@ -45,7 +46,7 @@ const TABS: Array<{ id: SettingsTab; label: string; icon: ReactNode; desc: strin
   { id: "general", label: "通用设置", icon: <SlidersHorizontal className="size-4" />, desc: "外观、文件位置与侧边栏" },
   { id: "models", label: "模型", icon: <Boxes className="size-4" />, desc: "为各提供方配置 API 密钥与默认模型" },
   { id: "connectors", label: "连接器", icon: <Cable className="size-4" />, desc: "连接本地 MCP 服务与外部工具" },
-  { id: "plugins", label: "插件", icon: <Puzzle className="size-4" />, desc: "管理本地插件" },
+  { id: "plugins", label: "插件", icon: <Puzzle className="size-4" />, desc: "开关与配置内置工具插件" },
   { id: "agents", label: "Agent 预设", icon: <Bot className="size-4" />, desc: "保存常用的系统提示词与工具组合" },
 ];
 
@@ -146,7 +147,7 @@ export function SettingsPanel() {
             ? "自定义提供方"
             : "编辑提供方"
           : null
-      : tab === "connectors"
+      : tab === "connectors" || tab === "plugins"
         ? connectorTitle
         : null;
   const headerTitle = subTitle ?? activeTab.label;
@@ -269,7 +270,7 @@ export function SettingsPanel() {
             <ConnectorSettings onViewChange={setConnectorTitle} />
           ) : null}
           {tab === "plugins" ? (
-            <ComingSoon detail="后续会在这里管理本地插件。" />
+            <ToolPluginSettings onViewChange={setConnectorTitle} />
           ) : null}
           {tab === "agents" ? (
             <ComingSoon detail="后续会在这里保存常用的系统提示词与工具组合。" />

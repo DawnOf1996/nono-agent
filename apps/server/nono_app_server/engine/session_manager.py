@@ -277,8 +277,14 @@ class SessionManager:
                             dispose()
                         logger.info("Session %s expired (TTL)", sid)
 
-    async def reload_mcp_for_cwd(self, cwd: str | None) -> None:
-        """工作区 MCP 开关变化后，刷新同一 cwd 下的活跃引擎。"""
+    async def reload_extensions_for_cwd(
+        self, cwd: str | None, *, mcp: bool = True, tool_plugins: bool = True
+    ) -> None:
+        """工作区开关变化后，刷新同一 cwd 下的活跃引擎。
+
+        MCP 与工具插件分成两个开关：内置工具插件的开关只该动工具插件，
+        不该顺带把用户的 MCP server 重连一遍（那会打断正在跑的会话）。
+        """
         if not cwd or not str(cwd).strip():
             return
         resolved = resolve_session_cwd(cwd)
@@ -289,14 +295,28 @@ class SessionManager:
                 if resolve_session_cwd(engine._config.cwd) == resolved
             ]
         for engine in engines:
-            try:
-                await engine.reload_mcp()
-            except Exception:
-                logger.exception(
-                    "Failed to reload MCP for session %s cwd=%s",
-                    engine._config.session_id,
-                    resolved,
-                )
+            if mcp:
+                try:
+                    await engine.reload_mcp()
+                except Exception:
+                    logger.exception(
+                        "Failed to reload MCP for session %s cwd=%s",
+                        engine._config.session_id,
+                        resolved,
+                    )
+            if tool_plugins:
+                try:
+                    await engine.reload_tool_plugins()
+                except Exception:
+                    logger.exception(
+                        "Failed to reload tool plugins for session %s cwd=%s",
+                        engine._config.session_id,
+                        resolved,
+                    )
+
+    async def reload_mcp_for_cwd(self, cwd: str | None) -> None:
+        """工作区 MCP 开关变化后，刷新同一 cwd 下的活跃引擎。"""
+        await self.reload_extensions_for_cwd(cwd, mcp=True, tool_plugins=False)
 
     def events_writer(self, session_id: str) -> Any | None:
         """取该会话的事件流读取器 —— 活跃会话复用其写入器，否则按默认路径打开。"""

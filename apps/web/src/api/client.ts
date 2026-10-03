@@ -25,6 +25,10 @@ import type {
   SettingsTab,
   SlashCommandInfo,
   SlashCommandResult,
+  ToolPluginApiKeyUpsert,
+  ToolPluginInfo,
+  ToolPluginUpsert,
+  ToolPluginsSnapshot,
   TurnChanges,
   Workspace,
   WorkspaceListing,
@@ -184,6 +188,43 @@ export async function setMcpEnabled(cwd: string, id: string, enabled: boolean): 
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cwd, id, enabled }),
+    }),
+  );
+}
+
+export async function fetchToolPlugins(cwd?: string | null): Promise<ToolPluginsSnapshot> {
+  const query = cwd?.trim() ? `?cwd=${encodeURIComponent(cwd.trim())}` : "";
+  return readJson(await fetch(`/app/tool-plugins${query}`));
+}
+
+/** 开关与普通配置项。密钥不走这里 —— 用 saveToolPluginApiKey。 */
+export async function saveToolPlugin(
+  pluginId: string,
+  body: ToolPluginUpsert,
+  cwd?: string | null,
+): Promise<ToolPluginsSnapshot> {
+  const query = cwd?.trim() ? `?cwd=${encodeURIComponent(cwd.trim())}` : "";
+  return readJson(
+    await fetch(`/app/tool-plugins/${encodeURIComponent(pluginId)}${query}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** 写入凭据。传空串即清除。响应只回答配没配，永不回显密钥。 */
+export async function saveToolPluginApiKey(
+  pluginId: string,
+  body: ToolPluginApiKeyUpsert,
+  cwd?: string | null,
+): Promise<ToolPluginsSnapshot> {
+  const query = cwd?.trim() ? `?cwd=${encodeURIComponent(cwd.trim())}` : "";
+  return readJson(
+    await fetch(`/app/tool-plugins/${encodeURIComponent(pluginId)}/api-key${query}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     }),
   );
 }
@@ -934,6 +975,8 @@ export type {
   SessionListItem,
   SettingsTab,
   SlashCommandInfo,
+  ToolPluginInfo,
+  ToolPluginsSnapshot,
   Workspace,
   WorkspaceListing,
 };
