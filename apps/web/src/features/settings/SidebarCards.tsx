@@ -13,11 +13,11 @@ const CARDS: Array<{
   id: keyof Pick<SidebarPrefs, "files" | "changes" | "tasks" | "terminal" | "browser" | "sidechat">;
   title: string;
   detail: string;
-  settings?: "terminal" | "browser" | "files";
+  settings?: "terminal" | "browser" | "files" | "tasks";
 }> = [
   { id: "files", title: "文件", detail: "资源管理器和文件预览", settings: "files" },
   { id: "changes", title: "变更", detail: "Git 状态和本轮文件" },
-  { id: "tasks", title: "任务", detail: "子代理和正在执行的命令" },
+  { id: "tasks", title: "任务", detail: "子代理和正在执行的命令", settings: "tasks" },
   { id: "terminal", title: "终端", detail: "工作区里的 shell", settings: "terminal" },
   { id: "browser", title: "浏览器", detail: "内嵌网页标签", settings: "browser" },
   { id: "sidechat", title: "侧边对话", detail: "继承主会话的独立线程" },
@@ -36,7 +36,7 @@ const PREVIEWERS: Array<{ id: keyof SidebarPrefs["previewers"]; title: string; d
 
 export function SidebarCards() {
   const prefs = useSyncExternalStore(subscribeSidebarPrefs, getSidebarPrefs, getSidebarPrefs);
-  const [editing, setEditing] = useState<"terminal" | "browser" | "files" | "html" | null>(null);
+  const [editing, setEditing] = useState<"terminal" | "browser" | "files" | "tasks" | "html" | null>(null);
   return (
     <div>
       <h4 className="text-[13px] font-medium text-muted">侧边栏</h4>
@@ -117,7 +117,7 @@ function CardSettings({
   prefs,
   onClose,
 }: {
-  kind: "terminal" | "browser" | "files" | "html";
+  kind: "terminal" | "browser" | "files" | "tasks" | "html";
   prefs: SidebarPrefs;
   onClose: () => void;
 }) {
@@ -125,7 +125,7 @@ function CardSettings({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6" onClick={onClose}>
       <div className="w-full max-w-sm rounded-2xl border border-line bg-bg p-4 shadow-lg" onClick={(event) => event.stopPropagation()}>
         <h4 className="text-[14px] font-medium">
-          {kind === "terminal" ? "终端" : kind === "browser" ? "浏览器" : kind === "html" ? "HTML" : "文件"}
+          {kind === "terminal" ? "终端" : kind === "browser" ? "浏览器" : kind === "files" ? "文件" : kind === "tasks" ? "任务" : "HTML"}
         </h4>
         {kind === "terminal" ? (
           <label className="mt-3 block text-[13px]">
@@ -189,6 +189,20 @@ function CardSettings({
                 <option value="merged">嵌在预览里</option>
               </select>
             </label>
+          </div>
+        ) : null}
+        {kind === "tasks" ? (
+          <div className="mt-3 flex flex-col gap-3 text-[13px]">
+            <label className="flex items-center justify-between gap-3">
+              新任务开始时自动打开
+              <Switch
+                checked={prefs.autoOpenTasks}
+                onCheckedChange={(checked) => updateSidebarPrefs({ autoOpenTasks: checked })}
+              />
+            </label>
+            <p className="text-[12px] leading-5 text-muted">
+              关掉时，命令和子代理照常在标签上显示个数，正在看的标签不会被切走。
+            </p>
           </div>
         ) : null}
         <button type="button" className="mt-4 h-8 rounded-lg bg-accent px-3 text-[13px] text-on-accent" onClick={onClose}>

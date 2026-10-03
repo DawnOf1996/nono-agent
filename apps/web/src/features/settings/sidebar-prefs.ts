@@ -12,6 +12,8 @@ export type SidebarPrefs = {
   showHiddenFiles: boolean;
   /** 点开一段对话时展开右侧栏，并打开已加载的文件树。 */
   defaultOpenFileTree: boolean;
+  /** 有新任务开始时自动切到任务页。关掉时只更新标签上的计数，不抢当前正在看的标签。 */
+  autoOpenTasks: boolean;
   /** split：文件页只显示树，打开文件进新标签。merged：树嵌在预览左侧，点击在当前页切换。 */
   explorerMode: "split" | "merged";
   /** 关掉的预览器不再认领对应文件，会落到下一个预览或纯文本。 */
@@ -42,6 +44,7 @@ export const SIDEBAR_PREFS_DEFAULTS: SidebarPrefs = {
   browserHome: "",
   showHiddenFiles: true,
   defaultOpenFileTree: false,
+  autoOpenTasks: false,
   explorerMode: "split",
   previewers: {
     markdown: true,
@@ -72,6 +75,7 @@ function readPrefs(): SidebarPrefs {
       ...parsed,
       previewers: { ...SIDEBAR_PREFS_DEFAULTS.previewers, ...parsed.previewers },
       defaultOpenFileTree: parsed.defaultOpenFileTree === true,
+      autoOpenTasks: parsed.autoOpenTasks === true,
       explorerMode: parsed.explorerMode === "merged" ? "merged" : SIDEBAR_PREFS_DEFAULTS.explorerMode,
     };
   } catch {

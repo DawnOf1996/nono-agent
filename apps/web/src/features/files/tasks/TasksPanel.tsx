@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { killJob, watchJobs, type WorkspaceJob } from "@/api/client";
 import { usePanelStore } from "@/features/files/panel-store";
+import { getSidebarPrefs } from "@/features/settings/sidebar-prefs";
 import { cn } from "@/lib/utils";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -67,7 +68,7 @@ function JobRow({ job, sessionId, nested }: { job: WorkspaceJob; sessionId: stri
   );
 }
 
-/** 当前会话里的子代理和命令。新任务出现时自动打开这一页。 */
+/** 当前会话里的子代理和命令。默认只在标签上记个数，不抢用户正在看的标签；设置里开了「自动打开」才会跳过来。 */
 export function TasksPanel({ sessionId }: { sessionId: string | null }) {
   const [jobs, setJobs] = useState<WorkspaceJob[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -92,7 +93,7 @@ export function TasksPanel({ sessionId }: { sessionId: string | null }) {
       setError(null);
       const running = next.filter((job) => job.status === "running");
       setTaskCount(running.length);
-      if (seen.current) {
+      if (seen.current && getSidebarPrefs().autoOpenTasks) {
         const fresh = running.some((job) => !seen.current?.has(job.id));
         if (fresh) showTasks();
       }
