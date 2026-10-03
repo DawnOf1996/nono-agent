@@ -12,12 +12,19 @@
 # 产物:
 #   apps\desktop\release\win-unpacked\NoNo.exe
 #   apps\desktop\release\NoNo-<x.y.yyyyMMddHH>-setup.exe
+#
+# -OutputDir:
+#   换打包输出目录。相对路径按 apps\desktop 解析，绝对路径直接用。
+#   编辑器（Cursor/VS Code 等）可能长期占着 release 里的旧文件，
+#   导致 electron-builder 删不掉而报 EBUSY；这时换一个输出目录即可继续打包:
+#     .\scripts\pack-desktop.cmd -OutputDir release-run
 
 [CmdletBinding()]
 param(
     [switch]$SkipWeb,
     [switch]$SkipSidecar,
-    [switch]$SkipElectron
+    [switch]$SkipElectron,
+    [string]$OutputDir = "release"
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,6 +35,7 @@ $webDist = Join-Path $apps "web\dist"
 $resources = Join-Path $desktop "resources"
 $sidecarDir = Join-Path $root "dist\desktop-sidecar\nono-app-server"
 $sidecarExe = Join-Path $sidecarDir "nono-app-server.exe"
+$outDir = if ([System.IO.Path]::IsPathRooted($OutputDir)) { $OutputDir } else { Join-Path $desktop $OutputDir }
 
 function Require-Cmd([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -46,6 +54,131 @@ function Copy-Tree([string]$From, [string]$To) {
 function Assert-LastExit([string]$Label) {
     if ($LASTEXITCODE -ne 0) {
         throw "$Label 失败，exit=$LASTEXITCODE"
+    }
+}
+
+# Windows Restart Manager: 列出还持有某个文件句柄的进程，EBUSY 才能说清是谁占的。
+$script:fileLockFinderSource = @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+
+public static class FileLockFinder {
+    const int ERROR_MORE_DATA = 234;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct RM_UNIQUE_PROCESS {
+        public int ProcessId;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct RM_PROCESS_INFO {
+        public RM_UNIQUE_PROCESS Process;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string AppName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string ServiceShortName;
+        public uint ApplicationType;
+        public uint AppStatus;
+        public uint TSSessionId;
+        [MarshalAs(UnmanagedType.Bool)] public bool Restartable;
+    }
+
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+    static extern int RmStartSession(out uint handle, int flags, string key);
+    [DllImport("rstrtmgr.dll")]
+    static extern int RmEndSession(uint handle);
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+    static extern int RmRegisterResources(uint handle, uint fileCount, string[] files, uint appCount, IntPtr apps, uint serviceCount, string[] services);
+    [DllImport("rstrtmgr.dll")]
+    static extern int RmGetList(uint handle, out uint needed, ref uint count, [In, Out] RM_PROCESS_INFO[] infos, ref uint reasons);
+
+    public static string[] Describe(string path) {
+        uint handle;
+        string key = Guid.NewGuid().ToString("N").Substring(0, 32);
+        if (RmStartSession(out handle, 0, key) != 0) return new string[0];
+        try {
+            RmRegisterResources(handle, 1, new string[] { path }, 0, IntPtr.Zero, 0, null);
+            uint needed = 0, count = 0, reasons = 0;
+            if (RmGetList(handle, out needed, ref count, null, ref reasons) != ERROR_MORE_DATA || needed == 0) return new string[0];
+            var infos = new RM_PROCESS_INFO[needed];
+            count = needed;
+            if (RmGetList(handle, out needed, ref count, infos, ref reasons) != 0) return new string[0];
+            var result = new List<string>();
+            for (int i = 0; i < count; i++) {
+                int pid = infos[i].Process.ProcessId;
+                string label;
+                try { label = Process.GetProcessById(pid).ProcessName + " (PID " + pid + ")"; }
+                catch { label = (infos[i].AppName ?? "?") + " (PID " + pid + ")"; }
+                result.Add(label);
+            }
+            return result.ToArray();
+        } finally {
+            RmEndSession(handle);
+        }
+    }
+}
+'@
+
+function Get-FileLockingProcess([string]$Path) {
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        return @()
+    }
+    try {
+        if (-not ("FileLockFinder" -as [type])) {
+            Add-Type -TypeDefinition $script:fileLockFinderSource -Language CSharp
+        }
+        return @([FileLockFinder]::Describe($Path))
+    } catch {
+        return @()
+    }
+}
+
+function Format-FileLockHint([string]$Path) {
+    $lockers = Get-FileLockingProcess $Path
+    if (@($lockers).Count -eq 0) {
+        return "未能定位占用进程（占用可能刚被释放，或占用者没有登记到 Restart Manager）。"
+    }
+    return "占用进程: " + (@($lockers) -join "、")
+}
+
+# 上一轮打包出来的 NoNo.exe 还在跑时，输出目录删不掉，先结束它。
+function Stop-StaleDesktopApp([string]$OutPath) {
+    $prefix = $OutPath.TrimEnd("\") + "\"
+    Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
+        $proc = $_
+        $path = $null
+        try { $path = $proc.Path } catch { return }
+        if (-not $path) { return }
+        if ($path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and $proc.ProcessName -match "^(NoNo|electron)$") {
+            Write-Host "==> 结束残留进程 $($proc.ProcessName) (PID $($proc.Id))：$path"
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# electron-builder 不会先删上一次的 appOutDir，残留文件被占就直接 EBUSY。
+function Clear-StaleAppOutDir([string]$OutPath) {
+    $stale = Get-ChildItem -Path $OutPath -Directory -Filter "win-unpacked*" -ErrorAction SilentlyContinue
+    foreach ($dir in $stale) {
+        $errs = $null
+        Remove-Item -LiteralPath $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable errs
+        if (Test-Path -LiteralPath $dir.FullName) {
+            # 删不掉的文件就是被占的那些，直接问 Restart Manager 是谁占的。
+            $locked = $null
+            $left = Get-ChildItem -LiteralPath $dir.FullName -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 50
+            foreach ($file in $left) {
+                if (@(Get-FileLockingProcess $file.FullName).Count -gt 0) {
+                    $locked = $file.FullName
+                    break
+                }
+            }
+            if (-not $locked) {
+                $locked = $dir.FullName
+            }
+            throw ("清不掉上一次的打包产物: $locked`n" + (Format-FileLockHint $locked) + "`n先关掉占用它的程序（编辑器里打开该文件也算），再重新打包。")
+        }
+        Write-Host "==> 已清理旧产物 $($dir.Name)"
     }
 }
 
@@ -206,19 +339,29 @@ if (-not $SkipElectron) {
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     $originalPkg = [System.IO.File]::ReadAllText($pkgPath)
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    $defaultOut = [System.IO.Path]::GetFullPath((Join-Path $desktop "release"))
+    if ([System.IO.Path]::GetFullPath($outDir) -ne $defaultOut) {
+        Write-Host "==> 输出目录改用 $outDir"
+    }
+    Stop-StaleDesktopApp $outDir
+    Clear-StaleAppOutDir $outDir
     Push-Location $desktop
     try {
         Write-DesktopPackVersion $pkgPath $spec.Version $spec.WinVersion
-        pnpm exec electron-builder --win
-        Assert-LastExit "electron-builder"
+        pnpm exec electron-builder --win "--config.directories.output=$OutputDir"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "electron-builder 失败。常见原因: 输出目录里的旧产物被占用（编辑器打开过里面的文件也算），或上一次打包的 NoNo.exe 仍在运行。"
+            throw "electron-builder 失败，exit=$LASTEXITCODE"
+        }
     } finally {
         [System.IO.File]::WriteAllText($pkgPath, $originalPkg, $utf8NoBom)
         Pop-Location
     }
 }
 
-$unpacked = Join-Path $desktop "release\win-unpacked\NoNo.exe"
-$setup = Get-ChildItem -Path (Join-Path $desktop "release") -Filter "NoNo-*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+$unpacked = Join-Path $outDir "win-unpacked\NoNo.exe"
+$setup = Get-ChildItem -Path $outDir -Filter "NoNo-*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 
 Write-Host ""
 Write-Host "打包完成。"
