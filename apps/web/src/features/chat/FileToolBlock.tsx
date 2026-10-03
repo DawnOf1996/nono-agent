@@ -167,14 +167,25 @@ export function fileToolText(tool: ChatToolCall, kind: FileToolKind): string {
  * 目录段用 ellipsis 截断，只有真被截断时才叠一层左缘渐隐：渐隐是无条件挂的话，
  * 短目录（如 `runtime-test/`）那 28px 直接盖在正常文字上，整段看着发灰断掉。
  * 挂上渐隐的判据是 scrollWidth > clientWidth，按容器宽度变化重算。
+ *
+ * 给了 onOpen 时文件名变成可点：在侧栏开一个文件预览标签页。整行头本身是展开/收起的
+ * 按钮，文件名不能是 <button>（按钮套按钮不是合法 HTML，点击还会带着外层一起触发），
+ * 所以用 span + role="button"，并挡掉冒泡。
  */
-export const ToolPathLabel = memo(function ToolPathLabel({ path }: { path: string }) {
+export const ToolPathLabel = memo(function ToolPathLabel({
+  path,
+  onOpen,
+}: {
+  path: string;
+  onOpen?: (path: string) => void;
+}) {
   const dirRef = useRef<HTMLSpanElement | null>(null);
   const [faded, setFaded] = useState(false);
 
   // 按最后一段分隔符切，不做 \\ → / 的归一：卡片上要显示工具给的原样路径。
   const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   const dir = cut > 0 ? path.slice(0, cut + 1) : "";
+  const name = cut > 0 ? path.slice(cut + 1) : path;
 
   // 路径和容器宽度都会变（侧栏拖动、窗口缩放、换一条路径），都得以此重算。
   useEffect(() => {
@@ -187,11 +198,18 @@ export const ToolPathLabel = memo(function ToolPathLabel({ path }: { path: strin
     return () => observer.disconnect();
   }, [dir]);
 
+  const open = (event: { preventDefault: () => void; stopPropagation: () => void }) => {
+    // 别让这次点击顺手把卡片展开/收起，也别在按钮上选中文本。
+    event.preventDefault();
+    event.stopPropagation();
+    onOpen?.(path);
+  };
+
   if (!path) return null;
   return (
     <span
       className="flex min-w-0 flex-1 justify-end overflow-hidden text-[12px] whitespace-nowrap"
-      title={path}
+      title={onOpen ? `${path}\n点击在侧栏打开` : path}
     >
       {/* 目录弱、文件名实：一眼扫过去落在哪、叫什么。 */}
       <span
@@ -203,7 +221,23 @@ export const ToolPathLabel = memo(function ToolPathLabel({ path }: { path: strin
       >
         {dir}
       </span>
-      <span className="shrink-0 text-muted">{cut > 0 ? path.slice(cut + 1) : path}</span>
+      {onOpen ? (
+        <span
+          role="button"
+          tabIndex={0}
+          title="在侧栏打开这个文件"
+          className="shrink-0 cursor-pointer rounded-sm text-muted underline decoration-transparent underline-offset-2 outline-none hover:bg-hover hover:text-ink hover:decoration-current focus-visible:bg-hover focus-visible:text-ink focus-visible:decoration-current"
+          onClick={open}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            open(event);
+          }}
+        >
+          {name}
+        </span>
+      ) : (
+        <span className="shrink-0 text-muted">{name}</span>
+      )}
     </span>
   );
 });

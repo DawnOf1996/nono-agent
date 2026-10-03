@@ -13,7 +13,7 @@ import {
   Wrench,
   type LucideIcon,
 } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { MarkdownText } from "@/components/MarkdownText";
 import { CopyButton } from "@/features/chat/CopyButton";
@@ -25,8 +25,18 @@ import {
   fileToolVerb,
   fileToolView,
 } from "@/features/chat/FileToolBlock";
+import { usePanelStore } from "@/features/files/panel-store";
 import { formatElapsed } from "@/lib/format";
+import { joinWorkspace } from "@/lib/workspace";
 import type { ChatStep, ChatToolCall } from "@/store/chat";
+
+/** 工具给的路径可能是工作区相对路径，侧栏按绝对路径取文件，这里补上工作区。 */
+function resolveToolPath(root: string, path: string): string {
+  if (!path) return "";
+  const absolute = /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("/") || path.startsWith("\\\\");
+  if (absolute || !root) return path;
+  return joinWorkspace(root, path);
+}
 
 function pickString(input: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
@@ -317,6 +327,21 @@ const ToolRunRow = memo(function ToolRunRow({ tool }: { tool: ChatToolCall }) {
     [tool, fileKind],
   );
   const hasBody = fileKind ? view !== null || tool.output !== undefined : Boolean(input) || tool.output !== undefined;
+  const openFile = usePanelStore((state) => state.openFile);
+  const root = usePanelStore((state) => state.root);
+  const bumpRevision = usePanelStore((state) => state.bumpRevision);
+
+  // 点文件名在侧栏开一个文件预览标签页。写/编辑刚动过磁盘，bump 一下让已开的同文件
+  // 标签页重新取内容，不然还停在打开时那一版。
+  const openInPanel = useCallback(
+    (path: string) => {
+      const full = resolveToolPath(root, path);
+      if (!full) return;
+      if (fileKind === "write" || fileKind === "edit") bumpRevision();
+      openFile(full, basename(full));
+    },
+    [bumpRevision, fileKind, openFile, root],
+  );
 
   return (
     <div
@@ -351,7 +376,7 @@ const ToolRunRow = memo(function ToolRunRow({ tool }: { tool: ChatToolCall }) {
         {fileKind ? (
           <>
             <span className="shrink-0 text-[13px] text-ink">{fileToolVerb(fileKind)}</span>
-            <ToolPathLabel path={filePath} />
+            <ToolPathLabel path={filePath} onOpen={filePath ? openInPanel : undefined} />
             <DiffStats stats={view?.stats ?? null} />
           </>
         ) : (
