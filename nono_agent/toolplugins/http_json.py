@@ -35,9 +35,7 @@ from nono_agent.utils.net_guard import http_proxy_enabled, is_url_blocked
 logger = logging.getLogger(__name__)
 
 _MAX_TEXT_CHARS = 30_000
-# 参考图上限：MiniMax 侧要求单图 <10MB/JPG/PNG，且建议只传一张正面肖像。
-# 这里默认只收一张 —— 一张 10MB 的图 base64 后就有 13MB 请求体，多传几张
-# 只会让超时概率上升，不会让结果变好。需要更多就改清单里的 max_count。
+# 单张参考图的字节上限：MiniMax 要求 JPG/PNG 且 <10MB，超了对方直接拒收。
 _MAX_REFERENCE_BYTES = 10 * 1024 * 1024
 _IMAGE_SUFFIXES = {
     "image/png": ".png",
@@ -76,12 +74,34 @@ def _sniff_image_mime(data: bytes) -> str | None:
 
     看内容不看扩展名：`.png` 结尾的文本文件会让对方 400，而报错会指向
     一个看起来完全无辜的参数。
+
+    **只认 PNG/JPEG** —— 入参侧要照 MiniMax 的收件标准（JPG/PNG）拒收，
+    webp/gif 落到下面的 ``not a JPG or PNG file`` 上才是对的。落盘侧要看
+    更宽的类型集合，用 :func:`_sniff_suffix`。
     """
     if data.startswith(_PNG_MAGIC):
         return "image/png"
     if data.startswith(_JPEG_MAGIC):
         return "image/jpeg"
     return None
+
+
+def _sniff_suffix(data: bytes) -> str:
+    """落盘用的后缀 —— base64 串里没有类型信息，只能先解码再嗅探魔数。
+
+    早期版本在这里写死 ``.png``，于是厂商回 JPEG 时会落下一个装着 JPEG
+    字节的 ``.png``：下一次再把它当参考图传回去，扩展名和内容各说各话。
+    认不出就退回 ``.png``，与 :func:`_guess_suffix` 的兜底保持一致。
+    """
+    if data.startswith(_PNG_MAGIC):
+        return ".png"
+    if data.startswith(_JPEG_MAGIC):
+        return ".jpg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return ".gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return ".png"
 
 
 class HttpJsonTool(ToolBase):
@@ -211,6 +231,12 @@ class HttpJsonTool(ToolBase):
         模板层刻意不提供 ``${file:...}`` —— 那等于给清单开一个任意文件读的
         口子。需要读文件的工具用这里这个显式声明的映射器，读哪个入参、
         读多大、走不走沙箱，全部写在清单里。
+
+        ``max_count`` 是**厂商**的限制，不是本地取舍：MiniMax 的
+        ``subject_reference`` 虽是数组类型，文档正文明确写了
+        "Only a single reference image is supported per request"，所以
+        minimax-image 清单里写死 1。本地提前拦下来，模型拿到的是一句
+        "怎么改"的提示，而不是对方一个语焉不详的 2013。
         """
         spec = self._spec.inputs
         kind = str(spec.get("kind", ""))
@@ -316,8 +342,10 @@ class HttpJsonTool(ToolBase):
         written: list[str] = []
         try:
             for index, blob in enumerate(blobs):
-                suffix = _guess_suffix(None)
-                written.append(_write(base_dir, f"{stamp}-{index}{suffix}", base64.b64decode(blob)))
+                data = base64.b64decode(blob)
+                written.append(
+                    _write(base_dir, f"{stamp}-{index}{_sniff_suffix(data)}", data)
+                )
             for offset, url in enumerate(urls):
                 index = len(blobs) + offset
                 suffix, data = await self._download(url)
@@ -337,7 +365,13 @@ class HttpJsonTool(ToolBase):
         async with self._client_factory(self._spec.timeout_s) as client:
             response = await client.get(url, headers=self._auth_headers())
             response.raise_for_status()
-            return _guess_suffix(response.headers.get("content-type")), response.content
+            data = response.content
+            # content-type 说不出所以然（或干脆没给）时，别凭空造一个后缀 ——
+            # 手里已经有字节，直接嗅探比信一个缺失的头更可靠。
+            suffix = _guess_suffix(response.headers.get("content-type"))
+            if suffix == ".png" and not data.startswith(_PNG_MAGIC):
+                suffix = _sniff_suffix(data)
+            return suffix, data
 
     # ------------------------------------------------------------------
     # 组装

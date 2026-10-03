@@ -22,7 +22,12 @@ from nono_agent.toolplugins.config_schema import (
     parse_config_schema,
     set_option,
 )
-from nono_agent.toolplugins.http_json import HttpJsonTool, build_client
+from nono_agent.toolplugins.http_json import (
+    HttpJsonTool,
+    _sniff_image_mime,
+    _sniff_suffix,
+    build_client,
+)
 from nono_agent.toolplugins.policy import resolve_tool_policy
 from nono_agent.toolplugins.registry import clear_plugin_dirs, registered_plugin_dirs
 from nono_agent.toolplugins.runtime import (
@@ -249,6 +254,57 @@ class TestHttpJsonTool:
         assert len(saved) == 1
         assert saved[0].read_bytes() == _FAKE_PNG
         assert result.ui is not None and result.ui["kind"] == "image"
+
+    async def test_base64_suffix_follows_magic_not_png_default(self, tmp_path):
+        """厂商回 JPEG 时不能落一个装着 JPEG 字节的 .png。
+
+        早期版本无条件用 .png，于是这类文件再作为参考图传回去时，扩展名
+        和内容各说各话。
+        """
+        jpeg = b"\xff\xd8\xff\xe0" + b"fake-jpeg"
+        tool = _tool(
+            client_factory=_stub_factory(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "data": {"image_base64": [b64.b64encode(jpeg).decode()]},
+                        "base_resp": {"status_code": 0},
+                    },
+                )
+            ),
+            result={
+                "kind": "save_images",
+                "base64_path": "data.image_base64",
+                "dir": ".nono-agent/images",
+            },
+        )
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd=str(tmp_path)))
+        assert result.is_error is False
+        out = tmp_path / ".nono-agent" / "images"
+        assert not list(out.glob("*.png"))  # 没有冒充 PNG 的文件
+        saved = list(out.glob("*.jpg"))
+        assert len(saved) == 1 and saved[0].read_bytes() == jpeg
+
+    @pytest.mark.parametrize(
+        ("data", "suffix"),
+        [
+            (b"\x89PNG\r\n\x1a\n", ".png"),
+            (b"\xff\xd8\xff\xe0", ".jpg"),
+            (b"GIF89a", ".gif"),
+            (b"RIFF\x00\x00\x00\x00WEBPVP8 ", ".webp"),
+            (b"not an image at all", ".png"),  # 认不出就退回，行为同 _guess_suffix
+        ],
+    )
+    def test_sniff_suffix(self, data, suffix):
+        assert _sniff_suffix(data) == suffix
+
+    def test_input_mapper_still_rejects_non_jpg_png(self):
+        """落盘放宽了格式，入参侧不能跟着放宽 —— MiniMax 只收 JPG/PNG。"""
+        assert _sniff_image_mime(b"\x89PNG\r\n\x1a\n") == "image/png"
+        assert _sniff_image_mime(b"\xff\xd8\xff\xe0") == "image/jpeg"
+        assert _sniff_image_mime(b"GIF89a") is None
+        assert _sniff_image_mime(b"RIFF\x00\x00\x00\x00WEBP") is None
+        assert _sniff_image_mime(b"nope") is None
 
     async def test_image_url_result_downloaded(self, tmp_path, monkeypatch):
         # cdn.example.com 解析不出来，SSRF 闸门（fail-closed）会挡下它；

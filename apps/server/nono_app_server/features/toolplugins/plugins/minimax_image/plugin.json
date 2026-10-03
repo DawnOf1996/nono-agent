@@ -36,7 +36,7 @@
     "edit_image": {
       "kind": "http_json",
       "prefix": "minimax",
-      "description": "Generate a new image from an existing reference image (image-to-image). Pass a local file path such as 'assets/portrait.png'; it is read from the workspace and sent as an inline data URL. Works best with a single front-facing portrait, which keeps the same subject/character in the new scene. Returns the saved file paths.",
+      "description": "Generate a new image from an existing reference image (image-to-image). Pass exactly one local file path such as 'assets/portrait.png'; it is read from the workspace and sent as an inline data URL. MiniMax takes only one reference image per request. Works best with a single front-facing portrait, which keeps the same subject/character in the new scene. Returns the saved file paths.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -47,7 +47,7 @@
           "reference_images": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Reference image: a workspace-relative path to a JPG/PNG (under 10MB), an https URL, or a data URL. Defaults to a single image."
+            "description": "Exactly one reference image: a workspace-relative path to a JPG/PNG (under 10MB), an https URL, or a data URL. For best results, upload a single front-facing portrait photo. MiniMax accepts only a single reference image per request, so pass a list with one element."
           },
           "aspect_ratio": {
             "type": "string",
