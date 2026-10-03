@@ -15,6 +15,15 @@ def home() -> Path:
     return Path.home()
 
 
+def system_root() -> str:
+    """系统根目录，用来给"回到根目录"按钮一个可跳转的目标。
+
+    Windows 没有单一根目录，磁盘列表才是它的根，所以返回空串走 list_directory 的盘符分支；
+    Linux 与 macOS 一样，系统根就是 /，其他卷挂在 /Volumes、/mnt 下面。
+    """
+    return "" if os.name == "nt" else os.sep
+
+
 def within_root(root: Path, target: Path) -> bool:
     root_key = os.path.normcase(str(root))
     target_key = os.path.normcase(str(target))

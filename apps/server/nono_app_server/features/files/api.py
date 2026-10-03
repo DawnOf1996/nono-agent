@@ -35,6 +35,9 @@ from nono_app_server.common.paths import (
     resolve_dir as _resolve_dir,
 )
 from nono_app_server.common.paths import (
+    system_root as _system_root,
+)
+from nono_app_server.common.paths import (
     within_root as _within_root,
 )
 from nono_app_server.common.paths import (
@@ -108,6 +111,7 @@ async def list_directory(path: str | None = Query(default=None)) -> dict[str, An
             "path": "",
             "parent": None,
             "home": str(_home()),
+            "root": _system_root(),
             "entries": _windows_drives(),
         }
     current = _resolve_dir(path)
@@ -115,6 +119,7 @@ async def list_directory(path: str | None = Query(default=None)) -> dict[str, An
         "path": str(current),
         "parent": _parent_path(current),
         "home": str(_home()),
+        "root": _system_root(),
         "entries": _list_entries(current),
     }
 

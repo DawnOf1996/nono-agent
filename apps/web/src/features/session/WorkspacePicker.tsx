@@ -1,4 +1,4 @@
-import { ChevronRight, Folder, Home, Plus } from "lucide-react";
+import { ChevronRight, Folder, HardDrive, Home, Plus } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { createDirectory, fetchDirectory } from "@/api/client";
@@ -145,14 +145,24 @@ export function WorkspacePicker({
             <span className="min-w-0 truncate" title={listing?.path || "选择磁盘"}>
               {listing?.path || "选择磁盘"}
             </span>
-            <button
-              type="button"
-              className="rounded-full p-1 hover:bg-hover"
-              title="回到主目录"
-              onClick={() => void load(listing?.home)}
-            >
-              <Home className="size-4" />
-            </button>
+            <span className="flex shrink-0 items-center gap-0.5">
+              <button
+                type="button"
+                className="rounded-full p-1 hover:bg-hover"
+                title="回到主目录"
+                onClick={() => void load(listing?.home)}
+              >
+                <Home className="size-4" />
+              </button>
+              <button
+                type="button"
+                className="rounded-full p-1 hover:bg-hover"
+                title="到系统根目录"
+                onClick={() => void load(listing?.root ?? "")}
+              >
+                <HardDrive className="size-4" />
+              </button>
+            </span>
           </div>
         </div>
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,30 @@ def test_list_directory_skips_files(tmp_path: Path) -> None:
     names = [item["name"] for item in resp.json()["entries"]]
     assert "keep" in names
     assert "note.md" not in names
+
+
+def test_list_directory_exposes_home_and_system_root(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        resp = client.get("/app/fs", params={"path": str(tmp_path)})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["home"] == str(Path.home())
+    if os.name == "nt":
+        # Windows 没有单一根目录，"系统根"就是磁盘列表本身。
+        assert body["root"] == ""
+        with _client(tmp_path) as client:
+            drives = client.get("/app/fs").json()
+        assert drives["path"] == ""
+        assert drives["parent"] is None
+        assert all(item["name"].endswith(":") for item in drives["entries"])
+    else:
+        # Linux 与 macOS 的系统根都是 /。
+        assert body["root"] == os.sep
+        with _client(tmp_path) as client:
+            listing = client.get("/app/fs", params={"path": body["root"]})
+        assert listing.status_code == 200
+        assert listing.json()["path"] == os.sep
+        assert listing.json()["parent"] is None
 
 
 def test_workspace_entries_and_preview(tmp_path: Path) -> None:

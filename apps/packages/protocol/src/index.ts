@@ -271,6 +271,8 @@ export type FsListing = {
   path: string;
   parent: string | null;
   home: string;
+  /** 系统根目录：Windows 上为空串（磁盘列表），Linux/macOS 上是 "/"。 */
+  root: string;
   entries: FsEntry[];
 };
 
