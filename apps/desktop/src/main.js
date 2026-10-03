@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } = require("electron");
+const { app, BrowserWindow, Menu, Tray, clipboard, dialog, ipcMain, nativeImage, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -200,6 +200,14 @@ if (gotLock) app.whenReady().then(async () => {
     if (typeof target !== "string" || !target.trim()) return { ok: false };
     const error = await shell.openPath(target);
     return { ok: !error, error: error || undefined };
+  });
+  // 渲染进程的 navigator.clipboard 在 Electron 里要过权限请求，而本进程没设权限处理器，
+  // 默认会被拒。终端右键菜单的粘贴/复制走主进程，一次 IPC 解决。
+  ipcMain.handle("read-clipboard-text", async () => clipboard.readText());
+  ipcMain.handle("write-clipboard-text", async (_event, text) => {
+    if (typeof text !== "string") return { ok: false };
+    clipboard.writeText(text);
+    return { ok: true };
   });
 
   const port = isPackaged() ? await pickFreePort() : Number(process.env.NONO_PORT || 8000);

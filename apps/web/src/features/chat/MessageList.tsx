@@ -33,13 +33,13 @@ function MessageStamp({ at }: { at?: number }) {
 /**
  * 用户消息复制出去的内容。
  *
- * 原文里夹着引用标记（<quoted-from-assistant-message>…），粘到别处是乱码 ——
- * 把引用原文摊平成普通段落，和正文一起给出去。
+ * 原文里夹着引用标记（<quoted-from-assistant-message>… / <quoted-from-terminal>…），
+ * 粘到别处是乱码 —— 把引用原文摊平成普通段落，和正文一起给出去。
  */
 function userCopyText(text: string): string {
   const { quotes, body } = splitQuotedMessage(text);
   if (!quotes.length) return body || text;
-  return [...quotes, body].filter(Boolean).join("\n\n");
+  return [...quotes.map((quote) => quote.text), body].filter(Boolean).join("\n\n");
 }
 
 function MessageImages({ images, messageId }: { images: ChatImage[]; messageId: string }) {
@@ -97,7 +97,7 @@ const MessageBlock = memo(function MessageBlock({
             <MessageImages images={message.images} messageId={message.id} />
           ) : null}
           {quoted.quotes.map((quote, index) => (
-            <QuoteCard key={`${message.id}-quote-${index}`} text={quote} />
+            <QuoteCard key={`${message.id}-quote-${index}`} text={quote.text} source={quote.source} />
           ))}
           {quoted.body ? (
             <div className="rounded-2xl bg-card px-4 py-2.5">

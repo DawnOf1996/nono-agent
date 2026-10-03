@@ -97,6 +97,7 @@ import {
   clipQuote,
   composeQuotedMessage,
   splitQuotedMessage,
+  type QuoteSource,
 } from "@/lib/quote";
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
@@ -111,6 +112,8 @@ export type ChatImage = {
 export type ChatQuote = {
   id: string;
   text: string;
+  /** 引用出处，决定写进正文的标记是 quoted-from-assistant-message 还是 quoted-from-terminal。 */
+  source: QuoteSource;
 };
 
 export type ChatMessage = {
@@ -207,7 +210,7 @@ type ChatState = {
   setError: (message: string | null) => void;
   addAttachments: (items: PendingImage[]) => void;
   removeAttachment: (id: string) => void;
-  addQuote: (text: string) => void;
+  addQuote: (text: string, source?: QuoteSource) => void;
   removeQuote: (id: string) => void;
   setWorkspace: (value: string) => void;
   addWorkspace: (value: string) => Promise<void>;
@@ -256,7 +259,7 @@ function nextId(): string {
 
 function titleFromText(text: string, hasImages = false): string {
   const parsed = splitQuotedMessage(text);
-  const source = parsed.body || parsed.quotes[0] || "";
+  const source = parsed.body || parsed.quotes[0]?.text || "";
   const line = source.trim().split(/\r?\n/)[0] ?? "";
   return line.slice(0, 32) || (hasImages ? "图片问答" : parsed.quotes.length ? "引用" : "新会话");
 }
@@ -619,7 +622,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       attachments: state.attachments.filter((item) => item.id !== id),
     })),
-  addQuote: (text) => {
+  addQuote: (text, source = "assistant") => {
     const normalized = text.replace(/\r\n/g, "\n").trim();
     if (!normalized) return;
     const clipped = clipQuote(normalized);
@@ -628,7 +631,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return patchRun(state, activeKey(state), { error: `最多添加 ${MAX_QUOTES} 条引用` });
       }
       return {
-        quotes: [...state.quotes, { id: nextId(), text: clipped.text }],
+        quotes: [...state.quotes, { id: nextId(), text: clipped.text, source }],
         ...patchRun(state, activeKey(state), {
           error: clipped.clipped ? `引用过长，已保留前 ${MAX_QUOTE_CHARS} 字` : null,
         }),

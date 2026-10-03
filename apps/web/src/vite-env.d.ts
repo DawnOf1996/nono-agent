@@ -6,6 +6,8 @@ type NonoDesktop = {
   version?: string;
   selectWorkspace?: () => Promise<string | null>;
   openPath?: (target: string) => Promise<{ ok: boolean; error?: string }>;
+  readClipboardText?: () => Promise<string>;
+  writeClipboardText?: (text: string) => Promise<{ ok: boolean }>;
 };
 
 interface Window {

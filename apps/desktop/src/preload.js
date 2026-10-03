@@ -12,4 +12,6 @@ contextBridge.exposeInMainWorld("nonoDesktop", {
   version: appVersion(),
   selectWorkspace: () => ipcRenderer.invoke("select-workspace"),
   openPath: (target) => ipcRenderer.invoke("open-path", target),
+  readClipboardText: () => ipcRenderer.invoke("read-clipboard-text"),
+  writeClipboardText: (text) => ipcRenderer.invoke("write-clipboard-text", text),
 });

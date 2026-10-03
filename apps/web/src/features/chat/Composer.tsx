@@ -224,7 +224,12 @@ export function Composer() {
           {quotes.length ? (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {quotes.map((item) => (
-                <QuoteChip key={item.id} text={item.text} onRemove={() => removeQuote(item.id)} />
+                <QuoteChip
+                  key={item.id}
+                  text={item.text}
+                  source={item.source}
+                  onRemove={() => removeQuote(item.id)}
+                />
               ))}
             </div>
           ) : null}

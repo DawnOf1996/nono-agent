@@ -1,11 +1,22 @@
-import { X } from "lucide-react";
+import { Terminal, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { quotePreview } from "@/lib/quote";
+import { quotePreview, type QuoteSource } from "@/lib/quote";
+
+/** 出处徽标：只有终端引用需要标，模型回复里选的本来就是上下文的一部分。 */
+function SourceBadge({ source }: { source: QuoteSource }) {
+  if (source !== "terminal") return null;
+  return (
+    <span className="flex shrink-0 items-center gap-0.5 rounded-sm bg-hover px-1 py-0.5 text-[10px] text-muted" title="从终端选中的内容">
+      <Terminal className="size-2.5" />
+      终端
+    </span>
+  );
+}
 
 /** 已发送消息里的引用：默认缩略，悬停看全文。 */
-export function QuoteCard({ text }: { text: string }) {
+export function QuoteCard({ text, source = "assistant" }: { text: string; source?: QuoteSource }) {
   const anchorRef = useRef<HTMLDivElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef(0);
@@ -52,7 +63,8 @@ export function QuoteCard({ text }: { text: string }) {
 
   return (
     <div ref={anchorRef} className="max-w-full" onMouseEnter={show} onMouseLeave={hide}>
-      <div className="inline-flex max-w-[220px] items-center rounded-lg border border-line bg-sidebar px-2 py-1 text-[12px] text-muted">
+      <div className="inline-flex max-w-[220px] items-center gap-1 rounded-lg border border-line bg-sidebar px-2 py-1 text-[12px] text-muted">
+        <SourceBadge source={source} />
         <span className="truncate">{quotePreview(text)}</span>
       </div>
       {open
@@ -80,7 +92,15 @@ export function QuoteCard({ text }: { text: string }) {
 }
 
 /** 输入框里的引用：短标签，悬停看全文，可移除。 */
-export function QuoteChip({ text, onRemove }: { text: string; onRemove: () => void }) {
+export function QuoteChip({
+  text,
+  source = "assistant",
+  onRemove,
+}: {
+  text: string;
+  source?: QuoteSource;
+  onRemove: () => void;
+}) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -106,6 +126,7 @@ export function QuoteChip({ text, onRemove }: { text: string; onRemove: () => vo
         >
           <X className="size-3" />
         </button>
+        <SourceBadge source={source} />
         <span className="truncate">{quotePreview(text)}</span>
       </div>
     </div>
