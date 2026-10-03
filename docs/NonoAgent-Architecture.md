@@ -134,6 +134,7 @@ nono_agent/
 ├── rules/                # ✅ 常驻指令发现/合并（CLAUDE.md/AGENTS.md 兼容）
 ├── skills/               # ✅ Skill 加载 + SkillTool
 ├── plugins/              # ✅ 扩展包加载（组合下层能力）
+├── toolplugins/          # ✅ 声明式工具插件框架（不含任何具体插件，产品注册目录进来）
 ├── commands/             # ✅ Slash MVP（无 UI）
 ├── settings/             # ✅ user/project/policy/flag 合并
 ├── permissions/          # ✅ Policy / Rule / denial / sandbox

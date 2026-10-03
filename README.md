@@ -10,7 +10,7 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 |------|----------|
 | `QueryEngine.submit_message()` 流式 API | WebSocket |
 | Provider 三类协议（openai_chat_completions / openai_responses / anthropic_messages） | MCP OAuth 全量 / SSE transport |
-| 24 个内置工具（Bash/JobOutput/JobKill/Read/Write/Edit/Glob/Grep/LS/LSP/WebFetch/WebSearch/ToolSearch/AskUser/TodoWrite/Plan/Worktree/Task） | Transcript Postgres/Redis |
+| 23 个内置工具（Bash/JobOutput/JobKill/Read/Write/Edit/Glob/Grep/LS/LSP/WebFetch/ToolSearch/AskUser/TodoWrite/Plan/Worktree/Task）——只保留零配置原语，厂商能力走工具插件 | Transcript Postgres/Redis |
 | 默认 4 级上下文压缩管线 + 可配置 ContextCollapse summarizer | 多模态附件产品化（P2） |
 | Prompt Section 组装（静态/动态边界 + 优先级合并）+ 结构化输出闭环 | Agent Teams（P2 可选） |
 | Rules + Skills（SkillTool）+ 子 Agent 三件套 + Slash MVP | HTTP Hooks 执行器（命令执行器已有） |
@@ -20,6 +20,7 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 | MCP 客户端（stdio tools/resources 桥接）+ Plugins | — |
 | Memory（memdir）+ Checkpoint + Task 工具族 | — |
 | 工具协议、注册表、流式执行器 + CI（pytest+ruff+mypy） | — |
+| 内置工具插件（`toolplugins/`）：声明式插件框架（引擎侧不含具体插件），产品侧注册 minimax-image / tavily | 第三方插件市场与签名 |
 | 事件溯源会话日志（`TranscriptWriter` + JSONL/SQLite，落盘只有事件）+ 请求前一致性门禁 | — |
 | 可观测性：TokenTracker + structlog + Metrics（事件流投影）+ 脱敏导出 + 不调模型回放 | — |
 | CLI + Server（SSE，含鉴权/TTL/AskUser 回调 + 会话事件流通道） | — |

@@ -226,7 +226,6 @@ YAML 中的 `api_key_env` 由供应商 id 稳定生成（`a` → `NONO_A_API_KEY
 | `NONO_A_API_KEY` 等（YAML 里的 `api_key_env`）  | 对应供应商的 API Key（也可改写 credentials）                 |
 | `NONO_MODEL` / `NONO_CWD`                  | 覆盖默认模型 id / 工作目录                                 |
 | `NONO_LOG_API_REQUESTS`                    | `1`/`true`/`yes`/`on`：SDK 发 HTTP 前 dump 请求体（同 `--log-api-requests`） |
-| `NONO_SEARCH_URL` / `NONO_SEARCH_API_KEY`  | `web_search` 工具端点                                |
 | `NONO_LSP_COMMAND` / `NONO_LSP_ARGS`（逗号分隔） | `lsp` 工具的语言服务器                                   |
 | `NONO_PERMISSION_MODE`                     | 权限模式 flag 覆盖（`default/accept_edits/plan/bypass`） |
 
@@ -284,19 +283,108 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 }
 ```
 
+### 3.5 内置工具插件（开关 + API Key 即成工具）
+
+`nono_agent/toolplugins/` 提供**框架**（声明规范、执行器、运行时、配置面板 schema），引擎不打包任何具体厂商集成。插件属于**产品定义**，随产品包发布：桌面版把它们放在 [`apps/server/nono_app_server/features/toolplugins/plugins/`](../apps/server/nono_app_server/features/toolplugins/plugins)，启动时由 `create_app()` 调 `register_builtin_plugins()` 挂进引擎的发现链。
+
+用户在设置里打开开关、填一次 API Key，对应工具就出现在模型的工具表里；关掉即消失。设置页的「插件」标签按每个插件自己的 `config` 段渲染字段。
+
+内置两个：
+
+| 插件 | 工具 | 密钥变量 | 说明 |
+|------|------|----------|------|
+| `minimax-image` | `minimax__generate_image` | `NONO_MINIMAX_IMAGE_API_KEY` | MiniMax 文生图，产物落盘后回传路径 |
+| `minimax-image` | `minimax__edit_image` | 同上 | MiniMax 图生图（`subject_reference`），参考图支持工作区本地路径 |
+| `tavily` | `mcp__tavily__*` | `NONO_TAVILY_API_KEY` | Tavily 官方 MCP server 的内置预设（`search`/`extract`） |
+
+启用方式（项目 `settings.json`，与 `mcp.servers.<id>` 同构；**未声明即不启用**）：
+
+```json
+{
+  "tools": {
+    "minimax-image": {
+      "enabled": true,
+      "api_key_env": "NONO_MINIMAX_IMAGE_API_KEY",
+      "options": {
+        "model": "image-01",
+        "base_url": "https://api.minimax.io",
+        "output_dir": ".nono-agent/images"
+      }
+    },
+    "tavily": {
+      "enabled": true,
+      "api_key_env": "NONO_TAVILY_API_KEY",
+      "options": { "server": { "transport": "http" } }
+    }
+  }
+}
+```
+
+密钥**不写 settings.json**：把值存进 `~/.nono-agent/credentials`（`NONO_MINIMAX_IMAGE_API_KEY=...`）或同名环境变量，配置里只留 `api_key_env` 指针。HTTP 端点（`options.base_url`）可改，因此每次请求都过 SSRF 判定；错误信息里的密钥一律脱敏。
+
+#### 设置面板
+
+设置里的「插件」页直接按这个开关和字段渲染，开关、参数、密钥改完即时生效（活跃会话会热重载）。**前端不认识任何具体插件**——每个插件能配什么、渲染成什么控件，全由它自己清单里的 `config` 段决定：
+
+```json
+"config": {
+  "api_key": { "label": "API Key", "hint": "在开放平台创建，保存在本机凭据文件里。" },
+  "fields": [
+    { "key": "model",      "label": "模型",     "type": "string", "hint": "文生图用 image-01" },
+    { "key": "base_url",   "label": "API 地址", "type": "string" },
+    { "key": "server.transport", "label": "连接方式", "type": "enum",
+      "choices": [{ "value": "http", "label": "远程 HTTP（推荐）" }] }
+  ]
+}
+```
+
+- 支持 `string` / `number` / `boolean` / `enum` / `password` 五种控件。
+- **默认值不写在 schema 里**：现值按 `settings.tools.<id>.options` ← 工具声明的 `defaults` 回落，两处不会各写一份而互相打架。
+- `key` 支持点分路径（`server.transport` 落到 `options["server"]["transport"]`）——MCP 的连接字段天生嵌套，写成扁平键会存进去但运行时读不到。
+- 密钥只有「往哪个凭据名里填」这一个指针；读接口只回答 `configured`，**永不回显密钥**。想在字段里放密钥会被服务端拒绝。
+
+两种声明，`plugin.json` 的 `tools` 段是纯数据、不含可执行入口：
+
+- **`kind: "http_json"`**：一个 HTTP JSON 端点。请求体写模板，`${args.<name>}` 取模型入参（缺省则整个字段丢弃，不送 `null`），`${options.<key>}` 取用户配置。两侧各挂一个映射器：
+  - `result: {"kind": "save_images"}` —— 响应侧，把 base64 / URL 两种返回都落盘到 `output_dir`，并给 UI 附图片卡片。工具结果里塞图对当前 provider 链路没有意义（只有 user 消息会被解析成 image 块）。
+  - `inputs: {"kind": "image_data_urls"}` —— 请求侧，把**本地文件**读成 data URL。图生图这类接口要的是公网 URL 或 base64，而模型手里只有工作区里的路径，这一层就是那座桥。它是声明式的替代方案：模板层刻意不提供 `${file:...}`，否则任意 `plugin.json` 都能变成任意文件读。读取一律过 `context.resolve_path()` 沙箱，按**魔数**（不按扩展名）校验 JPG/PNG，并卡体积上限。
+- **`kind: "mcp"`**：启用本插件 `mcp` 段里已声明的 server，按 `allowed_tools` 白名单接入。密钥注入支持三种方式，由 `auth.type` 选：
+
+  | `auth.type` | 注入位置 | 何时用 |
+  |---|---|---|
+  | `bearer`（默认） | `Authorization: Bearer <key>` | 绝大多数服务。Tavily 远程端点实测认这个头 |
+  | `header` | `header` 指定的头，如 `X-Api-Key` | 厂商自定义头 |
+  | `query` | `?<query_param>=<key>` | **兜底**：服务把 Key 设计在 URL 上 |
+
+  ```json
+  "auth": { "type": "query", "api_key_env": "XXX_API_KEY", "query_param": "apiKey" }
+  ```
+
+  选 `query` 时框架会做两件补偿：按 URL 规则转义（否则带 `&`/`+`/`=` 的 Key 会把查询串截成半截），以及在任何对外的错误文本里把它抹掉（含转义形式）——Key 在 URL 里就意味着它会随异常消息冒到界面和接口上。URL 形式的精确脱敏仍由 `/mcp` 接口的 `redact_url()` 按参数名完成。
+
+  用户/项目已在 `mcp.json` 里配了**同名** server 时内置预设自动让位（插件自己 `mcp` 段里声明的除外）。
+
+  > Tavily 同时支持 header 与 URL 两种，内置预设用的是 header：URL 会进访问日志与浏览器历史，header 不会。
+
+想做自己的插件，照 `apps/server/nono_app_server/features/toolplugins/plugins/*/plugin.json` 写一份，放进产品的 `plugins/` 目录（随产品发布）或工作区的 `.nono-agent/plugins/<name>/`（同名覆盖内置）。也可以在自己的产品入口调 `register_plugin_dir()` 挂一个自己的目录。
+
+> **注意 CLI**：终端版直接用引擎、不依赖 `nono-app-server`，所以拿不到上面这两个内置插件。要让 CLI 也有，把插件目录挪到一个双方都依赖的包里（或让 CLI 也依赖 `nono-app-server` 并调一次 `register_builtin_plugins()`）。
+
+会话内改开关不用重启：`engine.reload_tool_plugins()`，产品层走 `POST /app/tool-plugins/reload`。
+
 ---
 
+## 4. 内置工具（23 个）
 
-
-## 4. 内置工具（24 个）
-
-`create_builtin_tools()` 返回：`bash`、`job_output`、`job_kill`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`list_directory`、`lsp`、`web_fetch`、`web_search`、`tool_search`、`ask_user_question`、`todo_write`、`enter_plan_mode`、`exit_plan_mode`、`enter_worktree`、`exit_worktree`、`task_create`、`task_list`、`task_get`、`task_update`、`task_stop`。
+`create_builtin_tools()` 返回：`bash`、`job_output`、`job_kill`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`list_directory`、`lsp`、`web_fetch`、`tool_search`、`ask_user_question`、`todo_write`、`enter_plan_mode`、`exit_plan_mode`、`enter_worktree`、`exit_worktree`、`task_create`、`task_list`、`task_get`、`task_update`、`task_stop`。
 
 要点：
 
 - 文件工具遵守路径沙箱（`PathSandbox`）与 `.gitignore`/`.nonoignore`（`IgnoreMatcher`）。
 - `read_file` / `grep` / `edit_file` 读文本时 UTF-8 优先，失败则回退本机默认编码与 gb18030；`edit_file` 写回 UTF-8。
-- `web_fetch`/`web_search` 有 SSRF 防护（拒绝私网/回环/链路本地/云元数据）。
+- **内置只保留零配置即用的原语。** 搜索、图像生成这类要密钥、要开关的厂商能力一律走工具插件（Tavily / MiniMax，见 3.5），默认关闭——内置工具表里不该塞一堆不配置就报错的东西。
+- `web_fetch` 是**原语**不是厂商能力：给一个 URL 就能读，零配置、本机直连。它与 `tavily_extract` 不等价 —— 后者要密钥、会重整正文，而且**URL 会发给第三方**。
+- 出网统一过 SSRF 闸门 `nono_agent/utils/net_guard.py`（拒绝私网/回环/链路本地/云元数据，`web_fetch` 与工具插件的 HTTP 执行器共用同一份实现）。
 - MCP 工具以 `mcp__<server>__<tool>` 命名；沿用全局权限模式。自定义连接清单只写用户级 `~/.nono-agent/mcp.json`；工作区默认不启用，启停与部分工具禁用写在项目 `settings.mcp.servers.<id>`。
 
 ### 4.1 bash 的执行语义

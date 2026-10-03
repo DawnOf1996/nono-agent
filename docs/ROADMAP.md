@@ -142,7 +142,8 @@
 | Write / Edit         | 原子写、diff/patch、权限门控                | P0    | 可用需打磨 |
 | Glob / Grep          | 工作区匹配与内容搜索                         | P0    | 已完成 |
 | LS / Tree            | 目录列举 + Ignore                      | P1    | 已完成 |
-| WebFetch / WebSearch | 网络 + SSRF/安全策略                     | P1    | 已完成 |
+| WebFetch | 网络抓取 + SSRF/安全策略（闸门见 `utils/net_guard.py`） | P1    | 已完成 |
+| ~~WebSearch~~ | 配置门控的空壳，已下线 → 工具插件（Tavily） | —    | 已下线 |
 | AskUserQuestion      | 结构化提问；CLI 交互 / Server 回调或 SSE      | P0/P1 | 可用需打磨 |
 | LSP                  | 定义跳转/引用/诊断（对标 `LSPTool`）           | P1    | 已完成 |
 | NotebookEdit         | Jupyter（按需）                        | P2    | 未开始 |
@@ -206,12 +207,24 @@
 
 | 项         | 说明                                                | 状态  |
 | --------- | ------------------------------------------------- | --- |
-| 清单 + 发现路径 | `plugin.json`；`.nono-agent/plugins`、用户目录               | 已完成 |
+| 清单 + 发现路径 | `plugin.json`；`.nono-agent/plugins`、用户目录、**随包 bundled** | 已完成 |
 | 加载器       | 校验、启停、冲突、失败隔离                                     | 已完成 |
-| 注册对接      | Rules / Skills / Agents / MCP / 权限（Tools 经 MCP）   | 可用需打磨 |
+| 注册对接      | Rules / Skills / Agents / MCP / 权限                     | 可用需打磨 |
+| **声明式工具** | `plugin.json` 的 `tools` 段：`http_json` / `mcp` 两种 kind，纯数据无代码入口 | 已完成 |
+| **内置工具插件** | `nono_agent/toolplugins/` 只做框架（声明/执行器/运行时/schema）；具体插件是产品定义，放在 `nono-app-server`，启动时注册 | 已完成 |
+| **配置面板** | 清单 `config` 段声明可配项与控件类型；设置页 schema 驱动渲染，密钥走凭据文件不回显 | 已完成 |
+| **三种密钥注入** | `bearer` / `header` / `query`（URL 形式带转义与错误脱敏补偿） | 已完成 |
 
 
 建议模块：`nono_agent/plugins/`。原则：引擎只认 Protocol；插件无 loop 特权入口。
+
+**声明式工具的边界。** `tools` 段只允许两种 kind：一个 HTTP JSON 端点，或启用一个已声明的 MCP server。
+再加第三种「可执行 entrypoint」时清单才需要开 Python 导入的口子 —— 那条路留给二期，
+且要单独讨论沙箱与签名，否则任意项目里的 `plugin.json` 都能变成任意代码执行。
+
+**引擎与产品的分界。** `nono_agent/toolplugins/` 里**不放任何具体插件** —— 那是厂商集成（产品定义），
+随产品包发布。引擎只暴露 `register_plugin_dir()` 这个接缝，产品在启动时把自己的插件目录挂进去。
+这条边界有回归用例守着（引擎目录下不允许出现 `plugin.json`）。
 
 ### 2.6 权限模式、PermissionRule 与 Ignore（优先级：P0）
 
@@ -586,8 +599,8 @@ nono_agent/
 │       ├── glob.py / grep.py
 │       ├── ask_user.py
 │       ├── lsp.py / worktree.py   # P1
-│       ├── web_fetch.py / …       # P1
-│       └── …                      # Todo / Plan 进出等
+│       ├── web_fetch.py             # P1（出网；SSRF 闸门在 utils/net_guard.py）
+│       └── …                        # Todo / Plan 进出等
 │
 │ ─── 扩展面（已落地）──────────────────────────────────────
 ├── prompt/                        # ✅ Prompt Section 组装
@@ -792,7 +805,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-14 | Phase 4 推进：mypy 全量清零、Checkpoint、Task 工具族、CI（pytest+ruff+mypy） |
 | 2026-08-14 | Phase 3/4 推进：Server 治理（鉴权/TTL/AskUser SSE）、Output Styles section |
 | 2026-08-14 | Phase 1/2 补齐：LS/WebFetch(SSRF)/ToolSearch 工具、Slash /rules /skills /permission /mcp /plugins |
-| 2026-08-14 | 补齐：WebSearch 工具、MCP 静态 token/headers、Skills enable/disable |
+| 2026-08-14 | 补齐：WebSearch 工具（后已下线，转工具插件）、MCP 静态 token/headers、Skills enable/disable |
 | 2026-08-14 | 补齐：fallback_model 切换、/memory /hooks slash、CLI sessions 会话列表 |
 | 2026-08-14 | 补齐：LSP 工具、Plugin 自定义 slash 命令 |
 | 2026-08-14 | CLI 首次运行引导页：检测用户基础配置（模型/协议/密钥）缺失则交互式引导并落盘 `~/.nono-agent/config.json` |
