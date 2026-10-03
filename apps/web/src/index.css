@@ -180,9 +180,19 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-* {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-faint) 55%, transparent) transparent;
+/* 标准属性一旦不是 initial，Chromium 就会整个忽略 ::-webkit-scrollbar 伪元素
+   （CSSWG 2024-04 决议：scrollbar-width / scrollbar-color 优先于 legacy 伪元素），
+   滚动条会退回 Fluent 细条，下面 webkit 的 4px 永远不生效。
+   所以这两条只能关进 Firefox 分支：它不认 ::-webkit-scrollbar，@supports not 成立。 */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--color-faint) 55%, transparent) transparent;
+  }
+
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
 }
 
 *::-webkit-scrollbar {
@@ -210,10 +220,6 @@ body {
   display: none;
   width: 0;
   height: 0;
-}
-
-.scrollbar-none {
-  scrollbar-width: none;
 }
 
 .scrollbar-none::-webkit-scrollbar {
