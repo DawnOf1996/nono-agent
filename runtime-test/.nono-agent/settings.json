@@ -12,13 +12,5 @@
         "enabled": true
       }
     }
-  },
-  "tools": {
-    "tavily": {
-      "enabled": true
-    },
-    "minimax-image": {
-      "enabled": true
-    }
   }
 }

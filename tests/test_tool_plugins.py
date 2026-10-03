@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 import nono_agent.toolplugins
+from nono_agent import paths as paths_module
 from nono_agent.plugins.manifest import load_manifest
 from nono_agent.providers.catalog import lookup_api_key, save_credential
 from nono_agent.settings.models import Settings
@@ -839,7 +840,7 @@ class TestConfigPanelPayload:
     def test_payload_keys_match_frontend_contract(self, tmp_path):
         """出参的键名必须与 @nono/protocol 的类型对得上，否则前端静默拿到 undefined。"""
         payload = self._snapshot(tmp_path)
-        assert set(payload) == {"enabled", "credentials_path", "plugins"}
+        assert set(payload) == {"enabled", "credentials_path", "settings_path", "plugins"}
         plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
         assert set(plugin) == {
             "id",
@@ -849,6 +850,7 @@ class TestConfigPanelPayload:
             "enabled",
             "api_key",
             "fields",
+            "project_owned",
             "tools",
             "running",
             "error",
@@ -889,7 +891,15 @@ class TestConfigPanelWrites:
         manager = MagicMock()
         manager.sessions = {}
         manager.reload_extensions_for_cwd = AsyncMock()
+        manager.reload_extensions_all = AsyncMock()
         return manager
+
+    @staticmethod
+    def _user_settings() -> dict[str, Any]:
+        # 走模块属性而不是 import 进来的符号 —— conftest 的 user_home 隔离
+        # 是 monkeypatch 到模块上的，import 时取到的是真实 HOME。
+        path = paths_module.user_home() / "settings.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
     async def test_toggle_and_options_persist(self, tmp_path):
         manager = await self._manager()
@@ -903,11 +913,95 @@ class TestConfigPanelWrites:
         values = {f["key"]: f["value"] for f in plugin["fields"]}
         assert values["model"] == "image-01-live"
 
-        saved = json.loads((tmp_path / ".nono-agent" / "settings.json").read_text(encoding="utf-8"))
-        assert saved["tools"]["minimax-image"]["enabled"] is True
+        saved = self._user_settings()["tools"]["minimax-image"]
+        assert saved["enabled"] is True
         # 面板这次只提交了 model，base_url 仍走默认 —— 不该被写成空值
-        assert saved["tools"]["minimax-image"]["options"] == {"model": "image-01-live"}
-        manager.reload_extensions_for_cwd.assert_awaited_once()
+        assert saved["options"] == {"model": "image-01-live"}
+        manager.reload_extensions_all.assert_awaited_once()
+
+    async def test_toggle_written_to_user_config_not_workspace(self, tmp_path):
+        """开关是全局的 —— 落用户级配置，且**不碰**工作区 settings。"""
+        manager = await self._manager()
+        await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(cwd=str(tmp_path), enabled=True),
+            manager,
+        )
+        assert self._user_settings()["tools"]["minimax-image"]["enabled"] is True
+        assert not (tmp_path / ".nono-agent" / "settings.json").exists()
+
+    async def test_toggle_applies_across_workspaces(self, tmp_path):
+        """在 A 目录打开的插件，到 B 目录也该是开的 —— 这就是「全局」。"""
+        manager = await self._manager()
+        await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(cwd=str(tmp_path / "workspace-a"), enabled=True),
+            manager,
+        )
+        other = tmp_path / "workspace-b"
+        other.mkdir()
+        payload = public_tool_plugins(str(other), manager)
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["enabled"] is True
+
+    async def test_toggle_without_cwd_still_writes(self, tmp_path):
+        """cwd 为空不再静默丢弃 —— 以前这种请求返回 200 却什么都没改。"""
+        manager = await self._manager()
+        payload = await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(cwd="", enabled=True),
+            manager,
+        )
+        assert self._user_settings()["tools"]["minimax-image"]["enabled"] is True
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["enabled"] is True
+        manager.reload_extensions_all.assert_awaited_once()
+
+    async def test_project_settings_still_override(self, tmp_path):
+        """工作区里手写的 tools.<id> 是逃生舱，优先级高于用户级全局开关。"""
+        project = tmp_path / ".nono-agent" / "settings.json"
+        project.parent.mkdir(parents=True)
+        project.write_text(
+            json.dumps({"tools": {"minimax-image": {"enabled": False}}}),
+            encoding="utf-8",
+        )
+        manager = await self._manager()
+        await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(cwd=str(tmp_path), enabled=True),
+            manager,
+        )
+        payload = public_tool_plugins(str(tmp_path), manager)
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        # 全局是开的，但这个工作区显式关了 —— 如实报告，并标出被谁盖住
+        assert plugin["enabled"] is False
+        assert plugin["project_owned"] == ["enabled"]
+
+    async def test_project_owned_reports_only_overridden_keys(self, tmp_path):
+        project = tmp_path / ".nono-agent" / "settings.json"
+        project.parent.mkdir(parents=True)
+        project.write_text(
+            json.dumps({"tools": {"minimax-image": {"options": {"model": "image-01-live"}}}}),
+            encoding="utf-8",
+        )
+        manager = MagicMock()
+        manager.sessions = {}
+        payload = public_tool_plugins(str(tmp_path), manager)
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["project_owned"] == ["model"]
+        # 没被覆盖的键不该出现
+        assert "base_url" not in plugin["project_owned"]
+        assert "enabled" not in plugin["project_owned"]
+
+    async def test_global_toggle_marks_nothing_as_project_owned(self, tmp_path):
+        manager = await self._manager()
+        payload = await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(cwd=str(tmp_path), enabled=True, options={"model": "image-01-live"}),
+            manager,
+        )
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["project_owned"] == []
 
     async def test_dotted_option_key_nests(self, tmp_path):
         manager = await self._manager()
@@ -918,9 +1012,9 @@ class TestConfigPanelWrites:
             ),
             manager,
         )
-        saved = json.loads((tmp_path / ".nono-agent" / "settings.json").read_text(encoding="utf-8"))
+        saved = self._user_settings()["tools"]["tavily"]
         # 扁平键会存进去但运行时读不到 —— 必须是嵌套的
-        assert saved["tools"]["tavily"]["options"] == {"server": {"transport": "stdio"}}
+        assert saved["options"] == {"server": {"transport": "stdio"}}
 
     async def test_enum_value_outside_choices_rejected(self, tmp_path):
         manager = await self._manager()

@@ -11,7 +11,9 @@ from nono_agent.settings.sources import (
     load_settings_from_env,
     load_user_settings,
     patch_project_settings,
+    patch_user_settings,
     project_settings_path,
+    user_settings_path,
 )
 
 __all__ = [
@@ -22,5 +24,7 @@ __all__ = [
     "load_settings_from_env",
     "load_user_settings",
     "patch_project_settings",
+    "patch_user_settings",
     "project_settings_path",
+    "user_settings_path",
 ]

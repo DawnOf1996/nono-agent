@@ -294,6 +294,29 @@ class SessionManager:
                 for engine in self.sessions.values()
                 if resolve_session_cwd(engine._config.cwd) == resolved
             ]
+        await self._reload_engines(engines, resolved, mcp=mcp, tool_plugins=tool_plugins)
+
+    async def reload_extensions_all(
+        self, *, mcp: bool = True, tool_plugins: bool = True
+    ) -> None:
+        """全局开关变化后，刷新**所有**活跃引擎。
+
+        工具插件的开关与参数写在用户级 settings 里，对每个工作区一视同仁
+        —— 只刷 cwd 那一个会话的话，别的会话要等到下次新建才看到新状态，
+        用户会以为开关没生效。这里仍然只刷工具插件，不碰 MCP。
+        """
+        async with self.lock:
+            engines = list(self.sessions.values())
+        await self._reload_engines(engines, "<all>", mcp=mcp, tool_plugins=tool_plugins)
+
+    async def _reload_engines(
+        self,
+        engines: list[Any],
+        label: str,
+        *,
+        mcp: bool,
+        tool_plugins: bool,
+    ) -> None:
         for engine in engines:
             if mcp:
                 try:
@@ -302,7 +325,7 @@ class SessionManager:
                     logger.exception(
                         "Failed to reload MCP for session %s cwd=%s",
                         engine._config.session_id,
-                        resolved,
+                        label,
                     )
             if tool_plugins:
                 try:
@@ -311,7 +334,7 @@ class SessionManager:
                     logger.exception(
                         "Failed to reload tool plugins for session %s cwd=%s",
                         engine._config.session_id,
-                        resolved,
+                        label,
                     )
 
     async def reload_mcp_for_cwd(self, cwd: str | None) -> None:

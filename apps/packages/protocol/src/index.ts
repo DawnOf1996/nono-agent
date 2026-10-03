@@ -509,6 +509,14 @@ export type ToolPluginInfo = {
   enabled: boolean;
   api_key: ToolPluginApiKey;
   fields: ToolPluginField[];
+  /**
+   * 正被工作区 `.nono-agent/settings.json` 覆盖的键。
+   *
+   * 面板写的是用户级配置，而 project 层优先级更高。工作区里若留着旧的
+   * `tools.<id>` 块，它会盖住全局开关 —— 这时开关"按了没反应"是事实，
+   * 不是 bug。非空即表示有覆盖，面板据此提示。
+   */
+  project_owned: string[];
   tools: string[];
   running: boolean;
   error?: string | null;
@@ -516,7 +524,10 @@ export type ToolPluginInfo = {
 
 export type ToolPluginsSnapshot = {
   enabled: boolean;
+  /** 凭据落盘位置，永不回显内容。 */
   credentials_path: string;
+  /** 开关与参数落盘位置 —— 用户级，全局生效。 */
+  settings_path: string;
   plugins: ToolPluginInfo[];
 };
 

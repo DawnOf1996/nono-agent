@@ -135,3 +135,73 @@ class TestManagerPermissionWiring:
     def test_cancel_permissions_without_hook_is_noop(self, tmp_path):
         manager = SessionManager(EngineConfig(cwd=str(tmp_path)), None)
         manager.cancel_permissions("s9")
+
+
+class _StubEngine:
+    """只记调用，不做真事 —— 这里要验的是「刷到了哪些引擎」。"""
+
+    def __init__(self, session_id: str, cwd: str) -> None:
+        self._config = EngineConfig(cwd=cwd, session_id=session_id)
+        self.reloaded_plugins = 0
+        self.reloaded_mcp = 0
+
+    async def reload_tool_plugins(self) -> None:
+        self.reloaded_plugins += 1
+
+    async def reload_mcp(self) -> None:
+        self.reloaded_mcp += 1
+
+
+class TestGlobalExtensionReload:
+    """工具插件开关是全局的 —— 改动后所有工作区的会话都得跟上。"""
+
+    def _manager_with(self, *engines: _StubEngine) -> SessionManager:
+        manager = SessionManager(EngineConfig(cwd="."), None)
+        manager.sessions = {e._config.session_id: e for e in engines}  # type: ignore[assignment]
+        return manager
+
+    async def test_all_reaches_every_workspace(self, tmp_path):
+        a = _StubEngine("s1", str(tmp_path / "a"))
+        b = _StubEngine("s2", str(tmp_path / "b"))
+        manager = self._manager_with(a, b)
+
+        await manager.reload_extensions_all(mcp=False, tool_plugins=True)
+
+        assert (a.reloaded_plugins, b.reloaded_plugins) == (1, 1)
+
+    async def test_all_does_not_touch_mcp(self, tmp_path):
+        """工具插件开关不该把用户的 MCP server 重连一遍。"""
+        a = _StubEngine("s1", str(tmp_path / "a"))
+        manager = self._manager_with(a)
+
+        await manager.reload_extensions_all(mcp=False, tool_plugins=True)
+
+        assert a.reloaded_mcp == 0
+
+    async def test_for_cwd_still_scoped(self, tmp_path):
+        a = _StubEngine("s1", str(tmp_path / "a"))
+        b = _StubEngine("s2", str(tmp_path / "b"))
+        manager = self._manager_with(a, b)
+
+        await manager.reload_extensions_for_cwd(
+            str(tmp_path / "a"), mcp=False, tool_plugins=True
+        )
+
+        assert (a.reloaded_plugins, b.reloaded_plugins) == (1, 0)
+
+    async def test_one_failing_engine_does_not_block_others(self, tmp_path):
+        class _Broken(_StubEngine):
+            async def reload_tool_plugins(self) -> None:
+                raise RuntimeError("boom")
+
+        bad = _Broken("s1", str(tmp_path / "a"))
+        good = _StubEngine("s2", str(tmp_path / "b"))
+        manager = self._manager_with(bad, good)
+
+        await manager.reload_extensions_all(mcp=False, tool_plugins=True)
+
+        assert good.reloaded_plugins == 1
+
+    async def test_all_with_no_sessions_is_noop(self, tmp_path):
+        manager = self._manager_with()
+        await manager.reload_extensions_all(mcp=False, tool_plugins=True)

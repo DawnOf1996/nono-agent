@@ -170,6 +170,7 @@ type ChatState = {
   mcpConfigPath: string | null;
   toolPlugins: ToolPluginInfo[];
   toolPluginCredentialsPath: string | null;
+  toolPluginSettingsPath: string | null;
   sessions: SessionListItem[];
   /** 侧边栏要不要把已归档会话拉进列表。 */
   sessionArchiveFilter: ArchiveFilter;
@@ -532,6 +533,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   mcpConfigPath: null,
   toolPlugins: [],
   toolPluginCredentialsPath: null,
+  toolPluginSettingsPath: null,
   sessions: [],
   sessionArchiveFilter: loadArchiveFilter(),
   sessionId: null,
@@ -875,6 +877,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({
         toolPlugins: snap.plugins,
         toolPluginCredentialsPath: snap.credentials_path,
+        toolPluginSettingsPath: snap.settings_path,
       });
     } catch {
       // keep last list
@@ -1559,6 +1562,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       toolPlugins: snap.plugins,
       toolPluginCredentialsPath: snap.credentials_path,
+      toolPluginSettingsPath: snap.settings_path,
     });
   },
 
@@ -1570,6 +1574,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       toolPlugins: snap.plugins,
       toolPluginCredentialsPath: snap.credentials_path,
+      toolPluginSettingsPath: snap.settings_path,
     });
   },
 }));

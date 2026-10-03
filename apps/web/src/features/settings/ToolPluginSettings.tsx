@@ -19,6 +19,7 @@ import { useChatStore } from "@/store/chat";
 export function ToolPluginSettings({ onViewChange }: { onViewChange?: (title: string | null) => void }) {
   const plugins = useChatStore((state) => state.toolPlugins);
   const credentialsPath = useChatStore((state) => state.toolPluginCredentialsPath);
+  const settingsPath = useChatStore((state) => state.toolPluginSettingsPath);
   const refresh = useChatStore((state) => state.refreshToolPlugins);
   const save = useChatStore((state) => state.saveToolPlugin);
   const saveKey = useChatStore((state) => state.saveToolPluginApiKey);
@@ -93,6 +94,9 @@ export function ToolPluginSettings({ onViewChange }: { onViewChange?: (title: st
       <p className="text-[13px] text-muted">
         打开开关并填好密钥后，插件提供的工具会直接出现在对话的工具列表里。每个插件能配什么，由它自己的清单决定。
       </p>
+      <p className="mt-1 text-[11px] text-faint">
+        开关和参数是<strong className="font-medium text-muted">全局</strong>的：在任意工作区改一次，所有工作区都跟着变。
+      </p>
 
       <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
         {plugins.length === 0 ? (
@@ -114,9 +118,12 @@ export function ToolPluginSettings({ onViewChange }: { onViewChange?: (title: st
 
       {error ? <p className="mt-3 text-xs text-danger">{error}</p> : null}
 
-      <div className="mt-4 flex items-center justify-between gap-3">
+      <div className="mt-4 flex flex-col gap-1">
+        <p className="truncate font-mono text-[11px] text-faint" title={settingsPath ?? undefined}>
+          开关与参数 {settingsPath || "~/.nono-agent/settings.json"}
+        </p>
         <p className="truncate font-mono text-[11px] text-faint" title={credentialsPath ?? undefined}>
-          密钥存放在 {credentialsPath || "~/.nono-agent/credentials"}
+          密钥 {credentialsPath || "~/.nono-agent/credentials"}
         </p>
       </div>
     </div>
@@ -137,6 +144,9 @@ function PluginCard({
   // 有字段或要填密钥的插件才给"配置"入口；只有一个开关的插件直接就地开关。
   const configurable = plugin.fields.length > 0 || plugin.api_key.required;
   const needsKey = plugin.api_key.required && !plugin.api_key.configured;
+  // 工作区里手写的配置会盖住全局开关。不说出来的话，用户会对着一个
+  // 怎么按都没反应的开关反复点。
+  const overridden = plugin.project_owned ?? [];
 
   return (
     <div className="rounded-2xl border border-line bg-bg px-4 py-3">
@@ -166,6 +176,14 @@ function PluginCard({
         <p className="mt-2 flex items-start gap-1.5 text-[11px] text-danger">
           <AlertCircle className="mt-px size-3.5 shrink-0" />
           <span className="min-w-0 break-words">{plugin.error}</span>
+        </p>
+      ) : null}
+      {!plugin.error && overridden.length > 0 ? (
+        <p className="mt-2 flex items-start gap-1.5 text-[11px] text-muted">
+          <AlertCircle className="mt-px size-3.5 shrink-0" />
+          <span className="min-w-0 break-words">
+            当前工作区的 .nono-agent/settings.json 覆盖了 {overridden.join("、")}，这里显示的是工作区的值。删掉那段即可回到全局配置。
+          </span>
         </p>
       ) : null}
       {!plugin.error && needsKey ? (

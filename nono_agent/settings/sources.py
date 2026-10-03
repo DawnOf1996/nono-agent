@@ -39,7 +39,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def load_user_settings(path: Path | None = None) -> dict[str, Any]:
     """加载用户级设置（``~/.nono-agent/settings.json``）。"""
-    return _read_json(path or (user_home() / "settings.json"))
+    return _read_json(path or user_settings_path())
 
 
 def project_settings_path(cwd: str | Path) -> Path:
@@ -49,7 +49,7 @@ def project_settings_path(cwd: str | Path) -> Path:
 
 def patch_user_settings(patch: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
     """把补丁深合并进用户级 ``settings.json`` 并写回。"""
-    dest = path or (user_home() / "settings.json")
+    dest = path or user_settings_path()
     current = _read_json(dest)
     merged = deep_merge(current, patch)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -60,16 +60,38 @@ def patch_user_settings(patch: dict[str, Any], path: Path | None = None) -> dict
     return merged
 
 
+def user_settings_path() -> Path:
+    """用户级设置文件：``~/.nono-agent/settings.json``。"""
+    return user_home() / "settings.json"
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    """两个路径是不是同一个文件（跨平台大小写/分隔符归一）。"""
+    return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
+
+
 def load_project_settings(cwd: str | Path) -> dict[str, Any]:
-    """加载项目级设置（``.nono-agent/settings.json``，从 cwd 向上查找第一个）。"""
+    """加载项目级设置（``.nono-agent/settings.json``，从 cwd 向上查找第一个）。
+
+    **用户级设置文件不能被当成项目级的。** cwd 在 ``$HOME`` 下面时（比如
+    ``~/projects/foo``），向上查找会撞上 ``~/.nono-agent/settings.json`` ——
+    同一个文件已经在 user 层读过一次了，再当 project 层读一遍会让优先级
+    凭空多出一层，``source_of()`` 也会把 user 层的键误报成 project。
+
+    同时**不越过家目录**：家目录之上（``C:\\Users``、``C:\\``）几乎不可能是
+    真正的项目根，继续往上只会捡到别的用户或整机的配置。
+    """
     current = Path(cwd).resolve()
+    user_path = user_settings_path()
+    # user_home() 返回的是配置目录本身（``~/.nono-agent``），父目录才是家目录
+    home = user_home().parent.resolve()
     while True:
         candidate = current / _PROJECT_SETTINGS_REL
-        if candidate.exists():
+        if candidate.exists() and not _same_file(candidate, user_path):
             data = _read_json(candidate)
             if data:
                 return data
-        if current.parent == current:
+        if current.parent == current or current == home:
             break
         current = current.parent
     return {}
