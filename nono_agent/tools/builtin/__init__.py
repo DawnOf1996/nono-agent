@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+from nono_agent.core.config import EngineConfig, ShellConfig
 from nono_agent.tools.builtin.ask_user import AskUserQuestionTool
 from nono_agent.tools.builtin.bash import BashTool
 from nono_agent.tools.builtin.demo import CalculatorTool, GetTimeTool
 from nono_agent.tools.builtin.edit import EditFileTool
 from nono_agent.tools.builtin.glob import GlobTool
 from nono_agent.tools.builtin.grep import GrepTool
+from nono_agent.tools.builtin.job_tools import JobKillTool, JobOutputTool
 from nono_agent.tools.builtin.ls import LSTool
 from nono_agent.tools.builtin.lsp import LSPTool
 from nono_agent.tools.builtin.plan import EnterPlanModeTool, ExitPlanModeTool
@@ -37,6 +39,8 @@ __all__ = [
     "GetTimeTool",
     "GlobTool",
     "GrepTool",
+    "JobKillTool",
+    "JobOutputTool",
     "ReadFileTool",
     "TodoWriteTool",
     "WriteFileTool",
@@ -44,10 +48,18 @@ __all__ = [
 ]
 
 
-def create_builtin_tools() -> list[ToolBase]:
-    """创建所有内置工具实例（生产级默认集合）。"""
+def create_builtin_tools(config: EngineConfig | None = None) -> list[ToolBase]:
+    """创建所有内置工具实例（生产级默认集合）。
+
+    ``config`` 可选：不传时各工具用各自的默认配置。传了则取其中的 shell
+    参数下发给 :class:`BashTool`。
+    """
+    shell_config = config.shell if config is not None else ShellConfig()
     tools: list[ToolBase] = [
-        BashTool(),
+        BashTool(config=shell_config),
+        # 后台作业的读/停。注册表由引擎经 ToolUseContext 注入，三个工具同源。
+        JobOutputTool(),
+        JobKillTool(),
         ReadFileTool(),
         WriteFileTool(),
         EditFileTool(),

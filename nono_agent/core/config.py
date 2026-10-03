@@ -4,6 +4,7 @@
 - EngineConfig: 不可变配置，构造时设定，跨轮次持久化
 - QueryConfig: 运行时快照，在每次 submit_message() 入口冻结环境状态
 - ProviderConfig: LLM Provider 初始化配置
+- ShellConfig: bash 工具的执行参数
 
 设计意图：将“不变”和“可变”分离，避免循环体内读取到变化的环境状态。
 """
@@ -67,6 +68,63 @@ class ThinkingConfig(BaseModel):
 
     type: str = "adaptive"  # "adaptive"(模型自决) | "enabled"(强制开启) | "disabled"(关闭)
     budget_tokens: int | None = None  # 思考 token 上限（None 表示不限制）
+
+
+class ShellConfig(BaseModel):
+    """bash 工具的执行参数。
+
+    方言（``dialect``）决定命令交给哪个 shell 解析：``auto`` 在 Windows 上
+    优先 pwsh 7、退回 Windows PowerShell 5.1，在 POSIX 上用 sh。显式指定
+    ``cmd`` 可退回改动前的行为。
+
+    ``max_output_chars`` 是送给模型的内存上限，超出部分落盘（见
+    ``nono_agent.shell.spill``）并把路径回报给模型，因此**不设上限也不会丢失
+    内容**，只是模型默认看不到。
+    """
+
+    dialect: Literal["auto", "powershell", "pwsh", "cmd", "bash", "sh"] = "auto"
+
+    # 前台命令的等待上限（秒）。与 max_timeout_s 共同构成调用方可请求的范围。
+    timeout_s: float = 120.0
+    # 模型单次可请求的超时上限（秒）—— 防止一次调用把会话挂住一小时。
+    max_timeout_s: float = 600.0
+
+    # 送给模型的每条流内存上限（字节）。超出落盘。
+    max_output_bytes: int = 30_000
+    # 落盘上限（字节）。超出后停止写并在结果里标明。
+    max_spill_bytes: int = 64 * 1024 * 1024
+
+    # stderr 是否并入 stdout。默认分离 —— 合并后模型无法区分命令的正常输出
+    # 与诊断信息。保留此项是为了兼容依赖合并输出的旧提示词。
+    merge_streams: bool = False
+
+    # 超时后是否把仍在运行的命令转为后台作业（而不是直接杀掉）。
+    # 关掉即退回「超时即终止」的行为。
+    promote_on_timeout: bool = True
+
+    # 叠加到执行环境上的变量（NO_COLOR / PAGER 等由 shell.env_overrides 兜底）。
+    env_overrides: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("max_timeout_s")
+    @classmethod
+    def _max_timeout_not_below_default(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError(f"max_timeout_s must be positive, got {value}")
+        return value
+
+    @field_validator("max_output_bytes", "max_spill_bytes")
+    @classmethod
+    def _positive_sizes(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("shell size limits must be positive")
+        return value
+
+    def clamp_timeout(self, requested: float | None) -> float:
+        """把模型请求的超时夹到 ``(0, max_timeout_s]``。缺省用 ``timeout_s``。"""
+        value = self.timeout_s if requested is None else float(requested)
+        if value <= 0:
+            value = self.timeout_s
+        return min(value, self.max_timeout_s)
 
 
 class EngineConfig(BaseModel):
@@ -152,6 +210,9 @@ class EngineConfig(BaseModel):
     # 记录协议转换与 extra_body 合并后的请求体，不写入会话事件流。
     # CLI：``--log-api-requests`` 或环境变量 ``NONO_LOG_API_REQUESTS=1``。
     log_api_requests: bool = False
+
+    # bash 工具的执行参数（方言、超时、输出预算、后台晋升）
+    shell: ShellConfig = Field(default_factory=ShellConfig)
 
     model_config = ConfigDict(frozen=True)  # 不可变，防止运行期意外修改配置
 

@@ -63,6 +63,14 @@ class ToolUseContext:
     # 工具注册表 —— 供 ToolSearch 等工具按需检索
     tool_registry: Any | None = None  # ToolRegistry
 
+    # Shell 执行器 —— bash 工具的能力缝。未注入时 bash 退回自建执行器。
+    shell: Any | None = None  # ShellExecutor
+
+    # 会话级作业注册表 —— 后台作业的登记、增量输出、终止。
+    # bash 把它登记的作业与 job_output / job_kill 工具共享，两者必须同源，
+    # 否则模型读不到自己起的进程。
+    shell_jobs: Any | None = None  # JobRegistry
+
     # 中间件或引擎注入的额外上下文
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -174,5 +182,7 @@ class ToolUseContext:
             ignore=self.ignore,
             ask_user=self.ask_user,
             tool_registry=self.tool_registry,
+            shell=self.shell,
+            shell_jobs=self.shell_jobs,
             extra=merged,
         )

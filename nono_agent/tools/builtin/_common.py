@@ -7,6 +7,7 @@ import locale
 from typing import Any
 
 from nono_agent.core.types import ToolResult
+from nono_agent.shell.encoding import decode_output
 
 # 所有 strict 候选均失败时的占位编码名（utf-8 + replace）
 LOSSY_ENCODING = "utf-8-replace"
@@ -170,22 +171,10 @@ def _decode_candidates() -> list[str]:
 def decode_command_output(data: bytes | bytearray) -> str:
     """解码命令的实时输出。
 
-    完整内容与 :func:`decode_text` 一致。末尾被读断的 UTF-8 只显示已经完整的部分，
-    避免半个汉字把整段误判成 GBK。
+    实现已下沉到 :func:`nono_agent.shell.encoding.decode_output` —— 候选链与
+    边界处理在那边是单一出处，bash 工具的输出与本函数走的是同一条路径。
     """
-    raw = bytes(data)
-    if not raw:
-        return ""
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        if exc.end == len(raw):
-            head = raw[: exc.start]
-            try:
-                return head.decode("utf-8")
-            except UnicodeDecodeError:
-                pass
-    return decode_text(raw)[0]
+    return decode_output(data)
 
 
 def decode_text(data: bytes) -> tuple[str, str]:

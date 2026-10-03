@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 def deny_all_permission_checker(tool_name: str, input_params: dict[str, Any]) -> bool:
     """Server 默认权限检查器 —— 拒绝所有写操作（无人值守安全模式）。"""
+    # 停自己起的进程不放大攻击面：只能作用于本会话的作业，模型无法凭空
+    # 造出别的会话的 job_id。因此 job_kill 放行，否则晋升到后台的进程一旦
+    # 不想要就只能等它自己跑完。
+    if tool_name in _SESSION_SCOPED_TOOLS:
+        return True
     logger.warning(
         "Permission denied for tool '%s' (server mode, no interactive confirmation)",
         tool_name,
@@ -34,10 +39,14 @@ def deny_all_permission_checker(tool_name: str, input_params: dict[str, Any]) ->
     return False
 
 
-def build_session_tool_registry() -> ToolRegistry:
+# 只作用于「本会话自己创建的资源」的工具，可无人值守放行。
+_SESSION_SCOPED_TOOLS = frozenset({"job_kill"})
+
+
+def build_session_tool_registry(config: EngineConfig | None = None) -> ToolRegistry:
     """每个 Web 会话一份内置工具，与 CLI 的 `create_builtin_tools()` 对齐。"""
     registry = ToolRegistry()
-    for tool in create_builtin_tools():
+    for tool in create_builtin_tools(config):
         registry.register(tool)
     return registry
 
@@ -231,7 +240,7 @@ class SessionManager:
             engine = QueryEngine(
                 engine_config,
                 permission_checker=self.checker_for(session_id),
-                tool_registry=build_session_tool_registry(),
+                tool_registry=build_session_tool_registry(engine_config),
                 ask_user=self.make_ask_user(session_id),
             )
             await engine.initialize()
@@ -319,7 +328,7 @@ class SessionManager:
         engine = QueryEngine(
             engine_config,
             permission_checker=self.checker_for(session_id),
-            tool_registry=build_session_tool_registry(),
+            tool_registry=build_session_tool_registry(engine_config),
             ask_user=self.make_ask_user(session_id),
         )
         await engine.initialize()

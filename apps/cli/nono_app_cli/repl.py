@@ -62,7 +62,7 @@ async def run_cli(
     from nono_agent.tools.registry import ToolRegistry
 
     tool_registry = ToolRegistry()
-    for tool in create_builtin_tools():
+    for tool in create_builtin_tools(config):
         tool_registry.register(tool)
 
     from nono_agent.commands import CommandRegistry, parse_slash

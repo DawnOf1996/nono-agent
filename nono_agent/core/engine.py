@@ -132,6 +132,9 @@ from nono_agent.session.transcript import (
     TranscriptWriter,
     active_session_dir,
 )
+from nono_agent.shell.jobs import JobRegistry
+from nono_agent.shell.local import LocalShellExecutor
+from nono_agent.shell.types import ShellExecutor
 from nono_agent.skills.loader import FileSystemSkillLoader
 from nono_agent.skills.models import Skill
 from nono_agent.skills.skill_tool import SkillTool
@@ -184,6 +187,8 @@ class QueryEngine:
         register_agent_tool: bool = True,
         memory_store: MemoryStore | None = None,
         memory_manager: MemoryManager | None = None,
+        shell: ShellExecutor | None = None,
+        shell_jobs: JobRegistry | None = None,
         auto_load_mcp: bool = True,
     ) -> None:
         self._config = config
@@ -197,6 +202,11 @@ class QueryEngine:
         self._stop_hook_executor = stop_hook_executor or StopHookExecutor()
         self._post_sampling_chain = post_sampling_chain or PostSamplingChain()
         self._recovery_chain = recovery_chain or RecoveryChain()
+
+        # Shell 能力缝：执行器可注入（沙箱部署换实现），作业注册表按会话持有。
+        # bash / job_output / job_kill 三个工具共享同一个注册表。
+        self._shell = shell or LocalShellExecutor()
+        self._shell_jobs = shell_jobs or JobRegistry(config.session_id)
 
         # 运行时状态
         self._store = MessageStore()             # 消息存储
@@ -308,6 +318,9 @@ class QueryEngine:
 
         从未落盘且没有用户回合的临时会话直接丢弃，不写 header / 事件流。
         """
+        # 先收后台作业：超时晋升到后台的进程已经脱离了工具调用的 task，
+        # 引擎销毁时若不收，它们会变成孤儿进程一直跑到自己结束。
+        await self._shell_jobs.kill_all()
         await self._close_mcp()
         ephemeral = not self._persisted and self._turn_count == 0
         if ephemeral:
@@ -459,6 +472,8 @@ class QueryEngine:
             ignore=self._ignore,
             ask_user=self._ask_user,
             tool_registry=self._tool_registry,
+            shell=self._shell,
+            shell_jobs=self._shell_jobs,
         )
 
         initial_state = LoopState(

@@ -26,12 +26,26 @@ def ctx(tmp_path):
     )
 
 
+def _sleep_cmd(seconds: int) -> str:
+    """跨平台的「睡 N 秒」命令。
+
+    Windows 上默认方言是 PowerShell，调用带引号的可执行文件路径必须用调用
+    运算符 ``&``；POSIX 方言直接引号包裹即可。
+    """
+    snippet = f"import time; time.sleep({seconds})"
+    if sys.platform == "win32":
+        return f'& "{sys.executable}" -c "{snippet}"'
+    return f'"{sys.executable}" -c "{snippet}"'
+
+
 class TestBuiltinFactory:
-    def test_creates_twenty_two_tools(self):
+    def test_creates_twenty_four_tools(self):
         tools = create_builtin_tools()
         names = {t.name for t in tools}
         assert names == {
             "bash",
+            "job_output",
+            "job_kill",
             "read_file",
             "write_file",
             "edit_file",
@@ -421,22 +435,53 @@ class TestBash:
         assert "hello" in result.content
 
     async def test_bash_timeout(self, ctx):
+        """默认超时是晋升为后台作业，不是终止。"""
         b = BashTool()
-        result = await b.execute(
-            {
-                "command": f'"{sys.executable}" -c "import time; time.sleep(5)"',
-                "timeout": 1,
-            },
-            ctx,
-        )
+        result = await b.execute({"command": _sleep_cmd(30), "timeout": 1}, ctx)
+        assert not result.is_error
+        assert "moved to background job" in result.content
+
+    async def test_bash_timeout_kills_when_promotion_disabled(self, ctx):
+        from nono_agent.core.config import ShellConfig
+
+        b = BashTool(config=ShellConfig(promote_on_timeout=False))
+        result = await b.execute({"command": _sleep_cmd(30), "timeout": 1}, ctx)
         assert result.is_error
         assert "timed out" in result.content
+
+    async def test_bash_timeout_returns_promptly(self, ctx):
+        """超时后必须迅速返回 —— 不能等孙进程自然结束。
+
+        回归防护：只杀 shell 的话，shell spawn 的孙进程会继续持有 stdout 管道，
+        proc.wait() 会一直阻塞到孙进程结束。
+        """
+        import time
+
+        from nono_agent.core.config import ShellConfig
+
+        b = BashTool(config=ShellConfig(promote_on_timeout=False))
+        start = time.monotonic()
+        await b.execute({"command": _sleep_cmd(30), "timeout": 1}, ctx)
+        elapsed = time.monotonic() - start
+        assert elapsed < 10, f"超时后阻塞了 {elapsed:.1f}s（应约 1s + 终止宽限）"
 
     async def test_bash_error_exit_code(self, ctx):
         b = BashTool()
         result = await b.execute({"command": "exit 3"}, ctx)
+        # 非零退出不再是工具错误：以 [exit code: N] 标记上报，由模型判断后果。
+        # 理由见 docs/Shell-Tool-Design.md §4.6。
+        assert not result.is_error
+        assert "[exit code: 3]" in result.content
+
+    async def test_bash_clean_exit_has_no_marker(self, ctx):
+        b = BashTool()
+        result = await b.execute({"command": "echo ok"}, ctx)
+        assert "exit code" not in result.content
+
+    async def test_bash_empty_command(self, ctx):
+        result = await BashTool().execute({"command": "   "}, ctx)
         assert result.is_error
-        assert "Exit code 3" in result.content
+        assert "No command" in result.content
 
     def test_bash_classification(self):
         b = BashTool()
@@ -448,6 +493,25 @@ class TestBash:
         schema = BashTool().input_schema
         assert "description" in schema["properties"]
         assert "description" in schema["required"]
+
+    def test_bash_invalid_dialect_is_rejected(self):
+        """非法方言在配置层就被拦下（pydantic Literal），不会流到执行器。"""
+        from pydantic import ValidationError
+
+        from nono_agent.core.config import ShellConfig
+
+        with pytest.raises(ValidationError):
+            ShellConfig(dialect="nope")  # type: ignore[arg-type]
+
+    def test_bash_config_is_injectable(self):
+        """配置下发沿用 bind_* 钩子（对齐 AgentTool.bind_base_config）。"""
+        from nono_agent.core.config import ShellConfig
+
+        b = BashTool()
+        assert b.shell_config.dialect == "auto"
+        b.bind_shell_config(ShellConfig(dialect="cmd", timeout_s=7))
+        assert b.shell_config.dialect == "cmd"
+        assert b.shell_config.timeout_s == 7
 
 
 class TestTodoWrite:

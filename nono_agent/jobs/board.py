@@ -1,50 +1,57 @@
-"""会话级任务板：正在跑的命令和子代理，带实时输出和强制停止。"""
+"""任务板的兼容门面。
+
+真正的状态在 :class:`nono_agent.shell.jobs.JobRegistry` 里，按会话实例化。
+本模块保留旧的模块级函数签名，作为**按 ``jobs_session`` 上下文路由**的薄封装 ——
+Web 端的任务板 SSE（``features/jobs/api.py``）和子代理的作业归属
+（``jobs_session`` ContextVar）都依赖这些调用点，不必同时改。
+
+与旧实现的差别：
+
+- 状态按会话分片，不再是进程级共享的一份 ``_jobs``（消除跨会话串扰）
+- 实时推送走 asyncio 定时器，不再把 ``threading.Timer`` 塞进事件循环
+- 作业输出是增量的（复用 SpillWriter 游标），不再是每次全量重解码后截断
+
+新代码请直接用 :class:`JobRegistry`；本门面仅供既有调用点过渡。
+"""
 
 from __future__ import annotations
 
+import asyncio
 import threading
-import time
-import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any
 
-_MAX_OUTPUT = 32_000
-_MAX_FINISHED = 40
-_FLUSH_S = 0.08
+from nono_agent.jobs.context import jobs_session
+from nono_agent.shell.jobs import (
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_KILLED,
+    STATUS_RUNNING,
+    JobRegistry,
+)
 
-_lock = threading.Lock()
-_jobs: dict[str, Job] = {}
-_listeners: dict[str, list[Callable[[list[dict[str, Any]]], None]]] = {}
-_dirty: set[str] = set()
-_flush_timer: threading.Timer | None = None
+# 未绑定会话的作业（库用法直接调工具时）归到这里。
+_ANONYMOUS = "anonymous"
+
+# 注册表按会话分片。锁只保护「取/建注册表」这一步；作业状态本身在事件循环里
+# 单线程串行改，不需要额外同步。
+_registry_lock = threading.Lock()
+_registries: dict[str, JobRegistry] = {}
 
 
-@dataclass
-class Job:
-    id: str
-    session_id: str
-    kind: str
-    title: str
-    status: str = "running"
-    output: str = ""
-    exit_code: int | None = None
-    parent_id: str | None = None
-    started_at: float = field(default_factory=time.time)
-    _kill: Callable[[], None] | None = None
+def registry_for(session_id: str | None = None) -> JobRegistry:
+    """取某个会话的注册表，没有就建一个。
 
-    def public(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "session_id": self.session_id,
-            "kind": self.kind,
-            "title": self.title,
-            "status": self.status,
-            "output": self.output,
-            "exit_code": self.exit_code,
-            "parent_id": self.parent_id,
-            "started_at": self.started_at,
-        }
+    ``session_id`` 省略时用 ``jobs_session`` 上下文（子代理路径会设置它），
+    再退到匿名分片。
+    """
+    key = session_id or jobs_session.get() or _ANONYMOUS
+    with _registry_lock:
+        registry = _registries.get(key)
+        if registry is None:
+            registry = JobRegistry(key)
+            _registries[key] = registry
+        return registry
 
 
 def open_job(
@@ -58,165 +65,131 @@ def open_job(
     """登记一个正在运行的任务。没有会话 id 时不登记，返回空串。"""
     if not session_id:
         return ""
-    job = Job(
-        id=uuid.uuid4().hex,
-        session_id=session_id,
-        kind=kind,
-        title=title.strip() or kind,
-        parent_id=parent_id or None,
-        _kill=kill,
-    )
-    with _lock:
-        _jobs[job.id] = job
-        _trim(session_id)
-    _mark(session_id)
+    registry = registry_for(session_id)
+    job = registry.start(kind=kind, title=title, parent_id=parent_id)
+    if kill is not None:
+        registry.adopt_kill(job.id, kill)
     return job.id
 
 
+def attach_process(session_id: str, job_id: str, process: Any) -> None:
+    """把真实进程句柄挂到已登记的作业上。"""
+    registry_for(session_id).adopt(job_id, process)
+
+
+def attach_kill(job_id: str, kill: Callable[[], None]) -> None:
+    """给已登记的作业补挂终止回调（任务板的停止按钮依赖它）。"""
+    registry_for().adopt_kill(job_id, kill)
+
+
 def set_output(job_id: str, text: str) -> None:
-    """用整段文本替换实时输出。命令输出要按累计字节重新解码，不能逐块拼接。"""
-    if not job_id:
-        return
-    with _lock:
-        job = _jobs.get(job_id)
-        if job is None or job.status != "running":
+    """整段替换作业预览文本。
+
+    兼容入口：新实现里预览实时取自进程流，只有旧调用点才需要整段覆盖。
+    """
+    for registry in _all_registries():
+        if registry.get(job_id) is not None:
+            registry.set_preview(job_id, text)
             return
-        job.output = text[-_MAX_OUTPUT:]
-        session_id = job.session_id
-    _mark(session_id)
 
 
 def append_output(job_id: str, text: str) -> None:
-    if not job_id or not text:
-        return
-    with _lock:
-        job = _jobs.get(job_id)
-        if job is None or job.status != "running":
-            return
-        job.output = (job.output + text)[-_MAX_OUTPUT:]
-        session_id = job.session_id
-    _mark(session_id)
+    """兼容入口：输出由进程流提供，此处只触发一次推送。"""
+    set_output(job_id, text)
 
 
 def finish_job(job_id: str, *, status: str, exit_code: int | None = None) -> None:
-    if not job_id:
-        return
-    with _lock:
-        job = _jobs.get(job_id)
-        if job is None or job.status == "killed":
-            return
+    """同步标记作业结束（兼容旧签名）。
+
+    新代码用 ``await JobRegistry.finish()``，它还会取消 abort 监听。
+    这里的同步版本同样要清监听，否则作业已终结却还在等 abort。
+    """
+    for registry in _all_registries():
+        job = registry.get(job_id)
+        if job is None or job.status != STATUS_RUNNING:
+            continue
         job.status = status
         job.exit_code = exit_code
-        session_id = job.session_id
-    _mark(session_id)
+        if job.abort_watch is not None:
+            job.abort_watch.cancel()
+            job.abort_watch = None
+        registry.mark_dirty()
+        return
 
 
 def kill_job(session_id: str, job_id: str) -> bool:
-    with _lock:
-        job = _jobs.get(job_id)
-        if job is None or job.session_id != session_id or job.status != "running":
-            return False
-        job.status = "killed"
-        kill = job._kill
-    if kill is not None:
-        try:
-            kill()
-        except Exception:
-            _mark(session_id)
-            return True
-    _mark(session_id)
+    """终止作业（任务板停止按钮）。返回是否真的终止了一个在跑的作业。
+
+    同步入口：作业状态立即置为 killed（调用方是 HTTP handler，不能 await），
+    真正的进程树终止由事件循环随后执行。
+    """
+    registry = registry_for(session_id)
+    job = registry.get(job_id)
+    if job is None or job.status != STATUS_RUNNING:
+        return False
+    job.status = STATUS_KILLED
+    if job.abort_watch is not None:
+        job.abort_watch.cancel()
+        job.abort_watch = None
+    process = job.process
+    if process is not None:
+        _schedule_terminate(process)
+    registry.mark_dirty()
     return True
 
 
+def _schedule_terminate(process: Any) -> None:
+    """把进程树终止排进事件循环。终止本身是 async（要等管道收尾）。"""
+    kill = getattr(process, "kill", None)
+    if kill is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        kill()  # 无事件循环时只能同步调用
+        return
+    result = kill()
+    if asyncio.iscoroutine(result):
+        loop.create_task(result)
+
+
 def list_jobs(session_id: str) -> list[dict[str, Any]]:
-    with _lock:
-        rows = [job.public() for job in _jobs.values() if job.session_id == session_id]
-    rows.sort(key=lambda item: item["started_at"])
-    return rows
+    """按开始时间排序的作业快照。"""
+    return registry_for(session_id).list()
 
 
 def subscribe(
     session_id: str, listener: Callable[[list[dict[str, Any]]], None]
 ) -> Callable[[], None]:
-    """会话任务变化时回调当前列表。返回取消订阅。没有订阅者时不会排队刷新。"""
-    with _lock:
-        _listeners.setdefault(session_id, []).append(listener)
-
-    def unsubscribe() -> None:
-        with _lock:
-            items = _listeners.get(session_id)
-            if not items:
-                return
-            try:
-                items.remove(listener)
-            except ValueError:
-                return
-            if not items:
-                _listeners.pop(session_id, None)
-
-    return unsubscribe
+    """订阅任务变化。返回取消订阅。没有订阅者时不会排队刷新。"""
+    return registry_for(session_id).subscribe(listener)
 
 
 def reset_jobs() -> None:
-    """测试隔离用。"""
-    global _flush_timer
-    with _lock:
-        _jobs.clear()
-        _dirty.clear()
-        timer = _flush_timer
-        _flush_timer = None
-        _listeners.clear()
-    if timer is not None:
-        timer.cancel()
+    """测试隔离用：丢弃全部分片。"""
+    with _registry_lock:
+        _registries.clear()
 
 
-def _snapshot(session_id: str) -> list[dict[str, Any]]:
-    rows = [job.public() for job in _jobs.values() if job.session_id == session_id]
-    rows.sort(key=lambda item: item["started_at"])
-    return rows
+def _all_registries() -> list[JobRegistry]:
+    with _registry_lock:
+        return list(_registries.values())
 
 
-def _mark(session_id: str) -> None:
-    """有订阅者时，把这次变化并进下一次刷新。输出是一块一块来的，不逐块推送。"""
-    global _flush_timer
-    if not session_id:
-        return
-    with _lock:
-        if not _listeners.get(session_id):
-            return
-        _dirty.add(session_id)
-        if _flush_timer is not None:
-            return
-        timer = threading.Timer(_FLUSH_S, _flush)
-        timer.daemon = True
-        _flush_timer = timer
-    timer.start()
-
-
-def _flush() -> None:
-    global _flush_timer
-    with _lock:
-        _flush_timer = None
-        sessions = list(_dirty)
-        _dirty.clear()
-        batch = [
-            (list(_listeners.get(session_id, ())), _snapshot(session_id)) for session_id in sessions
-        ]
-    for listeners, rows in batch:
-        for listener in listeners:
-            try:
-                listener(rows)
-            except Exception:
-                continue
-
-
-def _trim(session_id: str) -> None:
-    finished = [
-        job for job in _jobs.values() if job.session_id == session_id and job.status != "running"
-    ]
-    overflow = len(finished) - _MAX_FINISHED
-    if overflow <= 0:
-        return
-    finished.sort(key=lambda job: job.started_at)
-    for job in finished[:overflow]:
-        _jobs.pop(job.id, None)
+__all__ = [
+    "STATUS_COMPLETED",
+    "STATUS_FAILED",
+    "STATUS_KILLED",
+    "STATUS_RUNNING",
+    "append_output",
+    "attach_kill",
+    "attach_process",
+    "finish_job",
+    "kill_job",
+    "list_jobs",
+    "open_job",
+    "registry_for",
+    "reset_jobs",
+    "set_output",
+    "subscribe",
+]
