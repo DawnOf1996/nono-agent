@@ -10,11 +10,12 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 |------|----------|
 | `QueryEngine.submit_message()` 流式 API | WebSocket |
 | Provider 三类协议（openai_chat_completions / openai_responses / anthropic_messages） | MCP OAuth 全量 / SSE transport |
-| 22 个内置工具（Bash/Read/Write/Edit/Glob/Grep/LS/LSP/WebFetch/WebSearch/ToolSearch/AskUser/TodoWrite/Plan/Worktree/Task） | Transcript Postgres/Redis |
+| 24 个内置工具（Bash/JobOutput/JobKill/Read/Write/Edit/Glob/Grep/LS/LSP/WebFetch/WebSearch/ToolSearch/AskUser/TodoWrite/Plan/Worktree/Task） | Transcript Postgres/Redis |
 | 默认 4 级上下文压缩管线 + 可配置 ContextCollapse summarizer | 多模态附件产品化（P2） |
 | Prompt Section 组装（静态/动态边界 + 优先级合并）+ 结构化输出闭环 | Agent Teams（P2 可选） |
 | Rules + Skills（SkillTool）+ 子 Agent 三件套 + Slash MVP | HTTP Hooks 执行器（命令执行器已有） |
 | 权限模式 + PermissionRule + 路径沙箱 + denial 追踪 | OS 级硬沙箱（容器/bubblewrap） |
+| Shell 能力缝（方言/编码声明/进程组终止/超限落盘/超时转后台作业） | 持久化 Shell（PTY） |
 | Settings 分层 + 用户态 Hooks（hooks.json）+ CLI 首次运行引导页 | — |
 | MCP 客户端（stdio tools/resources 桥接）+ Plugins | — |
 | Memory（memdir）+ Checkpoint + Task 工具族 | — |

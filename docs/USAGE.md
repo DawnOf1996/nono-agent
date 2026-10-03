@@ -288,17 +288,34 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
 
 
-## 4. 内置工具（22 个）
+## 4. 内置工具（24 个）
 
-`create_builtin_tools()` 返回：`bash`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`list_directory`、`lsp`、`web_fetch`、`web_search`、`tool_search`、`ask_user_question`、`todo_write`、`enter_plan_mode`、`exit_plan_mode`、`enter_worktree`、`exit_worktree`、`task_create`、`task_list`、`task_get`、`task_update`、`task_stop`。
+`create_builtin_tools()` 返回：`bash`、`job_output`、`job_kill`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`list_directory`、`lsp`、`web_fetch`、`web_search`、`tool_search`、`ask_user_question`、`todo_write`、`enter_plan_mode`、`exit_plan_mode`、`enter_worktree`、`exit_worktree`、`task_create`、`task_list`、`task_get`、`task_update`、`task_stop`。
 
 要点：
 
 - 文件工具遵守路径沙箱（`PathSandbox`）与 `.gitignore`/`.nonoignore`（`IgnoreMatcher`）。
-- `read_file` / `grep` / `edit_file` / `bash` 读文本时 UTF-8 优先，失败则回退本机默认编码与 gb18030；`edit_file` 写回 UTF-8。
+- `read_file` / `grep` / `edit_file` 读文本时 UTF-8 优先，失败则回退本机默认编码与 gb18030；`edit_file` 写回 UTF-8。
 - `web_fetch`/`web_search` 有 SSRF 防护（拒绝私网/回环/链路本地/云元数据）。
-- `bash` 有危险命令分类（`rm -rf`/`mkfs`/`sudo`/fork bomb 等）与超时/截断/abort 联动。
 - MCP 工具以 `mcp__<server>__<tool>` 命名；沿用全局权限模式。自定义连接清单只写用户级 `~/.nono-agent/mcp.json`；工作区默认不启用，启停与部分工具禁用写在项目 `settings.mcp.servers.<id>`。
+
+### 4.1 bash 的执行语义
+
+`bash` 走的是一条能力缝（`nono_agent/shell/`），工具只描述执行、渲染结果；进程机制由可替换的执行器承担。行为要点：
+
+**方言与编码。** 命令作为**单个 argv 元素**交给 shell 解析，不经过中间 shell（因此没有引号转义层）。默认方言 `auto`：Windows 优先 pwsh 7、退回 Windows PowerShell 5.1；POSIX 用 `sh`。执行前会前置编码声明（`[Console]::OutputEncoding = UTF8`），使 PowerShell 自身输出与错误消息不再乱码。声明**不改变子进程的 stdout 编码**，子进程仍可能按 GBK/CP936 输出，此时回落到消费端的 gb18030 解码链。用 `ShellConfig(dialect="cmd")` 可退回改动前的 `cmd.exe /c` 行为。
+
+> Windows 上调用带引号的可执行文件路径要用 PowerShell 调用运算符：`& "C:\path\to.exe" -c "..."`，直接写 `"C:\path\to.exe" -c` 是语法错误。
+
+**退出码。** 命令前置的 `$?` 守卫会把原生命令的真实退出码还原出来（裸 `powershell -Command` 会把任何失败压成 1），且不会在「失败原生命令后跟成功 cmdlet」时误报。**非零退出不是工具错误** —— 它以 `[exit code: N]` 标记交给模型判断；只有 spawn 失败、abort、超时才是工具错误。
+
+**输出。** stdout 与 stderr 分离渲染（stderr 单独成 `[stderr]` 段）。超出 `ShellConfig.max_output_bytes`（默认 30 KB）的部分写入会话目录下的文件，**并把路径回报给模型** —— 内容不会丢，模型可自行 `read_file` 读回。截断提示固定在结果**末尾**（模型上下文侧还有一层 20k token 预算只保留头尾，提示若不在尾部会被二次截断吃掉）。
+
+**超时与后台作业。** 命令超出 `ShellConfig.timeout_s`（默认 120s）**不会被杀**，而是转成后台作业继续跑，返回 `moved to background job <id>` 并告知读法。也可显式 `run_in_background: true` 立即拿 job id。模型用 `job_output` 读增量（只给上次之后的新内容）、`job_kill` 终止（杀整个进程组）。关掉 `ShellConfig.promote_on_timeout` 即退回「超时即终止」。
+
+> 终止走进程组：只杀 shell 的话，shell 启动的孙进程会继续持有输出管道，调用方会被拖到它自然结束。
+
+**权限。** 危险命令分类（`rm -rf`/`mkfs`/`sudo`/fork bomb 等）决定是否需要额外授权。该分类是**建议性**的（POSIX 习惯命令，PowerShell 语法不覆盖），不是安全边界 —— OS 级硬沙箱仍是未建成的项。
 
 ---
 
