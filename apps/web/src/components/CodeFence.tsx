@@ -1,5 +1,38 @@
 import { Check, Copy } from "lucide-react";
-import { Children, isValidElement, useEffect, useState, type ReactNode } from "react";
+import { Children, Fragment, isValidElement, useEffect, useState, type ReactNode } from "react";
+import type { ThemedToken } from "shiki/core";
+
+import { highlightCode } from "@/features/files/preview/highlight";
+import { languageForFence, type CodeLanguage } from "@/features/files/preview/languages";
+import { useResolvedTheme, type ResolvedTheme } from "@/lib/theme";
+
+/** 超过这个长度的围栏直接当纯文本：流式时每个字都会让整块重跑一次词法分析，太长的块会拖住首字。 */
+const MAX_HIGHLIGHT_LENGTH = 50_000;
+
+const CACHE_LIMIT = 128;
+const tokenCache = new Map<string, ThemedToken[][]>();
+
+/**
+ * 源码 → 带色的 token，会缓存。
+ *
+ * 同一段代码在会话里会被反复挂载（消息重渲染、切外观来回切、预览和聊天各渲染一次），
+ * 缓存住省掉重复的词法分析。流式过程中每一帧的半截代码各占一条，128 条够滚完一整块。
+ */
+function highlight(text: string, language: CodeLanguage, theme: ResolvedTheme): Promise<ThemedToken[][] | null> {
+  if (text.length > MAX_HIGHLIGHT_LENGTH) return Promise.resolve(null);
+  // theme 和 language 都是不含 | 的定值，拿它当分隔符不会和 text 里的内容撞上。
+  const key = `${theme}|${language}|${text}`;
+  const hit = tokenCache.get(key);
+  if (hit) return Promise.resolve(hit);
+  return highlightCode(text, language, theme).then((tokens) => {
+    if (tokens && tokenCache.size >= CACHE_LIMIT) {
+      const oldest = tokenCache.keys().next();
+      if (!oldest.done) tokenCache.delete(oldest.value);
+    }
+    if (tokens) tokenCache.set(key, tokens);
+    return tokens;
+  });
+}
 
 function nodeText(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
@@ -20,10 +53,51 @@ function fenceMeta(children: ReactNode): { language: string; text: string } {
   };
 }
 
+/**
+ * shiki 的 token 里**没有**换行符：一行代码就是 tokens 数组里的一个元素，行尾的 \n 并不在
+ * content 里。直接把所有 span 顺序铺出去，整块代码会挤成一行 —— 所以行与行之间要自己补回
+ * \n，靠 .prose-md pre code 的 white-space: pre 还原。
+ */
+function HighlightedCode({ lines }: { lines: ThemedToken[][] }) {
+  return (
+    <code>
+      {lines.map((line, lineIndex) => (
+        <Fragment key={lineIndex}>
+          {line.map((token, tokenIndex) => (
+            <span key={tokenIndex} style={token.color ? { color: token.color } : undefined}>
+              {token.content}
+            </span>
+          ))}
+          {lineIndex < lines.length - 1 ? "\n" : null}
+        </Fragment>
+      ))}
+    </code>
+  );
+}
+
 /** 对话里的围栏代码：语言名在左，复制在右。 */
 export function CodeFence({ children }: { children: ReactNode }) {
   const { language, text } = fenceMeta(children);
+  const lang = languageForFence(language);
+  const theme = useResolvedTheme();
+  const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (lang === undefined) {
+      setTokens(null);
+      return;
+    }
+    let live = true;
+    setTokens(null);
+    void highlight(text, lang, theme).then((next) => {
+      if (live) setTokens(next);
+    });
+    return () => {
+      live = false;
+    };
+    // theme 也进依赖：切外观要重新高亮，缓存里存的是另一套配色。
+  }, [lang, text, theme]);
 
   useEffect(() => {
     if (!copied) return;
@@ -48,7 +122,7 @@ export function CodeFence({ children }: { children: ReactNode }) {
           {copied ? "已复制" : "复制"}
         </button>
       </div>
-      <pre>{children}</pre>
+      <pre>{tokens ? <HighlightedCode lines={tokens} /> : children}</pre>
     </div>
   );
 }

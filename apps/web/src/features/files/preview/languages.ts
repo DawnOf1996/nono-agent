@@ -46,3 +46,80 @@ export function languageForPath(filePath: string): CodeLanguage | undefined {
 export function isCodeLanguage(value: string): value is CodeLanguage {
   return Object.prototype.hasOwnProperty.call(languageExtensions, value);
 }
+
+/**
+ * markdown 围栏上的语言名 → Shiki 语法。
+ *
+ * 围栏里写的是 ```js / ```py / ```sh 这类习惯叫法，跟文件后缀不是一套表（c++、console、
+ * golang 这些两边都没有），所以单独记一张。键一律小写：围栏语言名大小写混用得很常见。
+ */
+const fenceAliases: Record<string, CodeLanguage> = {
+  js: "javascript",
+  jsx: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  node: "javascript",
+  ts: "typescript",
+  tsx: "typescript",
+  mts: "typescript",
+  cts: "typescript",
+  py: "python",
+  python: "python",
+  sh: "shellscript",
+  bash: "shellscript",
+  zsh: "shellscript",
+  shell: "shellscript",
+  console: "shellscript",
+  shellscript: "shellscript",
+  yml: "yaml",
+  yaml: "yaml",
+  rb: "ruby",
+  ruby: "ruby",
+  rs: "rust",
+  rust: "rust",
+  go: "go",
+  golang: "go",
+  c: "c",
+  h: "c",
+  "c++": "cpp",
+  cpp: "cpp",
+  cc: "cpp",
+  cxx: "cpp",
+  hpp: "cpp",
+  cs: "csharp",
+  "c#": "csharp",
+  csharp: "csharp",
+  kt: "kotlin",
+  kts: "kotlin",
+  kotlin: "kotlin",
+  swift: "swift",
+  java: "java",
+  php: "php",
+  lua: "lua",
+  sql: "sql",
+  json: "json",
+  jsonc: "json",
+  toml: "toml",
+  ini: "ini",
+  cfg: "ini",
+  conf: "ini",
+  md: "markdown",
+  markdown: "markdown",
+  mdx: "mdx",
+  html: "html",
+  htm: "html",
+  xml: "xml",
+  css: "css",
+  scss: "scss",
+  less: "less",
+};
+
+/**
+ * 围栏语言名 → 语法。认不出来返回 undefined，调用方按纯文本渲染。
+ * 先按 canonical 名试（languageExtensions 的键），再查别名表。
+ */
+export function languageForFence(name: string): CodeLanguage | undefined {
+  const key = name.trim().toLowerCase();
+  if (isCodeLanguage(key)) return key;
+  return Object.prototype.hasOwnProperty.call(fenceAliases, key) ? fenceAliases[key] : undefined;
+}
