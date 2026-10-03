@@ -813,6 +813,20 @@ export async function createDirectory(parent: string, name: string): Promise<{ p
 
 export type TerminalShell = { id: string; label: string };
 
+/** 服务端持有的一个终端。切换工作区后服务端才是归属关系的真源。 */
+export type TerminalInfo = {
+  id: string;
+  root: string;
+  shell: string;
+  label: string;
+  cwd: string;
+  cols: number;
+  rows: number;
+  state: "running" | "exited";
+  exitCode: number | null;
+  title: string;
+};
+
 export type WorkspaceJob = {
   id: string;
   session_id: string;
@@ -864,7 +878,7 @@ export async function startTerminal(input: {
   shell?: string;
   cols?: number;
   rows?: number;
-}): Promise<{ id: string; shell: string; label: string; cwd: string }> {
+}): Promise<TerminalInfo> {
   return readJson(
     await fetch("/app/terminal", {
       method: "POST",
@@ -872,6 +886,18 @@ export async function startTerminal(input: {
       body: JSON.stringify(input),
     }),
   );
+}
+
+/**
+ * 列出该工作区在服务端仍然存活的终端。
+ *
+ * 切走工作区不会终止进程，所以回来时以这个列表为准：终端还在就重新附着拿快照，
+ * 服务端已经没有的才在界面上标成「已结束」。
+ */
+export async function listTerminals(root: string): Promise<TerminalInfo[]> {
+  const query = new URLSearchParams({ root });
+  const data = await readJson<{ terminals: TerminalInfo[] }>(await fetch(`/app/terminal?${query}`));
+  return data.terminals;
 }
 
 export async function stopTerminal(sessionId: string): Promise<void> {

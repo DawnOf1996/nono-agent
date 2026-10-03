@@ -56,3 +56,12 @@ def workspace_root(raw: str) -> Path:
     if not raw or not raw.strip():
         raise HTTPException(status_code=400, detail="缺少工作区路径")
     return resolve_dir(raw)
+
+
+def workspace_key(root: Path | str) -> str:
+    """工作区的规范键：把资源（终端等）归属到工作区时用它分组。
+
+    键只依赖解析后的路径与平台大小写规则，所以同一个工作区无论客户端传绝对
+    路径、相对路径还是带 ``..`` 的路径，得到的键都相同。
+    """
+    return os.path.normcase(str(root))

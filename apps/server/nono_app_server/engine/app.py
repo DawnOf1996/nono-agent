@@ -18,10 +18,33 @@ from nono_app_server.engine.session_manager import (
     SessionManager,
     deny_all_permission_checker,
 )
+from nono_app_server.features.terminal.service import (
+    reap as reap_terminals,
+    settings as terminal_settings,
+    shutdown_terminals,
+)
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["create_server_app", "run_server"]
+
+
+async def _reap_terminals() -> None:
+    """周期回收无主的终端。
+
+    终端在服务端常驻，切换工作区不会终止它们，所以必须有一条不依赖客户端的
+    回收路径：有客户端附着的会话永不回收，无客户端且长时间无输出的按空闲回收，
+    已退出的过了宽限期也回收。间隔取配置值，0 表示关闭本任务。
+    """
+    interval = terminal_settings().reap_interval_s
+    if interval <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await asyncio.to_thread(reap_terminals)
+        except Exception:
+            logger.exception("terminal reaper pass failed")
 
 
 def create_server_app(
@@ -75,7 +98,9 @@ def create_server_app(
         ttl_task: asyncio.Task[None] | None = None
         if session_ttl is not None:
             ttl_task = asyncio.create_task(manager.ttl_cleanup_task())
+        reaper = asyncio.create_task(_reap_terminals())
         yield
+        reaper.cancel()
         if ttl_task is not None:
             ttl_task.cancel()
         logger.info("Shutting down — closing %d sessions...", len(manager.sessions))
@@ -86,6 +111,9 @@ def create_server_app(
                 except Exception:
                     logger.exception("Error closing session %s", sid)
                 del manager.sessions[sid]
+        # 终端不在 SessionManager 里，但同样是本进程拥有的子进程；不回收就会
+        # 在 Windows 上留下没有控制台的孤儿 shell。
+        await asyncio.to_thread(shutdown_terminals)
         logger.info("Server shutdown complete.")
 
     app = FastAPI(

@@ -87,7 +87,10 @@
   --shadow-color-soft: rgb(15 17 21 / 0.06);
   --shadow-color: rgb(15 17 21 / 0.12);
   --shadow-color-strong: rgb(15 17 21 / 0.24);
-  --term-selection: rgb(17 24 39 / 0.16);
+  --term-selection: rgba(17, 24, 39, 0.16);
+  /* 失焦时的选区：终端失焦、或者右键菜单开着的时候用它。要比常态淡，但还得看得见，
+     否则用户点"复制"时选区已经没了。 */
+  --term-selection-inactive: rgba(17, 24, 39, 0.09);
   --content-font-size: 14px;
   color-scheme: light;
 }
@@ -157,7 +160,8 @@
   --shadow-color-soft: rgb(0 0 0 / 0.4);
   --shadow-color: rgb(0 0 0 / 0.55);
   --shadow-color-strong: rgb(0 0 0 / 0.7);
-  --term-selection: rgb(154 162 177 / 0.3);
+  --term-selection: rgba(154, 162, 177, 0.3);
+  --term-selection-inactive: rgba(154, 162, 177, 0.18);
   color-scheme: dark;
 }
 

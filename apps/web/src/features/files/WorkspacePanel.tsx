@@ -4,7 +4,7 @@ import type { FsEntry } from "@nono/protocol";
 
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Dropdown, DropdownItem } from "@/components/ui/dropdown";
-import { deleteAppSession, fetchSideSessions, fetchTerminalShells, openSideSession, startTerminal, stopTerminal } from "@/api/client";
+import { deleteAppSession, fetchSideSessions, fetchTerminalShells, listTerminals, openSideSession, startTerminal, stopTerminal } from "@/api/client";
 import { BrowserPane } from "@/features/files/BrowserPane";
 import { ChangesPanel } from "@/features/files/changes/ChangesPanel";
 import { FilePreview } from "@/features/files/FilePreview";
@@ -90,7 +90,7 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   const openBrowser = usePanelStore((state) => state.openBrowser);
   const addTerminal = usePanelStore((state) => state.addTerminal);
   const patchTerminal = usePanelStore((state) => state.patchTerminal);
-  const restoreTerminals = usePanelStore((state) => state.restoreTerminals);
+  const restorePanel = usePanelStore((state) => state.restorePanel);
   const openSideChat = usePanelStore((state) => state.openSideChat);
   const retainSideChats = usePanelStore((state) => state.retainSideChats);
   const parentSession = sessions.find((item) => item.engine_session_id === sessionId) ?? null;
@@ -105,8 +105,21 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
 
   useEffect(() => {
     setRoot(root);
-    if (root) restoreTerminals(root);
-  }, [root, restoreTerminals, setRoot]);
+    if (!root) return;
+    // 服务端是终端存在性的真源：切换工作区不终止进程，切回来先问它还留着哪些，
+    // 再和本地布局缓存对账。缓存丢了也不会丢终端。
+    let cancelled = false;
+    void listTerminals(root)
+      .then((live) => {
+        if (!cancelled) restorePanel(root, live);
+      })
+      .catch(() => {
+        if (!cancelled) restorePanel(root, []);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [root, restorePanel, setRoot]);
 
   const conversationOpen = usePanelStore((state) => state.conversationOpen);
   const seenConversation = useRef(conversationOpen);

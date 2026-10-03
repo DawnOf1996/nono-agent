@@ -2,8 +2,16 @@ import { create } from "zustand";
 
 import type { FileDiff } from "@nono/protocol";
 
+import type { TerminalInfo } from "@/api/client";
+
 import { activateInLeaf, collapse, emptySplit, placeTab, removeTab, setRatio, type DropZone, type SplitNode } from "@/features/files/split";
-import { loadTerminals, saveTerminals, type SavedTerminal } from "@/features/files/terminal-storage";
+import {
+  loadPanel,
+  pruneBottom,
+  reconcileTerminals,
+  savePanel,
+  type SavedTerminal,
+} from "@/features/files/terminal-storage";
 import { baseName, normalizeWorkspace, sameWorkspace } from "@/lib/workspace";
 
 /** 一个对比标签页展示的内容。 */
@@ -117,7 +125,7 @@ type PanelState = {
   patchBrowser: (id: string, patch: { url?: string; title?: string }) => void;
   addTerminal: (tab: SavedTerminal) => void;
   patchTerminal: (id: string, patch: Partial<SavedTerminal>) => void;
-  restoreTerminals: (root: string) => void;
+  restorePanel: (root: string, live: readonly TerminalInfo[]) => void;
   openSideChat: (input: { productId: string; engineId: string; parentId: string; title: string }, focus?: boolean) => void;
   retainSideChats: (parentId: string) => void;
   setChangePreview: (target: DiffTarget, title: string) => void;
@@ -176,7 +184,9 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   setRoot: (root) => {
     const current = get();
     if (sameWorkspace(current.root, root) && current.root !== "") return;
-    saveTerminals(current.root, current.tabs);
+    // 只保存布局，不去停终端：终端在服务端按工作区归属，切换工作区不终止进程，
+    // 切回来时由 restorePanel 拿服务端列表重新附着。
+    savePanel(current.root, current.tabs, current.bottom);
     set({
       root,
       tabs: [],
@@ -252,7 +262,7 @@ export const usePanelStore = create<PanelState>((set, get) => ({
       return { tabs, dirty, active: neighbor?.id ?? fallbackActive({ ...state, tabs }) };
     });
     set({ bottom: collapse(removeTab(get().bottom, id)) });
-    saveTerminals(get().root, get().tabs);
+    savePanel(get().root, get().tabs, get().bottom);
   },
   setDirty: (id, dirty) =>
     set((state) => (Boolean(state.dirty[id]) === dirty ? {} : { dirty: { ...state.dirty, [id]: dirty } })),
@@ -302,13 +312,13 @@ export const usePanelStore = create<PanelState>((set, get) => ({
       active: tab.id,
       revealRequest: state.revealRequest + 1,
     }));
-    saveTerminals(get().root, get().tabs);
+    savePanel(get().root, get().tabs, get().bottom);
   },
   patchTerminal: (id, patch) => {
     set((state) => ({
       tabs: state.tabs.map((tab) => (tab.id === id && tab.kind === "terminal" ? { ...tab, ...patch, id: tab.id } : tab)),
     }));
-    saveTerminals(get().root, get().tabs);
+    savePanel(get().root, get().tabs, get().bottom);
   },
   openSideChat: (input, focus = true) => {
     const id = `side:${input.productId}`;
@@ -353,26 +363,20 @@ export const usePanelStore = create<PanelState>((set, get) => ({
       const activeGone = !tabs.some((tab) => tab.id === state.active) && state.active.startsWith("side:");
       return { tabs, ...(activeGone ? { active: fallbackActive({ ...state, tabs }) } : {}) };
     }),
-  restoreTerminals: (root) => {
+  restorePanel: (root, live) => {
     if (!sameWorkspace(get().root, root)) return;
-    const saved = loadTerminals(root);
-    if (!saved.length) return;
+    const saved = loadPanel(root);
+    const tabs = reconcileTerminals(saved.terminals, live);
+    const ids = new Set(tabs.map((tab) => tab.id));
+    const bottom = pruneBottom(saved.bottom, ids);
     set((state) => {
-      const existing = new Set(state.tabs.filter((tab) => tab.kind === "terminal").map((tab) => tab.id));
-      const added = saved.filter((item) => !existing.has(item.id));
-      if (!added.length) return {};
+      const existing = new Set(state.tabs.map((tab) => tab.id));
+      const added = tabs.filter((tab) => !existing.has(tab.id));
+      if (!added.length && !bottom) return {};
       return {
-        tabs: [
-          ...state.tabs,
-          ...added.map((item) => ({
-            id: item.id,
-            kind: "terminal" as const,
-            serverId: item.serverId,
-            title: item.title,
-            shell: item.shell,
-            cwd: item.cwd,
-          })),
-        ],
+        tabs: [...state.tabs, ...added],
+        ...(bottom ? { bottom } : {}),
+        active: state.active === START_TAB && tabs.length === added.length ? tabs[0]?.id ?? state.active : state.active,
       };
     });
   },
