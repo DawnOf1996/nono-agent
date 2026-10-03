@@ -1,10 +1,16 @@
 """Tests for user-configurable hooks (hooks.json)."""
 
 import json
+import sys
 
 import pytest
 
 from nono_agent.hooks import UserHookExecutor, UserHooksConfig
+
+# 把 stdin 原样转到 stdout 的命令。钩子上下文经 stdin 以 JSON 传入
+# （UserHookExecutor.run），所以「读 stdin」是跨平台都能验证上下文的最小动作。
+# Windows 上没有 cat，more 是等价物。
+_ECHO_STDIN = "cat" if sys.platform != "win32" else "more"
 
 
 class TestUserHooksConfig:
@@ -39,7 +45,7 @@ class TestUserHooksConfig:
 class TestUserHookExecutor:
     @pytest.mark.asyncio
     async def test_run_passes_context(self):
-        config = _config([{"event": "after_tool", "command": "cat"}])
+        config = _config([{"event": "after_tool", "command": _ECHO_STDIN}])
         executor = UserHookExecutor(config)
         result = await executor.run(config.hooks[0], {"tool_name": "read_file"})
         assert result.exit_code == 0
