@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from nono_agent.mcp.config import (
     MCPServerConfig,
@@ -21,6 +22,42 @@ from nono_app_server.engine.session_manager import SessionManager
 from nono_app_server.features.mcp.schemas import McpServerUpsert
 
 _SERVER_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+# 查询参数里形如 key / token / secret 的段一律替换掉再出参：有些服务把 API Key
+# 直接设计在 MCP URL 里，不脱敏就会随 /mcp 原样发到前端并落进浏览器日志。
+# 宁可误伤（oauth / author 之类也会被换掉），也不能漏 —— 漏一次的代价是
+# 一把钥匙进了浏览器历史。
+_SECRET_PARAM = re.compile(
+    r"(key|token|secret|password|passwd|credential|auth|access|signature|^sig$|^sid$)",
+    re.I,
+)
+_SECRET_HEADER = re.compile(r"(authorization|api[-_]?key|token|secret|x-api-key)", re.I)
+
+
+def redact_url(url: str | None) -> str | None:
+    """把 URL 查询串里的敏感参数换成 ``***``。"""
+    if not url:
+        return url
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    if not pairs:
+        return url
+    redacted = [
+        (key, "***" if _SECRET_PARAM.search(key) else value) for key, value in pairs
+    ]
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(redacted), parts.fragment)
+    )
+
+
+def redact_mapping(mapping: dict[str, str]) -> dict[str, str]:
+    """把映射里看起来像密钥的**值**换成 ``***``（键名不敏感才替换）。"""
+    return {
+        key: ("***" if _SECRET_HEADER.search(key) and value else value)
+        for key, value in mapping.items()
+    }
 
 
 def _validate_server_id(server_id: str) -> str:
@@ -81,9 +118,9 @@ def public_mcp(cwd: str, manager: SessionManager) -> dict[str, Any]:
                 "transport": cfg.normalized_transport,
                 "command": cfg.command,
                 "args": list(cfg.args),
-                "env": dict(cfg.env),
-                "url": cfg.url,
-                "headers": dict(cfg.headers),
+                "env": redact_mapping(cfg.env),
+                "url": redact_url(cfg.url),
+                "headers": redact_mapping(cfg.headers),
                 "env_file": cfg.env_file,
                 "cwd": cfg.cwd,
                 "source": "user" if name in user_servers else "plugin",
