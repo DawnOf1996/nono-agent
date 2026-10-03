@@ -30,6 +30,8 @@ class FileSystemPluginLoader:
             if user_plugins_dir is not None
             else user_home() / "plugins"
         )
+        #: 最近一次 load() 收集到的冲突/跳过记录（供调用方展示）。
+        self.last_errors: list[str] = []
 
     def load(self, cwd: str | Path) -> list[PluginManifest]:
         dirs: list[Path] = [
@@ -49,12 +51,13 @@ class FileSystemPluginLoader:
                 if manifest is None:
                     continue
                 if manifest.name in by_name:
-                    # 冲突：项目级优先，跳过后者（用户级）
+                    # 冲突：项目级覆盖用户级（目录顺序与 docstring 一致）
                     errors.append(
                         f"Plugin '{manifest.name}' conflicts with an existing plugin; skipped."
                     )
                     continue
                 by_name[manifest.name] = manifest
 
+        self.last_errors = errors
         # 失败隔离：加载错误不影响已加载插件（此处收集后记录，不抛出）
         return sorted(by_name.values(), key=lambda m: m.name)

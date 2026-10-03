@@ -54,7 +54,6 @@ class TestBuiltinFactory:
             "list_directory",
             "lsp",
             "web_fetch",
-            "web_search",
             "tool_search",
             "ask_user_question",
             "todo_write",

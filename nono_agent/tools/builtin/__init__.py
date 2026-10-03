@@ -1,7 +1,10 @@
 """生产级内置工具包。
 
 替代旧的单文件 ``tools/builtin.py``（现仅保留薄 re-export）。
-包含：Bash / Read / Write / Edit / Glob / Grep。
+包含：Bash / Read / Write / Edit / Glob / Grep / WebFetch。
+
+**厂商能力不在这里**：搜索、图像生成这类要密钥、要开关的能力走工具插件
+（``nono_agent.toolplugins``），默认关闭。内置只保留零配置即用的原语。
 """
 
 from __future__ import annotations
@@ -22,7 +25,6 @@ from nono_agent.tools.builtin.task import TaskStore, create_task_tools
 from nono_agent.tools.builtin.todo_write import TodoWriteTool
 from nono_agent.tools.builtin.tool_search import ToolSearchTool
 from nono_agent.tools.builtin.web_fetch import WebFetchTool
-from nono_agent.tools.builtin.web_search import WebSearchTool
 from nono_agent.tools.builtin.worktree import EnterWorktreeTool, ExitWorktreeTool
 from nono_agent.tools.builtin.write import WriteFileTool
 from nono_agent.tools.protocol import ToolBase
@@ -68,7 +70,6 @@ def create_builtin_tools(config: EngineConfig | None = None) -> list[ToolBase]:
         LSTool(),
         LSPTool(),
         WebFetchTool(),
-        WebSearchTool(),
         ToolSearchTool(),
         AskUserQuestionTool(),
         TodoWriteTool(),

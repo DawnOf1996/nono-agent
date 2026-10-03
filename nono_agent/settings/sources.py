@@ -18,6 +18,9 @@ from nono_agent.settings.models import Settings
 DEFAULT_SETTINGS: dict[str, Any] = {
     "permissions": {"mode": "default", "rules": []},
     "mcp": {"enabled": True, "servers": {}},
+    # 工具插件：tools.<plugin-id>.{enabled,api_key_env,options}。
+    # 未声明即不启用 —— 打开开关由产品层写入，引擎只读。
+    "tools": {"enabled": True, "plugins": {}},
 }
 
 _PROJECT_SETTINGS_REL = Path(CONFIG_DIR_NAME) / "settings.json"

@@ -3,10 +3,10 @@
 import pytest
 
 from nono_agent.permissions.sandbox import IgnoreMatcher, PathSandbox
-from nono_agent.tools.builtin import LSTool, ToolSearchTool, WebSearchTool
-from nono_agent.tools.builtin.web_fetch import is_url_blocked
+from nono_agent.tools.builtin import LSTool, ToolSearchTool
 from nono_agent.tools.context import ToolUseContext
 from nono_agent.tools.registry import ToolRegistry
+from nono_agent.utils.net_guard import is_url_blocked
 
 
 class TestIsUrlBlocked:
@@ -104,26 +104,27 @@ def create_fake_tools():
     ]
 
 
-class TestWebSearch:
-    @pytest.mark.asyncio
-    async def test_with_injected_search(self):
-        async def fake_search(query, max_results):
-            return [
-                {"title": "Result A", "url": "https://a.example", "snippet": "snippet a"},
-            ]
+class TestWebSearchRemoved:
+    """web_search 已下线，搜索能力改由工具插件（Tavily）提供。"""
 
-        tool = WebSearchTool(search_fn=fake_search)
-        ctx = ToolUseContext(cwd="/tmp")
-        result = await tool.execute({"query": "x"}, ctx)
-        assert not result.is_error
-        assert "Result A" in result.content
+    def test_not_registered_as_builtin(self):
+        from nono_agent.tools.builtin import create_builtin_tools
 
-    @pytest.mark.asyncio
-    async def test_not_configured(self, monkeypatch):
-        monkeypatch.delenv("NONO_SEARCH_URL", raising=False)
-        monkeypatch.delenv("NONO_SEARCH_API_KEY", raising=False)
-        tool = WebSearchTool()
-        ctx = ToolUseContext(cwd="/tmp")
-        result = await tool.execute({"query": "x"}, ctx)
-        assert result.is_error
-        assert "not configured" in result.content
+        names = {tool.name for tool in create_builtin_tools()}
+        assert "web_fetch" in names  # 原语保留
+        assert "web_search" not in names
+        assert not hasattr(__import__("nono_agent.tools.builtin", fromlist=["x"]), "WebSearchTool")
+
+
+class TestNetGuardIsShared:
+    """SSRF 判定必须只有一份，且不再挂在某个工具下面。
+
+    放在 web_fetch 里的时候，删一个工具就等于删掉安全边界。
+    """
+
+    def test_toolplugins_uses_the_same_guard(self):
+        from nono_agent.toolplugins import http_json
+        from nono_agent.utils import net_guard
+
+        assert http_json.is_url_blocked is net_guard.is_url_blocked
+        assert http_json.http_proxy_enabled is net_guard.http_proxy_enabled

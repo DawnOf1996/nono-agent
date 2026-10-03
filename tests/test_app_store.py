@@ -402,7 +402,9 @@ class TestSessionTools:
             names = set(engine.tool_registry.names())
             assert "read_file" in names
             assert "bash" in names
-            assert "web_search" in names
+            # web_search 已下线：搜索能力改由工具插件提供，默认不启用
+            assert "web_fetch" in names
+            assert "web_search" not in names
         finally:
             await engine.close()
 

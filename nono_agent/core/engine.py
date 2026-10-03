@@ -190,6 +190,7 @@ class QueryEngine:
         shell: ShellExecutor | None = None,
         shell_jobs: JobRegistry | None = None,
         auto_load_mcp: bool = True,
+        auto_load_tool_plugins: bool = True,
     ) -> None:
         self._config = config
         self._initialized = False
@@ -253,6 +254,12 @@ class QueryEngine:
         self._ask_user = ask_user
         self._auto_load_mcp = auto_load_mcp
         self._mcp_runtime: Any = None
+        # 工具插件（bundled + 用户/项目声明的声明式工具）。与 MCP 一样在会话
+        # 初始化时构建，开关变更后由 reload_tool_plugins() 热替换。
+        self._tool_plugin_runtime: Any = None
+        self._auto_load_tool_plugins = auto_load_tool_plugins
+        self._tool_plugin_names: list[str] = []
+        self._mcp_tool_names: list[str] = []
 
         # 会话信息
         self._session_id = config.session_id
@@ -305,8 +312,10 @@ class QueryEngine:
         if not self._store.all_messages():
             await self._hydrate_from_log(writer)
 
-        # 加载 Skills / 子 Agent / MCP（必须在 header 绑定 cwd 之后）
+        # 加载 Skills / 子 Agent / 工具插件 / MCP（必须在 header 绑定 cwd 之后）
         self._load_workspace_extensions()
+        if self._auto_load_tool_plugins:
+            await self._load_tool_plugins()
         if self._auto_load_mcp:
             await self._load_mcp()
 
@@ -321,6 +330,7 @@ class QueryEngine:
         # 先收后台作业：超时晋升到后台的进程已经脱离了工具调用的 task，
         # 引擎销毁时若不收，它们会变成孤儿进程一直跑到自己结束。
         await self._shell_jobs.kill_all()
+        await self._close_tool_plugins()
         await self._close_mcp()
         ephemeral = not self._persisted and self._turn_count == 0
         if ephemeral:
@@ -932,11 +942,22 @@ class QueryEngine:
     def mcp_runtime(self) -> Any:
         return self._mcp_runtime
 
+    @property
+    def tool_plugin_runtime(self) -> Any:
+        """本次会话生效的工具插件运行时（状态列表供设置页展示）。"""
+        return self._tool_plugin_runtime
+
     async def reload_mcp(self) -> None:
         """按当前工作区设置重新拉起 MCP（会话内开关后调用）。"""
         if not self._auto_load_mcp:
             return
         await self._load_mcp()
+
+    async def reload_tool_plugins(self) -> None:
+        """按当前设置重建工具插件工具（设置页改开关/改 Key 后调用）。"""
+        if not self._auto_load_tool_plugins:
+            return
+        await self._load_tool_plugins()
 
     # ------------------------------------------------------------------
     # 事件溯源辅助
@@ -1176,6 +1197,8 @@ class QueryEngine:
                 await self._bind_existing_header(writer)
                 self._persisted = True
             self._load_workspace_extensions()
+            if self._auto_load_tool_plugins:
+                await self._load_tool_plugins()
             if self._auto_load_mcp:
                 await self._load_mcp()
         logger.info("Resumed session %s with %d messages", session_id, len(messages))
@@ -1425,19 +1448,49 @@ class QueryEngine:
         await self._close_mcp()
         runtime = await start_mcp_runtime(self._config.cwd)
         self._mcp_runtime = runtime
+        self._mcp_tool_names = []
         for tool in runtime.tools:
             if self._tool_registry.has(tool.name):
                 self._tool_registry.unregister(tool.name)
             self._tool_registry.register(tool)
+            self._mcp_tool_names.append(tool.name)
 
     async def _close_mcp(self) -> None:
         runtime = self._mcp_runtime
         self._mcp_runtime = None
+        for name in self._mcp_tool_names:
+            if self._tool_registry.has(name):
+                self._tool_registry.unregister(name)
+        self._mcp_tool_names = []
         if runtime is None:
             return
-        for tool in list(self._tool_registry.all()):
-            if tool.name.startswith("mcp__") and self._tool_registry.has(tool.name):
+        await runtime.close()
+
+    async def _load_tool_plugins(self) -> None:
+        """构建工具插件工具并注册进表。失败隔离在 runtime 内完成。"""
+        from nono_agent.toolplugins.runtime import start_tool_plugin_runtime
+
+        await self._close_tool_plugins()
+        runtime = await start_tool_plugin_runtime(self._config.cwd)
+        self._tool_plugin_runtime = runtime
+        self._tool_plugin_names = []
+        for tool in runtime.tools:
+            if self._tool_registry.has(tool.name):
                 self._tool_registry.unregister(tool.name)
+            self._tool_registry.register(tool)
+            self._tool_plugin_names.append(tool.name)
+
+    async def _close_tool_plugins(self) -> None:
+        # 按「本次注册了什么」卸载，而不是按工具名前缀猜 —— 插件可以自带任意
+        # 前缀，前缀猜测迟早会在某个插件改了命名时留下一个常驻的僵尸工具。
+        runtime = self._tool_plugin_runtime
+        self._tool_plugin_runtime = None
+        for name in self._tool_plugin_names:
+            if self._tool_registry.has(name):
+                self._tool_registry.unregister(name)
+        self._tool_plugin_names = []
+        if runtime is None:
+            return
         await runtime.close()
 
     async def _ensure_session_summary(self, user_input: str) -> None:
