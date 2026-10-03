@@ -549,8 +549,9 @@ function CommitDiff({ target, visible }: { target: Extract<DiffTarget, { source:
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-bg">
-      <div className="shrink-0 border-b border-line px-3 py-2">
-        <div className="flex items-start gap-2">
+      {/* 提交说明可能很长：头部整体封顶、正文自己滚，否则长说明会把下面的文件列表顶出面板。 */}
+      <div className="flex max-h-[50%] min-h-0 shrink flex-col border-b border-line px-3 py-2">
+        <div className="flex shrink-0 items-start gap-2">
           <p className="min-w-0 flex-1 text-[13px] font-medium leading-5">{detail.subject}</p>
           <ToolButton title={prefs.layout === "split" ? "统一视图" : "并排视图"} onClick={prefs.toggleLayout}>
             {prefs.layout === "split" ? <Rows2 className="size-3.5" /> : <Columns2 className="size-3.5" />}
@@ -560,9 +561,11 @@ function CommitDiff({ target, visible }: { target: Extract<DiffTarget, { source:
           </ToolButton>
         </div>
         {detail.body ? (
-          <p className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-muted">{detail.body}</p>
+          <div className="mt-1 min-h-0 overflow-y-auto overscroll-contain">
+            <p className="whitespace-pre-wrap text-[12px] leading-5 text-muted">{detail.body}</p>
+          </div>
         ) : null}
-        <p className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-faint">
+        <p className="mt-1 flex shrink-0 flex-wrap items-center gap-x-2 text-[11px] text-faint">
           <span className="font-mono">{detail.hash.slice(0, 10)}</span>
           <span>{detail.author}</span>
           <span>{new Date(detail.date).toLocaleString()}</span>
