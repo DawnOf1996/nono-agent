@@ -21,7 +21,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -80,9 +80,13 @@ class ShellSpec:
 
 
 def _git_bash_candidates() -> list[Path]:
+    # 32 位 Git 装在 Program Files (x86)，两个环境变量都要覆盖。
     candidates: list[Path] = [
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe",
-        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git" / "bin" / "bash.exe",
+        Path(root) / "Git" / "bin" / "bash.exe"
+        for root in (
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        )
     ]
     local = os.environ.get("LOCALAPPDATA")
     if local:

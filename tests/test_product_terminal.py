@@ -102,7 +102,9 @@ def test_winpty_layout_requires_host_beside_dll(tmp_path: Path) -> None:
         module._require_winpty_layout(tmp_path)
 
 
-def test_hidden_console_is_allocated_and_hide_failure_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_hidden_console_is_allocated_and_hide_failure_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     if os.name != "nt":
         pytest.skip("console allocation is Windows-only")
     import ctypes
@@ -164,7 +166,8 @@ def test_spawn_retries_conpty_init_panic(monkeypatch: pytest.MonkeyPatch, tmp_pa
         calls["n"] += 1
         if calls["n"] == 1:
             raise type("PanicException", (Exception,), {})(
-                "called `Result::unwrap()` on an `Err` value: Error { code: HRESULT(0x00000000), message: ok }"
+                "called `Result::unwrap()` on an `Err` value: "
+                "Error { code: HRESULT(0x00000000), message: ok }"
             )
         return "proc"
 
@@ -281,7 +284,10 @@ def test_terminal_echo(tmp_path: Path) -> None:
 def _open(client, root: Path) -> str:
     shells = client.get("/app/terminal/shells").json()["shells"]
     shell = next((item["id"] for item in shells if item["id"] == "cmd"), shells[0]["id"])
-    created = client.post("/app/terminal", json={"root": str(root), "shell": shell, "cols": 80, "rows": 24})
+    created = client.post(
+        "/app/terminal",
+        json={"root": str(root), "shell": shell, "cols": 80, "rows": 24},
+    )
     assert created.status_code == 200
     return created.json()["id"]
 
@@ -345,7 +351,7 @@ def test_snapshot_is_idempotent_across_resync() -> None:
         b"\x1b[1;32mgreen\x1b[0m plain\r\n",
         "\u4f60\u597d\u4e16\u754c".encode(),
         b"\x1b[38;5;196mR\x1b[38;2;1;2;3mT\x1b[0m\x1b[7mV",
-        b"".join(("row%02d\r\n" % i).encode() for i in range(50)),
+        b"".join(f"row{i:02d}\r\n".encode() for i in range(50)),
     ):
         first = TerminalScreen(20, 6, history=50)
         first.feed(payload)
@@ -360,7 +366,7 @@ def test_snapshot_is_idempotent_across_resync() -> None:
 # ----------------------------------------------------------------------
 
 
-def _session(tmp_path: Path, root: Path) -> "service.TerminalSession":
+def _session(tmp_path: Path, root: Path) -> service.TerminalSession:
     spec = service.ShellSpec("cmd", "Command Prompt", ["cmd.exe"])
     return service.TerminalSession(
         id="s1", root=workspace_key(root), shell=spec, cwd=str(root),
@@ -466,8 +472,13 @@ def test_workspace_list_survives_workspace_switch(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         one = _open(client, first)
         two = _open(client, second)
-        assert {item["id"] for item in client.get(f"/app/terminal?root={first}").json()["terminals"]} == {one}
-        assert {item["id"] for item in client.get(f"/app/terminal?root={second}").json()["terminals"]} == {two}
+
+        def listed_ids(workspace: Path) -> set[str]:
+            listed = client.get(f"/app/terminal?root={workspace}").json()["terminals"]
+            return {item["id"] for item in listed}
+
+        assert listed_ids(first) == {one}
+        assert listed_ids(second) == {two}
         client.delete(f"/app/terminal/{one}")
         client.delete(f"/app/terminal/{two}")
 

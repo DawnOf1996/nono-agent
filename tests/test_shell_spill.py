@@ -193,13 +193,13 @@ class TestDecoding:
     def test_utf8_still_wins_over_locale(self, tmp_path):
         """本机默认编码是 GBK 时，utf-8 输出不能被它抢走。"""
         writer = SpillWriter(max_bytes=100, spill_path=tmp_path / "s.log")
-        writer.write("中文测试".encode("utf-8"))
+        writer.write("中文测试".encode())
         assert writer.read_from(0).text == "中文测试"
 
     def test_truncated_tail_keeps_complete_chars(self, tmp_path):
         """尾部被读断时只显示完整部分 —— 半个汉字会让整段被误判成 GBK。"""
         writer = SpillWriter(max_bytes=100, spill_path=tmp_path / "s.log")
-        writer.write("你好".encode("utf-8")[:-1])
+        writer.write("你好".encode()[:-1])
         assert writer.read_from(0).text == "你"
 
     def test_cut_head_still_decodes(self, tmp_path):
@@ -209,7 +209,7 @@ class TestDecoding:
         —— 编码归属由 :func:`decode_output` 的候选链按整段判定。
         """
         writer = SpillWriter(max_bytes=4, spill_path=tmp_path / "s.log")
-        writer.write("abc中文".encode("utf-8"))
+        writer.write("abc中文".encode())
         delta = writer.read_from(0)
         assert delta.lossy is True
         assert "�" not in delta.text

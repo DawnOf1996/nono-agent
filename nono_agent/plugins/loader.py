@@ -1,6 +1,7 @@
 """Plugin 加载器 —— 发现路径、校验、冲突检测、失败隔离。
 
-发现路径：项目 ``.nono-agent/plugins/*/plugin.json`` 与用户 ``~/.nono-agent/plugins/*/plugin.json``。
+发现路径：项目 ``.nono-agent/plugins/*/plugin.json`` 与用户
+``~/.nono-agent/plugins/*/plugin.json``。
 同名插件冲突时：项目级优先于用户级；重复名报错并跳过后者。
 """
 

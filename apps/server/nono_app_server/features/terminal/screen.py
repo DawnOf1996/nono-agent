@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from typing import Final
 
 import pyte
-from pyte import modes as mo
 from pyte.screens import Char
 
 # 256 色索引 -> 基础 16 色的终端名，用于把 pyte 的具名色映射回 SGR 参数。

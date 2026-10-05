@@ -35,6 +35,11 @@ def _client(tmp_path: Path):
     return fastapi_testclient.TestClient(app)
 
 
+def _fs_get(client, endpoint: str, root: Path, path: Path):
+    """fs 路由统一入口：root 是 workspace 根，path 是待访问的绝对路径。"""
+    return client.get(endpoint, params={"root": str(root), "path": str(path)})
+
+
 def test_mkdir_creates_folder(tmp_path: Path) -> None:
     parent = tmp_path / "ws"
     parent.mkdir()
@@ -131,18 +136,18 @@ def test_workspace_entries_and_preview(tmp_path: Path) -> None:
     secret.write_text("nope", encoding="utf-8")
     with _client(tmp_path) as client:
         listing = client.get("/app/fs/entries", params={"root": str(root)})
-        nested = client.get("/app/fs/entries", params={"root": str(root), "path": str(root / "src")})
-        outside = client.get("/app/fs/entries", params={"root": str(root), "path": str(tmp_path)})
-        escaped = client.get("/app/fs/entries", params={"root": str(root), "path": str(root / "..")})
-        preview = client.get("/app/fs/file", params={"root": str(root), "path": str(root / "note.md")})
-        image = client.get("/app/fs/file", params={"root": str(root), "path": str(root / "pic.png")})
-        binary = client.get("/app/fs/file", params={"root": str(root), "path": str(root / "blob.bin")})
-        leaked = client.get("/app/fs/file", params={"root": str(root), "path": str(secret)})
-        raw = client.get("/app/fs/raw", params={"root": str(root), "path": str(root / "pic.png")})
-        raw_text = client.get("/app/fs/raw", params={"root": str(root), "path": str(root / "note.md")})
-        pdf_bytes = client.get("/app/fs/bytes", params={"root": str(root), "path": str(root / "doc.pdf")})
-        leaked_bytes = client.get("/app/fs/bytes", params={"root": str(root), "path": str(secret)})
-        dir_bytes = client.get("/app/fs/bytes", params={"root": str(root), "path": str(root / "src")})
+        nested = _fs_get(client, "/app/fs/entries", root, root / "src")
+        outside = _fs_get(client, "/app/fs/entries", root, tmp_path)
+        escaped = _fs_get(client, "/app/fs/entries", root, root / "..")
+        preview = _fs_get(client, "/app/fs/file", root, root / "note.md")
+        image = _fs_get(client, "/app/fs/file", root, root / "pic.png")
+        binary = _fs_get(client, "/app/fs/file", root, root / "blob.bin")
+        leaked = _fs_get(client, "/app/fs/file", root, secret)
+        raw = _fs_get(client, "/app/fs/raw", root, root / "pic.png")
+        raw_text = _fs_get(client, "/app/fs/raw", root, root / "note.md")
+        pdf_bytes = _fs_get(client, "/app/fs/bytes", root, root / "doc.pdf")
+        leaked_bytes = _fs_get(client, "/app/fs/bytes", root, secret)
+        dir_bytes = _fs_get(client, "/app/fs/bytes", root, root / "src")
     assert listing.status_code == 200
     names = {item["name"]: item["is_dir"] for item in listing.json()["entries"]}
     assert names["src"] is True
@@ -185,7 +190,7 @@ def test_workspace_bytes_too_large(tmp_path: Path) -> None:
     root.mkdir()
     (root / "big.pdf").write_bytes(b"a" * (50_000_000 + 1))
     with _client(tmp_path) as client:
-        resp = client.get("/app/fs/bytes", params={"root": str(root), "path": str(root / "big.pdf")})
+        resp = _fs_get(client, "/app/fs/bytes", root, root / "big.pdf")
     assert resp.status_code == 413
 
 

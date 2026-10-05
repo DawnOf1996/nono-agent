@@ -146,7 +146,8 @@ class TestProductMappingApi:
             )
             assert patched.status_code == 200
             assert patched.json()["name"] == "我的项目"
-            assert client.post("/app/workspaces", json={"path": str(tmp_path)}).json()["name"] == "我的项目"
+            created = client.post("/app/workspaces", json={"path": str(tmp_path)})
+            assert created.json()["name"] == "我的项目"
             deleted = client.delete(f"/app/workspaces/{workspace['id']}")
             assert deleted.status_code == 200
             assert client.get("/app/workspaces").json()["workspaces"] == []
@@ -226,7 +227,8 @@ class TestProductMappingApi:
             )
             assert restored.status_code == 200
             assert restored.json()["archived"] is False
-            assert [item["id"] for item in client.get("/app/sessions").json()["sessions"]] == [row["id"]]
+            sessions = client.get("/app/sessions").json()["sessions"]
+            assert [item["id"] for item in sessions] == [row["id"]]
             assert client.get("/app/sessions?archived=only").json()["sessions"] == []
             assert client.get("/app/sessions?archived=nope").status_code == 400
 
