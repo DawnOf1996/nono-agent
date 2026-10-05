@@ -12,9 +12,12 @@
       {
         "key": "model",
         "label": "模型",
-        "type": "string",
-        "placeholder": "image-01",
-        "hint": "文生图用 image-01；图生图还可以用 image-01-live。"
+        "type": "enum",
+        "hint": "文生图/图生图用 image-01；还可以用 image-01-live。",
+        "choices": [
+          { "value": "image-01", "label": "image-01模型" },
+          { "value": "image-01-live", "label": "image-01-live模型" }
+        ]
       },
       {
         "key": "base_url",
