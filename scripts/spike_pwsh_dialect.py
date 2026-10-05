@@ -1,6 +1,6 @@
 """Spike：验证 PowerShell 方言的退出码语义与编码前置效果。
 
-支撑 `docs/Shell-Tool-Design.md` §D2 的结论。只读观测，不改任何仓库代码。
+支撑 `docs-site/docs/architecture/shell-tool.md` §D2 的结论。只读观测，不改任何仓库代码。
 
 为什么需要它：`powershell -Command "<cmd>"` 不传播原生命令的 $LASTEXITCODE，
 而 bash 工具的输出格式（`[exit code: N]`）直接依赖退出码正确。DSH 也没解决

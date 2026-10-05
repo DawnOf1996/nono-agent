@@ -30,3 +30,23 @@ jobs:
 
       - name: Test (pytest)
         run: uv run pytest
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install docs dependencies
+        run: uv sync --group docs
+
+      # --strict 让失效的内部链接、未纳入导航的页面等直接失败
+      - name: Build docs site
+        run: uv run mkdocs build -f docs-site/mkdocs.yml --strict

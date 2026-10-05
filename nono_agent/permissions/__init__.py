@@ -1,6 +1,6 @@
 """权限体系 —— 会话权限模式、可落盘规则、路径沙箱、拒绝追踪与 Bash 分类。
 
-对标 Claude Code 的 PermissionMode + permissions/* 设计（docs/ROADMAP.md §2.6）：
+对标 Claude Code 的 PermissionMode + permissions/* 设计（docs-site/docs/roadmap/index.md §2.6）：
 
 - :mod:`nono_agent.permissions.policy` —— PermissionMode / PermissionPolicy
 - :mod:`nono_agent.permissions.rules` —— 可落盘 allow/deny/ask 规则

@@ -24,7 +24,7 @@ PS_PREAMBLE = (
 # 简单包装 `if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }` 又会在
 # 「失败原生命令后跟成功 cmdlet」时把陈旧值误当终态。这里用 $? 守卫消除误报。
 #
-# 完整实测表见 docs/Shell-Tool-Design.md §D2。
+# 完整实测表见 docs-site/docs/architecture/shell-tool.md §D2。
 PS_EXIT_WRAP = (
     "if (-not $?) { if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE } else { exit 1 } }"
 )

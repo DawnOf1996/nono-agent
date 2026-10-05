@@ -1,6 +1,10 @@
+---
+title: Shell 工具详细设计
+---
+
 # Shell 工具详细设计
 
-> 配套文档：`docs/Shell-Tool-Refactor-Plan.md`（分期与动机）
+> 配套文档：`research/shell-tool-refactor-plan.md`（分期与动机）
 > 本文给出**可直接实施**的粒度：模块划分、接口签名、逐文件改动、测试用例、提交拆分。
 >
 > 范围：**P0 + P1**。P2（OS 级沙箱）见 §9 待决策项。
@@ -14,21 +18,21 @@
 
 | # | 约束 | 位置 | 后果 |
 |---|---|---|---|
-| C1 | `ToolResult.ui` 在组装 tool_result 消息时被丢弃 | `core/loop.py:681-689`、`executor.py:311-330` | spill 路径放 `ui` → 模型永远看不到 |
+| C1 | `ToolResult.ui` 在组装 tool_result 消息时被丢弃 | `core/loop.py:633-640`（`ui` 走独立的 `UIToolResultMessage`，不进模型上下文） | spill 路径放 `ui` → 模型永远看不到 |
 | C2 | 存在第二层截断：20,000 token，保头 500 / 尾 200 token | `pipeline/tool_result_budget.py:17-24` | 截断提示必须落在正文**尾部** |
-| C3 | 工具层无结构化输出，只有 `ToolResult.content` | `tools/protocol.py:94-96` | 退出码/spill 路径只能编码进文本 |
-| C4 | `ToolUseContext` 是 frozen dataclass，`with_extra` 手工逐字段复制 | `tools/context.py:32-33,163-178` | 加字段必须同步补复制行 |
+| C3 | 进模型上下文的只有 `ToolResult.content`；`ToolResult.ui` 是 UI 专用附件 | `core/types.py:352`（`ToolResult`，`ui` 字段在 `:365`，见 C1） | 退出码/spill 路径只能编码进 `content` 文本 |
+| C4 | `ToolUseContext` 是 frozen dataclass，`with_extra` 手工逐字段复制 | `tools/context.py:32-33,171-186` | 加字段必须同步补复制行 |
 | C5 | executor 不做超时；abort 时对 pending task 调 `task.cancel()` | `executor.py:113-115`、`159-283` | 超时语义归工具自理；晋升后进程脱离 task |
-| C6 | `CREATE_NO_WINDOW` 全仓唯一出处 | `utils/process.py:15-19`（bash.py:142 已用） | 新增 spawn 路径必须继续复用 `hidden_kwargs()` |
-| C7 | `nono_agent/` 内 platform 分支只有 3 处，惯例是下沉到 `utils/` 单点函数 | `utils/process.py:17`、`mcp/runtimes.py:542,547,668` | 方言分流应做成 `utils/` 或 `shell/` 单点，**不要散进 bash.py** |
-| C8 | 测试 71 个文件**扁平**放 `tests/`，无子包 | `tests/`、`pyproject.toml:45-48` | 新测试文件命名 `test_shell_*.py`，不建 `tests/test_shell/` |
-| C9 | `conftest.py` 4 个 autouse 夹具已把 `DEFAULT_SESSION_DIR` 指向 tmp | `tests/conftest.py:36-43` | spill 放会话目录 → **自动获得测试隔离** |
-| C10 | `create_builtin_tools()` 零参，3 个调用点 | `builtin/__init__.py:47`、`cli/repl.py:64-66`、`server/.../session_manager.py:37-42` | 加配置须保持零参可调用 |
-| C11 | server 模式 `deny_all_permission_checker` 恒拒 | `apps/server/.../session_manager.py:28-34` | 新增写副作用工具会被直接拒（见 §5.5） |
+| C6 | `CREATE_NO_WINDOW` 全仓唯一出处 | `utils/process.py::hidden_kwargs`（shell 侧经 `shell/proc.py::spawn_kwargs` 叠加 `CREATE_NEW_PROCESS_GROUP`） | 新增 spawn 路径必须继续复用 `hidden_kwargs()` |
+| C7 | `nono_agent/` 内 platform 分支现分布在 `utils/process.py`、`shell/proc.py`、`shell/dialect.py`、`mcp/runtimes.py` 四个文件里，惯例是下沉到 `utils/` 单点函数 | `utils/process.py:17`、`mcp/runtimes.py:542,547,668` | 方言分流应做成 `utils/` 或 `shell/` 单点，**不要散进 bash.py** |
+| C8 | 测试文件（当前 75 个 `test_*.py` + 3 个支撑模块）**扁平**放 `tests/`，无子包 | `tests/`、`pyproject.toml:59-61` | 新测试文件命名 `test_shell_*.py`，不建 `tests/test_shell/` |
+| C9 | `conftest.py` 4 个 autouse 夹具已把 `DEFAULT_SESSION_DIR` 指向 tmp | `tests/conftest.py:12,27,36,46` | spill 放会话目录 → **自动获得测试隔离** |
+| C10 | `create_builtin_tools(config: EngineConfig \| None = None)` 仍可零参调用；生产调用点 2 个 | `apps/cli/nono_app_cli/repl.py:65`、`apps/server/.../session_manager.py:49` | 加配置须保持零参可调用 |
+| C11 | server 模式 `deny_all_permission_checker` 恒拒，仅对 `_SESSION_SCOPED_TOOLS = {"job_kill"}` 放行 | `apps/server/.../session_manager.py:28-46` | 新增写副作用工具会被直接拒（见 §5.5） |
 | C12 | `active_session_dir()` 是进程级全局，由 `use_session_dir()` 切换 | `session/transcript.py:74-82` | spill 路径走 `active_session_dir()` 而非自建目录 |
 | C13 | 测试风格是**真实子进程**，不 mock asyncio | `tests/test_builtin_tools.py:416-450` | 新测试用真实 `python -c`，不要 mock 事件循环 |
-| C14 | `AgentTool.bind_base_config()` 是既有的 config→tool 下发先例 | `agents/agent_tool.py:62-65` ← `engine.py:1399` | 配置注入沿用同款 `bind_*` 钩子，不新造机制 |
-| C15 | `EngineConfig` 是 frozen pydantic BaseModel | `core/config.py:72-183`（`frozen=True` at `:156`） | 新配置项必须是 pydantic 字段，随 `model_copy` 走 |
+| C14 | `AgentTool.bind_base_config()` 是既有的 config→tool 下发先例 | `agents/agent_tool.py:62-65` ← `engine.py:1437` | 配置注入沿用同款 `bind_*` 钩子，不新造机制 |
+| C15 | `EngineConfig` 是 frozen pydantic BaseModel | `core/config.py:130-217`（`frozen=True` at `:217`） | 新配置项必须是 pydantic 字段，随 `model_copy` 走 |
 
 ---
 
@@ -120,7 +124,7 @@ class ShellConfig(BaseModel):
     dialect: Literal["auto","powershell","pwsh","cmd","sh","bash"] = "auto"
     timeout_s: float = 120.0
     max_timeout_s: float = 600.0
-    max_output_chars: int = 30_000
+    max_output_bytes: int = 30_000
     max_spill_bytes: int = 64 * 1024 * 1024
     merge_streams: bool = False
     promote_on_timeout: bool = True
@@ -140,15 +144,16 @@ nono_agent/
     __init__.py        导出 ShellDialect / SpillWriter / ShellConfig 读取
     dialect.py         方言解析 + argv 构造        [P0]
     preamble.py        编码声明                    [P0]
+    encoding.py        解码与回退                  [P0]
     spill.py           字节 ring + 溢出落盘         [P0]
     streams.py         stdout/stderr 分离收集        [P0]
+    proc.py            进程组 spawn / 终止          [P1]
     types.py           ShellSpec / ShellProcess     [P1]
     local.py           LocalShellExecutor           [P1]
     jobs.py            JobRegistry 实例              [P1]
   tools/builtin/
     bash.py            薄编排层
-    job_output.py      模型读后台作业                [P1]
-    job_kill.py        模型停后台作业                [P1]
+    job_tools.py       JobOutputTool + JobKillTool（两个工具同源一个文件）  [P1]
 ```
 
 > 放 `nono_agent/shell/` 而非 `nono_agent/utils/shell.py`：`utils/` 现有 3 个模块全是
@@ -163,9 +168,10 @@ nono_agent/
 ```python
 """编码声明与退出码归一化 —— 在命令执行前钉死两件 PowerShell 会弄错的事。
 
-命令文本的编码在消费端猜是消费端的事（``tools/builtin/_common.py:147-204`` 的
-utf-8 → locale → gb18030 回退链）；但猜错的代价是整段输出乱码。把声明前置到
-生产端，这条回退链就退化成兜底而非常规路径。
+命令文本的编码在消费端猜是消费端的事（``nono_agent/shell/encoding.py::decode_output``
+的回退链：utf-8-sig → utf-8 → 本机默认编码 → gb18030 → utf-8+replace，
+另含一条「尾部截断时先把截断尾巴切掉再按 utf-8 重试」的补偿）；但猜错的代价是整段
+输出乱码。把声明前置到生产端，这条回退链就退化成兜底而非常规路径。
 
 ⚠️ 声明的作用范围仅限 **PowerShell 自身产生的输出**（Write-Output、错误消息、
 格式化表格）。它 **不改变子进程的 stdout 编码** —— 子进程自行决定。
@@ -281,7 +287,7 @@ def build_argv(dialect: ShellDialect, command: str) -> list[str]:
     return [*dialect.argv_prefix, f"{dialect.preamble}{command}{tail}"]
 
 
-def env_overrides(dialect: ShellDialect, extra: dict[str, str] | None = None) -> dict[str, str]:
+def env_overrides(extra: dict[str, str] | None = None) -> dict[str, str]:
     """模型友好的环境覆盖：禁颜色、禁分页器，否则工具输出被 ANSI 码污染。"""
     base = {"NO_COLOR": "1", "PAGER": "cat", "GIT_PAGER": "cat"}
     if extra:
@@ -378,7 +384,7 @@ class SpillWriter:
             start = offset - base
             raw = bytes(self._ring[start:])
             return OutputDelta(
-                raw.decode(self._encoding, errors="replace"),
+                decode_output(raw),          # 实际实现委托 shell/encoding.py::decode_output
                 base + len(raw),
                 spill_path=self._spill_path if base else None,
             )
@@ -449,7 +455,7 @@ class StreamCollector:
 
 ### 4.5 `core/config.py` 新增 `ShellConfig`
 
-见 D4。追加到 `EngineConfig`（`:72-183`）末尾：
+见 D4。追加到 `EngineConfig`（`:130-217`）末尾：
 
 ```python
     # Shell（bash 工具）执行参数
@@ -462,6 +468,19 @@ class StreamCollector:
 
 **保留**：`ToolBase` 继承、`_name`/`_description`/`_input_schema`、参数校验、审批调用、风险前缀。
 **替换**：`execute` 主体。
+
+**输入 schema**（`tools/builtin/bash.py:109-146`，共 5 个属性，`required: ["command", "description"]`）：
+
+| 属性 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `command` | string | ✅ | 要执行的命令（按当前方言的语法） |
+| `description` | string | ✅ | 5–10 词的人类可读说明，UI 展示在命令旁边 |
+| `workdir` | string | | 工作目录，相对 `cwd` 或绝对路径 |
+| `timeout` | integer | | 秒。默认 `ShellConfig.timeout_s`（120），上限 `max_timeout_s`（600）。**超时是转后台作业，不是杀进程** |
+| `run_in_background` | boolean | | 立即返回 job id 不等待。用长构建、常驻服务、预期超过一次工具调用的命令 |
+
+`description` 是必填的 —— 省略它会在 schema 校验阶段失败，不是可选项。
+`run_in_background: true` 是「显式转后台」，与「超时后自动晋升」是同一套 job 通道的两条入口。
 
 ```python
 class BashTool(ToolBase):
@@ -487,13 +506,13 @@ class BashTool(ToolBase):
         if not command:
             return _error("No command provided.")
 
-        timeout = self._resolve_timeout(input_params)   # clamp 到 [1, max_timeout_s]
+        timeout = cfg.clamp_timeout(_as_float(input_params.get("timeout")))  # clamp 到 (0, max_timeout_s]；None 或 ≤0 回退 timeout_s
         workdir = resolve_path(context, input_params.get("workdir") or context.cwd)
         dialect = resolve_dialect(self._config.dialect)
         argv = build_argv(dialect, command)
         risk = self._classifier.classify(command)
 
-        job_id = self._open_job(context, command)        # 移到 spawn 之前（见 §4.7）
+        job = registry.start(kind="command", title=command, parent_id=...)   # 移到 spawn 之前（见 §4.7）
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -501,8 +520,8 @@ class BashTool(ToolBase):
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.DEVNULL,
                 cwd=workdir,
-                env={**os.environ, **env_overrides(dialect, self._config.env_overrides)},
-                **hidden_kwargs(),                        # C6
+                env={**os.environ, **env_overrides(self._config.env_overrides)},
+                **spawn_kwargs(),                         # C6
             )
         except (OSError, ValueError) as exc:
             self._finish_job(job_id, "failed", None)
@@ -520,12 +539,12 @@ class BashTool(ToolBase):
 <stdout 正文>
 [stderr]
 <stderr 正文>
-[output truncated; full output: <path>]      ← 必须最后一行（约束 C2）
+[output truncated; full output: <path>]      ← 必须落在正文尾部（约束 C2），即下面这行之前
 [exit code: N]                                ← 零退出且无信号时不输出
 ```
 
 改动要点：
-- 风险前缀 `[dangerous] ` 保留（`bash.py:196` 现有行为）
+- 风险前缀 `[{risk}] ` 保留 —— 仅在非 SAFE 时加，`write` / `dangerous` 都会带（`bash.py:266` 现有行为）
 - **非零退出改为标记而非 `is_error=True`** —— 对齐 DSH「非零退出是报告，不是错误，由模型判断」。
   这是行为变更，需在 commit message 标注。
 
@@ -605,12 +624,18 @@ class ShellOutcome:
 
 @runtime_checkable
 class ShellProcess(Protocol):
-    """活着的进程句柄。``read_output`` 必须增量：连续读不重复。"""
+    """活着的进程句柄。
+
+    注意：输出**不是**从进程句柄上增量读的，而是通过 ``streams``（非消费式属性，
+    每次取到的是当前已收集到的内容）拿。真正的增量读在 SpillWriter / JobRegistry
+    那侧，靠游标推进保证不重复。
+    """
     async def wait(self) -> ShellOutcome: ...
-    def read_output(self, offset: int) -> tuple[str, OutputDelta]: ...
-    def kill(self) -> bool: ...
+    async def kill(self) -> None: ...
     @property
     def status(self) -> str: ...      # "running" | "completed" | "killed"
+    @property
+    def streams(self) -> tuple[OutputDelta, OutputDelta]: ...   # (stdout, stderr)
 
 
 @runtime_checkable
@@ -627,12 +652,12 @@ class LocalShellExecutor:
     def __init__(self, *, spill_root: Path | None = None) -> None:
         self._spill_root = spill_root
 
-    def _argv(self, spec: ShellSpec) -> list[str]:
+    def argv(self, spec: ShellSpec) -> list[str]:
         return build_argv(spec.dialect, spec.command)
 
     async def execute(self, spec, signal=None) -> ShellProcess:
         proc = await asyncio.create_subprocess_exec(
-            *self._argv(spec),
+            *self.argv(spec),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL,
@@ -640,13 +665,13 @@ class LocalShellExecutor:
             env={**os.environ, **spec.env},
             **hidden_kwargs(),                      # C6
         )
-        return _LocalProcess(proc, spec, self._spill_root)
+        return LocalProcess(proc, spec, self._spill_root)
 ```
 
 **`on_expiry` 的实现差异**（这是 P1 最重要的一处）：
 
 ```python
-# _LocalProcess 内部
+# LocalProcess 内部
 async def wait(self) -> ShellOutcome:
     try:
         if self._spec.on_expiry == "kill":
@@ -697,14 +722,17 @@ class JobRegistry:
     （apps/server/.../features/jobs/api.py:59）。
     """
 
-    def __init__(self, session_id: str, *, max_output_chars: int = 32_000) -> None: ...
-    def start(self, spec: ShellSpec, *, kill: Callable[[], None]) -> JobHandle: ...
-    def attach_abort_watch(self, job: JobHandle, signal: AbortSignal | None) -> None: ...
-    def detach_abort_watch(self, job: JobHandle) -> None: ...
-    def read(self, job_id: str, from_offset: int = 0) -> OutputDelta: ...
+    def __init__(self, session_id: str) -> None: ...
+    def start(self, *, kind: str, title: str, process: Any = None, parent_id: str | None = None) -> Job: ...
+    def adopt(self, job_id: str, process: Any) -> None: ...          # 把已起的进程收编进作业
+    def adopt_kill(self, job_id: str, kill: Callable[[], None]) -> None: ...
+    def attach_abort_watch(self, job_id: str, signal: AbortSignal | None) -> None: ...
+    def detach_abort_watch(self, job_id: str) -> None: ...
+    def read(self, job_id: str, from_offset: int | None = None) -> OutputDelta | None: ...
+    def stderr_delta(self, job_id: str) -> OutputDelta | None: ...
     def list(self) -> list[dict]: ...                # 供 SSE，字段与 Job.public() 对齐
     def subscribe(self, listener) -> Callable[[], None]: ...
-    def kill(self, job_id: str, reason: str) -> bool: ...
+    def kill(self, job_id: str, reason: str = "model request") -> bool: ...
     def kill_all(self) -> None: ...
 ```
 
@@ -755,17 +783,17 @@ class ToolUseContext:
     shell_jobs: Any | None = None   # JobRegistry
 ```
 
-⚠️ `with_extra`（`context.py:163-178`）是**手工逐字段复制**，必须同步加两行，
+⚠️ `with_extra`（`context.py:171-188`）是**手工逐字段复制**，必须同步加两行，
 否则 P1 的一切在子代理里失效（`agents/runner.py:86-118` 会走 with_extra 路径）。
 
-engine 构造处 `core/engine.py:451-462` 注入。
+engine 构造处 `core/engine.py:474-487` 注入。
 
 ---
 
 ## 6. 测试计划
 
 遵循既有风格：**扁平命名**（C8）、**真实子进程不 mock 事件循环**（C13）、
-`asyncio_mode="auto"` 无需 `@pytest.mark.asyncio`（`pyproject.toml:46`）。
+`asyncio_mode="auto"` 无需 `@pytest.mark.asyncio`（`pyproject.toml:59-61`）。
 
 ### 6.1 `tests/test_shell_dialect.py`（P0）
 
@@ -798,7 +826,7 @@ engine 构造处 `core/engine.py:451-462` 注入。
 | 用例 | 断言 |
 |---|---|
 | 中文输出（PowerShell 自身） | `Write-Output "中文"` → content 含正确中文，无 `\ufffd` |
-| 中文错误消息 | `Get-Item <不存在>` → stderr 段含可读的 `找不到路径` |
+| 中文错误消息 | `Get-Item <不存在>` → stderr 段含文件名且无 `\ufffd`（文案随 `$PSUICulture` 变，测试只断言「无替换字符」，见 `tests/test_shell_bash.py:240-246`） |
 | 退出码：原生命令失败 | `python -c "sys.exit(3)"` → `[exit code: 3]`（**不是 1**） |
 | 退出码：cmdlet 失败 | `Get-Item <不存在>` → `[exit code: 1]` |
 | 退出码：成功 | `Get-Date` → 无 `[exit code]` 标记 |
@@ -826,7 +854,17 @@ engine 构造处 `core/engine.py:451-462` 注入。
 
 ### 6.5 平台跳过模式
 
-参照 `tests/test_product_terminal.py:85-86` 的既有写法：
+`tests/test_product_terminal.py` 里的既有写法是**测试体内守卫**，不是模块级 `pytestmark`
+（见 `:90`、`:106`、`:155`）：
+
+```python
+def test_xxx():
+    if os.name != "nt":
+        pytest.skip("... is Windows-only")
+    ...
+```
+
+整个文件都要跳过时，模块级写法也可以：
 
 ```python
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="PowerShell dialect is Windows-only")
@@ -846,7 +884,7 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="PowerShell dial
 | 4 | `refactor(bash)!: 显式 argv + 流分离 + 落盘` | `bash.py`、`shell/streams.py`、`test_shell_bash.py` | ⚠️ **破坏性**：Windows 方言变更 + 退出码语义变更 |
 | 5 | `feat(shell): ShellExecutor 能力协议` | `shell/types.py`、`shell/local.py` | 纯新增，bash 未切过去 |
 | 6 | `refactor(bash)!: 切到能力缝` | `bash.py`、`context.py`、`core/engine.py` | 需与 7 一起回滚 |
-| 7 | `feat(shell): JobRegistry 与模型侧作业工具` | `shell/jobs.py`、`job_output.py`、`job_kill.py`、`session_manager.py` | 新工具可从 registry 摘除 |
+| 7 | `feat(shell): JobRegistry 与模型侧作业工具` | `shell/jobs.py`、`tools/builtin/job_tools.py`（`JobOutputTool` + `JobKillTool` 同文件）、`session_manager.py` | 新工具可从 registry 摘除 |
 
 **提交 4 是唯一的破坏性提交。** 建议：
 - 单独成 PR，changelog 明确写「Windows 默认方言由 cmd 改为 PowerShell」
@@ -859,10 +897,10 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="PowerShell dial
 
 | 位置 | 改动 |
 |---|---|
-| `README.md:13` | 工具数 22 → 24（新增 `job_output` / `job_kill`） |
+| `README.md:13` | 工具数补到 23（新增 `job_output` / `job_kill`）—— 已落地 |
 | `README.md:17` | 对照表「OS 级硬沙箱 ❌」保持不变 —— P2 未做，**不得虚报** |
-| `docs/USAGE.md:300` | 补默认 timeout / 输出上限 / spill 行为 / 方言与退出码语义 |
-| `docs/USAGE.md:298` | 编码说明改为「生产端前置声明 + 消费端兜底回退」 |
+| `guide/usage.md` §4.1 | 补默认 timeout / 输出上限 / spill 行为 / 方言与退出码语义（已落地，见 `usage.md:400-414`） |
+| `guide/usage.md` §4.1 | 编码说明改为「生产端前置声明 + 消费端兜底回退」（已落地，同上） |
 | `bash.py:68-79` `_description` | 告知模型：非零退出以 `[exit code: N]` 报告；大输出会给出文件路径；默认方言 |
 | `prompt/sections/tools_guidance.py:14-23` | 同步（该节是给模型的通用工具约束） |
 
@@ -873,11 +911,11 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="PowerShell dial
 | # | 问题 | 状态 | 建议 |
 |---|---|---|---|
 | Q1 | PowerShell 退出码语义（§D2） | ✅ **已 spike 实测，方案确定** | 采用 `PS_EXIT_WRAP`（`$?` 守卫版） |
-| Q2 | Windows 默认方言是否从 cmd 切到 PowerShell | 待定 | 切，但保留 `dialect: "cmd"` 回退 |
-| Q3 | `job_kill` 如何绕开 `deny_all_permission_checker`（C11） | 待定 | 白名单 |
-| Q4 | `jobs/board.py` 的去留 | 待定 | 先保留 re-export，`apps/server` 引用面确认后再删 |
+| Q2 | Windows 默认方言是否从 cmd 切到 PowerShell | ✅ 已定（`dialect="auto"`，见 §11.3） | 切，但保留 `dialect: "cmd"` 回退 |
+| Q3 | `job_kill` 如何绕开 `deny_all_permission_checker`（C11） | ✅ 已定：白名单放行（见 §11.3） | 白名单 |
+| Q4 | `jobs/board.py` 的去留 | ✅ 已定：保留为按会话分片门面（`registry_for`，见 §11.3） | 先保留 re-export，`apps/server` 引用面确认后再删 |
 | Q5 | P2 OS 级沙箱与 `README.md:17` 的「❌」声明冲突 | **需产品决策** | 见下 |
-| Q6 | spill 文件的保留期与清理时机 | 待定 | 随会话删除（对齐 `relocate_session_files`） |
+| Q6 | spill 文件的保留期与清理时机 | ✅ 已定：落盘在会话目录 `spill/`（见 §11.3） | 随会话删除（对齐 `relocate_session_files`） |
 
 > **Q5 值得单独强调**：`README.md:17` 把「OS 级硬沙箱（容器/bubblewrap）❌」列为**有意的能力缺口**。
 > 这不是遗漏，是产品定位。因此 P2 不是我该单方面推进的技术债，而是需要你确认是否改变产品承诺的决策。
@@ -909,8 +947,7 @@ FAILED tests/test_user_hooks.py::TestUserHookExecutor::test_run_passes_context
 
 该失败是**既有的、与本设计无关的 Windows 平台缺陷**：测试用例硬编码执行 `cat`
 （`tests/test_user_hooks.py:45` 附近），`cat` 在 Windows 上不存在，断言 `exit_code == 0`
-必然失败；测试缺少 `sys.platform == "win32"` 跳过守卫（参照
-`tests/test_product_terminal.py:85-86` 的既有写法）。
+必然失败；测试缺少 Windows 跳过守卫（写法见 §6.5）。
 
 **处理建议**：实施前先给该测试加跳过守卫，让基线转绿，否则重构过程中无法区分
 「新引入的回归」与「既有噪声」。
@@ -930,7 +967,7 @@ ruff   : All checks passed            （我触及的文件）
 mypy   : Success, no issues in 14 source files
 ```
 
-新增测试 122 条（`test_shell_dialect/spill/bash/executor/jobs/wiring.py`），
+新增测试 121 条（`test_shell_dialect/spill/bash/executor/jobs/wiring.py`，实测 120 passed + 1 skipped），
 外加修复基线里那个 `cat` 测试（改用 `more`，跨平台等价的 stdin 透传）。
 
 ### 11.1 实施中发现并修正的设计缺口

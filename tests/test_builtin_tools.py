@@ -468,7 +468,7 @@ class TestBash:
         b = BashTool()
         result = await b.execute({"command": "exit 3"}, ctx)
         # 非零退出不再是工具错误：以 [exit code: N] 标记上报，由模型判断后果。
-        # 理由见 docs/Shell-Tool-Design.md §4.6。
+        # 理由见 docs-site/docs/architecture/shell-tool.md §4.6。
         assert not result.is_error
         assert "[exit code: 3]" in result.content
 

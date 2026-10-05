@@ -9,7 +9,7 @@
   （例如 resume 后写新事件）时整体迁成 ``.jsonl.zst``。``compress=False``
   时保持明文。
 - 规划扩展：PostgreSQL / MySQL、Redis、S3 等远端/共享后端（实现同一协议后注入
-  QueryEngine；详见 docs/ROADMAP.md §2.5）。
+  QueryEngine；详见 docs-site/docs/roadmap/index.md §2.5）。
 
 事件只追加不改写：历史不可变，「修正」用新事件表达（compact 边界、tombstone），
 因此没有全量覆写接口 —— 覆写会与追加交错并破坏事件流。

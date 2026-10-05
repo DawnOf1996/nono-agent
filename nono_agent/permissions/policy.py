@@ -1,6 +1,6 @@
 """权限模式与会话策略 —— 对标 Claude Code PermissionMode。
 
-四种会话模式（docs/ROADMAP.md §2.6）：
+四种会话模式（docs-site/docs/roadmap/index.md §2.6）：
 
 - ``default``      写/执行需确认（ask），读自动允许
 - ``accept_edits`` 工作区内编辑自动允许；其它写仍需确认

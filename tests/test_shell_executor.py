@@ -1,6 +1,6 @@
 """ShellExecutor 能力协议与本地执行器的测试。
 
-重点是**语义契约**（docs/Shell-Tool-Design.md §5.1），不是内部实现：
+重点是**语义契约**（docs-site/docs/architecture/shell-tool.md §5.1），不是内部实现：
 只有非零退出/超时/abort 都 resolve、on_expiry 二分正确、输出非消费式，
 未来的沙箱执行器才敢继承这个类。
 """

@@ -1,8 +1,12 @@
+---
+title: Generative Agents 工具化 —— nono-agent TODO 规划
+---
+
 # Generative Agents 工具化 —— nono-agent TODO 规划
 
 > **文档角色：** 对照 Park et al. *Generative Agents*（UIST 2023, [arXiv:2304.03442](https://arxiv.org/abs/2304.03442)）与当前 `nono_agent/` 代码，给出「小镇 NPC = 独立 QueryEngine 实例、认知行为走工具、游戏引擎只注入工具使用提示词」所需的新增 / 改动 / 重构清单。
 > **不是：** 游戏引擎（地图、时钟、寻路、对象状态）的实现计划。那些属于 simulated-town / 世界层。
-> **与已有文档关系：** [Memory-System-Design.md](./Memory-System-Design.md) 描述的是「引擎在组 prompt 时自动 `retrieve()` 注入」的编码助手路径。本文是另一条产品路径：**认知原语暴露为工具，由模型按提示词自行调用**。两条路径应共存，用配置切换，而不是互相覆盖。
+> **与已有文档关系：** [Memory-System-Design.md](./../architecture/memory-system.md) 描述的是「引擎在组 prompt 时自动 `retrieve()` 注入」的编码助手路径。本文是另一条产品路径：**认知原语暴露为工具，由模型按提示词自行调用**。两条路径应共存，用配置切换，而不是互相覆盖。
 
 ---
 
@@ -192,7 +196,7 @@
 
 #### P2-1 embedding relevance（L）
 
-按 [Memory-System-Design.md](./Memory-System-Design.md) 原 P1：用余弦替换/融合 Jaccard。工具化不依赖此项；检索质量差时再上。
+按 [Memory-System-Design.md](./../architecture/memory-system.md) 原 P1：用余弦替换/融合 Jaccard。工具化不依赖此项；检索质量差时再上。
 
 #### P2-2 候选池真正走 `candidate`（M）
 
@@ -287,7 +291,7 @@ CLI 默认仍只挂 coding。库调用方显式组合。`AgentDefinition.tools` 
 
 #### R-3 依赖方向：允许 `tools/builtin → memory` 的 Manager 协议，禁止碰 Store 内部（S，文档+代码）
 
-[ROADMAP.md](./ROADMAP.md) §5.3 写 `prompt → memory 的已加载视图`，且暗示 memory 不反向进工具。工具化后应改成：
+[ROADMAP.md](./../roadmap/index.md) §5.3 写 `prompt → memory 的已加载视图`，且暗示 memory 不反向进工具。工具化后应改成：
 
 ```
 tools/builtin/memory_*  ──► memory.MemoryManager（公开 API）
@@ -366,7 +370,7 @@ core                    ──► 把 manager 塞进 ToolUseContext
 - [ ] embedding relevance
 - [ ] candidate 准入
 - [ ] 15 分钟块；反思树可视化仅观测面
-- [ ] 更新 [Memory-System-Design.md](./Memory-System-Design.md) §9「引擎集成」：写明 auto/tools 双路径，避免两份文档打架
+- [ ] 更新 [Memory-System-Design.md](./../architecture/memory-system.md) §9「引擎集成」：写明 auto/tools 双路径，避免两份文档打架
 
 ---
 

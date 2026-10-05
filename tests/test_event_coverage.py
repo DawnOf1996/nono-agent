@@ -1,4 +1,4 @@
-"""事件目录全量实装的覆盖测试 —— 对照 docs/Session-Observability-Design.md §4.1。
+"""事件目录全量实装的覆盖测试 —— 对照 docs-site/docs/architecture/session-observability.md §4.1。
 
 每个 ``EVENT_*`` 常量都要有真实发射路径：本文件按事件类型逐个断言，
 并用 ``KNOWN_EVENT_TYPES`` 兜底，防止新增常量后忘记接线。

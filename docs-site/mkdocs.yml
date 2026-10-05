@@ -1,0 +1,143 @@
+site_name: Nono Agent 文档
+site_description: Nono Agent —— Python AI Agent 运行时引擎的设计、使用与开发指南
+# 发布到静态托管时把这里改成真实地址（会影响 canonical / sitemap / 社交卡片）。
+# 不知道就先注释掉，别填一个猜的地址。
+# site_url: https://example.com/nono-agent/
+
+# 发布到子路径（如 Gitee Pages 的 /nono-agent/）时必须显式设置，
+# 否则构建出来的资源 URL 是相对路径，线上 CSS/JS/图片会 404。
+#   部署在域名根：删掉这一行或写 base: ""
+#   部署在子路径：  base: /nono-agent/
+#   本地 serve：     保持注释（serve 自行处理）
+# base: /nono-agent/
+
+repo_url: https://gitee.com/dawn1996/nono-agent
+repo_name: dawn1996/nono-agent
+edit_uri: edit/main/docs-site/docs/
+copyright: Copyright &copy; 2026 Nono Agent contributors · MIT License
+
+docs_dir: docs
+site_dir: ../site
+
+theme:
+  name: material
+  language: zh
+  icon:
+    repo: fontawesome/brands/git-alt
+  logo: material/robot-outline
+  favicon: material/robot-outline
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: 切换到深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: 切换到浅色模式
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.action.edit
+    - content.action.view
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.caret
+  - pymdownx.critic
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.snippets:
+      base_path:
+        - .
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra:
+  generator: true
+  social:
+    - icon: fontawesome/brands/git-alt
+      link: https://gitee.com/dawn1996/nono-agent
+      name: Gitee 仓库
+
+# Mermaid 流程图。`markdown_extensions` 里已把 ```mermaid fence 映射成
+# <div class="mermaid">，但 Material 不会自动加载 mermaid 运行时，必须显式引入，
+# 否则所有流程图会渲染成空白框。
+# 第二个脚本要用 document$.subscribe 而不是 startOnLoad —— navigation.instant
+# 切页不会触发 window load，subscribe 才能在每次内容替换后重跑。
+extra_javascript:
+  - https://unpkg.com/mermaid@11.4.1/dist/mermaid.min.js
+  - assets/javascripts/mermaid.js
+
+nav:
+  - 首页: index.md
+  - 快速开始:
+      - 快速开始: getting-started/quickstart.md
+      - 安装: getting-started/installation.md
+      - 配置与密钥: getting-started/configuration.md
+  - 使用手册:
+      - 总览: guide/usage.md
+      - 工具与权限: guide/tools-and-permissions.md
+      - 会话与记忆: guide/session-and-memory.md
+  - 架构设计:
+      - 架构总览: architecture/nono-agent-architecture.md
+      - 会话事件溯源: architecture/session-observability.md
+      - 会话事件目录: architecture/session-event-catalog.md
+      - 记忆系统: architecture/memory-system.md
+      - 上下文压缩: architecture/context-compression.md
+      - Shell 工具: architecture/shell-tool.md
+  - 开发指南:
+      - 开发环境与目录结构: development/index.md
+      - 新增内置工具: development/add-builtin-tool.md
+      - 新增工具插件: development/add-tool-plugin.md
+      - 新增 Provider 适配器: development/add-provider.md
+      - 测试与代码规范: development/testing-and-style.md
+      - 提交规范: development/commit-convention.md
+  - 路线图: roadmap/index.md
+  - 研究笔记:
+      - Shell 工具重构计划: research/shell-tool-refactor-plan.md
+      - 工具驱动 TODO 设想: research/generative-agents-todo.md

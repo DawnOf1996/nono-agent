@@ -24,6 +24,8 @@ nono_app_server/
     permissions/         桌面权限确认
     catalog/             模型目录
     mcp/                 MCP 清单
+    toolplugins/         工具插件：清单、配置面板 schema、reload
+    control/             运行时控制（启停等）
     jobs/                任务板
     info/                GET /app/info
   engine/                Agent 引擎 HTTP / SSE

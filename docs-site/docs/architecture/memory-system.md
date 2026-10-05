@@ -1,3 +1,7 @@
+---
+title: Nono Agent —— 长期/短期记忆系统功能设计与优化文档
+---
+
 # Nono Agent —— 长期/短期记忆系统功能设计与优化文档
 
 > **文档角色：** 为 `nono_agent/memory/`（及与其协同的 `pipeline/`、`prompt/`、`session/`）定义**长短期记忆的设计方案与落地对照**。已实现部分与代码对齐；未实现部分仍为规划。
@@ -197,7 +201,7 @@ score(m) = α · recency(m) + β · importance(m) + γ · relevance(m, query)
 `MemoryManager.reflect(*, agent_id, summarizer, model_id, limit=20)` **已落地**，行为：
 
 - `summarizer is None` 或无匹配 episodic → 返回 `[]`。
-- 取该 `agent_id` 下 active 的 `episodic`，按 `created_at` 取最近 `limit` 条，交给 summarizer。
+- 取 `agent_id` 指定时该 agent 的 active `episodic`；`agent_id=None` 时取全部 agent 的，按 `created_at` 取最近 `limit` 条，交给 summarizer。
 - 成功则 `admit()` 一条 `kind=meta`、`importance=8.0`、`keys=["reflection"]`、`source="reflection"` 的记忆。
 - summarizer 抛错或空摘要 → 返回 `[]`（不落库）。
 

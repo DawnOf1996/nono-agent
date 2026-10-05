@@ -1,7 +1,11 @@
+---
+title: 会话事件目录 —— 时机、顺序与载荷
+---
+
 # 会话事件目录 —— 时机、顺序与载荷
 
-> **文档角色：** 对照 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`，说明 19 类事件**何时写出、彼此顺序、**`data` **长什么样**。读 jsonl / SSE / 回放时查本文。
-> **配套文档：** 设计动机与门禁见 [Session-Observability-Design.md](./Session-Observability-Design.md)；怎么打开日志见 [USAGE.md §7](./USAGE.md)。
+> **文档角色：** 对照 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`，说明 20 类事件**何时写出、彼此顺序、**`data` **长什么样**。读 jsonl / SSE / 回放时查本文。
+> **配套文档：** 设计动机与门禁见 [Session-Observability-Design.md](./session-observability.md)；怎么打开日志见 [USAGE.md §7](./../guide/usage.md)。
 > **权威清单：** 类型常量以源码为准；本文示例来自当前发射点（`core/engine.py`、`core/loop.py`、观察者）。
 
 磁盘上每一行都是同一个信封，差别只在 `type` 和 `data`：
@@ -92,6 +96,7 @@ usage
   ├─ memory/write                     ← 工具/记忆系统写入才有
   │
 tool/result × M                       ← 并行工具是连续多条
+ui/tool-result × M'                   ← 带 ui 附件的工具才有（文件差异等）；ignorable，不进 derive
 step/end                              ← reason=next_turn
   │
   └─ user/message                     ← 少见：stop-hook 校验失败、截断恢复提示
@@ -220,7 +225,15 @@ sequenceDiagram
 { "turn": 1, "reason": "COMPLETED" }
 ```
 
-`reason` 对齐 `SDKResultMessage.subtype`：正常是 `COMPLETED`，失败会带 `error_log_reconstruction_desync`、`error_model_error` 等。
+`reason` 取 `TerminalReason.name`（`core/state.py` 共 11 个成员）：`COMPLETED` / `ABORTED_STREAMING` / `ABORTED_TOOLS` / `PROMPT_TOO_LONG` / `IMAGE_ERROR` / `MODEL_ERROR` / `BLOCKING_LIMIT` / `STOP_HOOK_PREVENTED` / `HOOK_STOPPED` / `MAX_TURNS` / `TASK_BUDGET_EXHAUSTED`。
+
+此外还有两个**引擎手写、不在枚举里**的小写取值：门禁失败时的 `log_reconstruction_desync`、未预期异常时的 `error_during_execution`。
+
+!!! note "`PROMPT_TOO_LONG` / `BLOCKING_LIMIT` 是保留值"
+    这两个成员目前 loop 不产出（压缩/上限都走恢复链而不是直接终止），所以正常日志里看不到它们。
+
+!!! note "它不是 `SDKResultMessage.subtype`"
+    对应的 SDK 结果里，成功时 `subtype` 是 `success`，失败时是 `error_<reason 小写>`。所以「`turn/end.reason == COMPLETED`」与「`result.subtype == COMPLETED`」**同时不成立**，排查时别拿两个字段互相印证。
 
 发射者：`QueryEngine.submit_message`。
 
@@ -283,7 +296,7 @@ sequenceDiagram
 
 观察者事件，不经过消息流。
 
-**retrieve**：每轮组 system prompt 都会调一次（即使用户没显式检索）；代码里另一次 `retrieve()` 会再写一条。位置：`user/input` 之后、`step/start` 之前。
+**retrieve**：每个 turn 通常只写一条 —— `submit_message` 组 system prompt 时触发（即使用户没显式检索）。只有在 `_last_system_prompt` 为空、上下文占用统计需要重新组装一次时，才会多写一条。位置：`user/input` 之后、`step/start` 之前。
 
 ```json
 {
@@ -296,7 +309,7 @@ sequenceDiagram
 
 没命中时 `memory_ids` / `kinds` 为空，`adopted` 为 `false`。
 
-**write**：`admit()` 成功后立刻写，可发生在回合内任何时刻（常见是工具执行中）。
+**write**：`admit()` 落库后立刻写，可发生在回合内任何时刻（常见是工具执行中）。被重要性门槛拒绝的记录也会写一条 `adopted=false` —— 观察者对每条记录都触发。
 
 ```json
 {
@@ -327,8 +340,8 @@ sequenceDiagram
     "config": {
       "agent_id": null,
       "model": "claude-sonnet-4-20250514",
-      "provider": "anthropic",
-      "protocol": "anthropic",
+      "provider": "anthropic_messages",
+      "protocol": "anthropic_messages",
       "context_size": 200000
     },
     "system": "You are Nono Agent...\n- [semantic] 用户偏好暗色主题",
@@ -340,11 +353,13 @@ sequenceDiagram
 }
 ```
 
+`provider` 与 `protocol` 取的都是**协议标识**（`anthropic_messages` / `openai_chat_completions` / `openai_responses`），不是厂商名；未显式配置 `adapter` 时两者相同。
+
 同一会话里后续回合配置没变，就不再出现这条。判定规则见设计文档 §5。
 
 发射者：`QueryEngine._compute_request_header`（写入由 `submit_message` 在首个 `step/start` 之后完成）。
 
-`request/header` 不是线上 HTTP 请求体。要看 SDK 发网前的 `params`，用 `EngineConfig.log_api_requests` / CLI `--log-api-requests`（见 [USAGE.md §2.2.1](./USAGE.md)），不要往事件流里塞。
+`request/header` 不是线上 HTTP 请求体。要看 SDK 发网前的 `params`，用 `EngineConfig.log_api_requests` / CLI `--log-api-requests`（见 [USAGE.md §2.2.1](./../guide/usage.md)），不要往事件流里塞。
 
 ---
 
@@ -370,12 +385,15 @@ sequenceDiagram
     {
       "role": "system",
       "subtype": "compact_boundary",
-      "content": "[Context compacted by preprocess pipeline.]"
+      "content": "[3 earlier messages were removed to fit context window]"
     },
     { "role": "user", "content": "继续刚才的任务" }
   ]
 }
 ```
+
+!!! note "`content` 与 `kept[0].content` 不是一回事"
+    事件的 `content` 是固定的管线说明文案（由发射点硬编码），而 `kept[0].content` 是**具体 stage 写进 store 的边界文案**，各策略不同：`snip_compact` 写「N 条早期消息被移除」，`auto_compact` 写「Auto-compact: …」，`context_collapse` 写摘要说明。排查时要看 `metadata.strategy` 对上哪一个。
 
 `/clear`（回合之间）：
 
@@ -404,7 +422,7 @@ sequenceDiagram
 
 ### 2.7 `step/start` / `step/end`
 
-一次 LLM 请求 + 它引起的工具执行。编号从 1 起，**在同一 turn 内递增**；有工具就会 `1, 2, …`。成对出现。
+一次 LLM 请求 + 它引起的工具执行。`step` 编号从 1 起；通常成对出现 —— 例外是未捕获异常终止的 step，此时只有 `step/start`，同 turn 的 `turn/end.reason` 为 `error_during_execution`。
 
 ```json
 { "turn": 1, "step": 1, "model": "claude-sonnet-4-20250514" }
@@ -414,6 +432,10 @@ sequenceDiagram
 { "turn": 1, "step": 1, "reason": "next_turn" }
 ```
 
+!!! warning "`step/*` 的 `turn` 与 `turn/*` 的 `turn` 不同源"
+    `step/*` 的 `turn` 取自循环的 `LoopState.turn_count`，每次转移（`next_turn` / stop hook / 恢复提示）自增。
+    因此第二步的 `step/*` 会写 `turn=2`，而**同一提交**里的 `turn/end` 仍写 `turn=1`。
+    只有 `turn/start` / `turn/end` 是提交级回合号。要按提交聚合请用 `turn/*`。
 
 | `reason`                        | 含义               |
 | ------------------------------- | ---------------- |
@@ -422,6 +444,9 @@ sequenceDiagram
 | `fallback_model`                | 切了备用模型           |
 | `api_error:prompt_too_long` 等   | RecoveryChain 重试 |
 | `model_error` / `aborted_tools` | 失败或中止            |
+| `stop_hook_prevented`           | stop hook 明确阻止继续      |
+| `stop_hook_blocking`            | stop hook 注入校验错误，开新 step |
+| `hook_stopped`                  | 中间件在 `on_transition` 否决   |
 
 
 发射者：`agentic_loop` via `SessionEventSink`。
@@ -497,9 +522,29 @@ sequenceDiagram
     "cache_creation_input_tokens": 0,
     "cache_read_input_tokens": 0
   },
-  "model": "claude-sonnet-4-20250514"
+  "model": "claude-sonnet-4-20250514",
+  "context": {
+    "context_window": 200000,
+    "total_tokens": 45210,
+    "usage_ratio": 0.226,
+    "remaining_tokens": 154790,
+    "system_prompt_tokens": 3820,
+    "tools_tokens": 2410,
+    "messages_tokens": 38980,
+    "message_count": 14,
+    "is_auto_compact_threshold": false,
+    "is_at_blocking_limit": false
+  }
 }
 ```
+
+!!! warning "`model` 恒为配置模型"
+    `usage.model` 取的是 `EngineConfig.effective_model`，全进程不变。发生 fallback 时，本步**真实使用的模型**要读同一条 `step/start` 的 `model` 字段（那个会跟着切备用模型）。`context` 是这一步的上下文占用快照，用来驱动自动压缩阈值判断。
+
+!!! note "`context` 的完整键集"
+    上例是常用子集。`analyze_context_usage()` 还返回 `system_prompt_ratio` / `tools_count` /
+    `tools_ratio` / `messages_ratio`，引擎是整份写进事件的。阈值标志有两个：
+    `is_auto_compact_threshold`（≥ 窗口 80%）与 `is_at_blocking_limit`（≥ 窗口 95%）。
 
 `tool/call` 和 `usage` 都不参与消息重建；重建只看 `assistant/message` 的 `content`。
 
@@ -591,6 +636,30 @@ resume 从 header 恢复模式时不写本事件。
 
 ---
 
+### 2.15 `ui/tool-result`
+
+工具结果给 UI 的**结构化附件**（文件差异卡、图片预览等）。`ignorable=true`，
+不参与 `derive_messages`，也就永远不会进模型上下文 —— 它只是给界面的。
+
+```json
+{
+  "call_id": "toolu_01abc",
+  "tool_name": "edit_file",
+  "ui": { "kind": "file_diff", "path": "src/app.py", "added": 12, "removed": 3 }
+}
+```
+
+**时机**：`tool/result` 之后逐工具写出。循环侧产出的是独立的
+`UIToolResultMessage`（不进 `MessageStore`），引擎落一条事件后立即 flush。
+
+**为什么带 `ignorable`**：`events.py` 的约定是「新增事件类型一律标
+`ignorable=True`」，这样更高版本写入的未知事件不会让老版本拒读日志。
+目前带这个标记的是三类：`ui/tool-result`、`permission/onchange`、`permission/changed`。
+
+发射者：`QueryEngine`（`engine.py` 的 `UIToolResultMessage` 分支）。
+
+---
+
 
 
 ### 2.14 `api/retry`
@@ -615,12 +684,16 @@ RecoveryChain（如 `prompt_too_long`）：
 ```json
 {
   "attempt": 1,
-  "max_retries": 3,
+  "max_retries": 2,
   "delay": 0.0,
   "reason": "prompt_too_long",
   "action": "reactive_compact"
 }
 ```
+
+`max_retries` 取自 `RecoveryDecision.max_attempts`，对 `prompt_too_long` 是
+`RecoveryChain._max_reactive_compact`（默认 **2**）；`max_output_tokens` 的
+`RECOVERY_PROMPT` 才是 3。
 
 若恢复时替换了窗口，**先**写 `compact/boundary`，**再**写这条。
 
@@ -640,6 +713,7 @@ RecoveryChain（如 `prompt_too_long`）：
 | `tool/result`（连续的并成一条）          | `request/header`（单独用 `fold_request_header`） |
 | `compact/boundary`（整段换成 `kept`） | `assistant/chunk`、`tool/call`、`usage`       |
 |                                 | `api/retry`、`permission/denial`、`permission/onchange`、`permission/changed`、`memory/*`  |
+|                                 | `ui/tool-result`（`ignorable=true`，只给 UI 渲染，不改会话状态） |
 
 
 看「当时模型看见了什么」用 `derive_messages(events)`；看「为什么这样、花了多少、拒了哪次」按 `seq` 读完整事件流。
@@ -669,4 +743,4 @@ zstdcat ~/.nono-agent/sessions/<sid>.jsonl.zst \
   | jq -c 'select(.type=="permission/onchange" or .type=="permission/changed") | {seq, type, data}'
 ```
 
-实时通道（脱敏后推送，信封与磁盘相同）：`GET /session/<sid>/events`，见 [USAGE.md §7.5](./USAGE.md)。
+实时通道（脱敏后推送，信封与磁盘相同）：`GET /session/<sid>/events`，见 [USAGE.md §7.5](./../guide/usage.md)。

@@ -1,6 +1,6 @@
 """job_output / job_kill 工具与作业注册表的测试。
 
-重点验证三条契约（docs/Shell-Tool-Design.md §6.4）：
+重点验证三条契约（docs-site/docs/architecture/shell-tool.md §6.4）：
 
 1. 晋升后进程**真的还活着**（超时不杀）
 2. 增量读**不重复**

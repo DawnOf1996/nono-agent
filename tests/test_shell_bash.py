@@ -1,4 +1,4 @@
-"""bash 工具的行为测试（对应 docs/Shell-Tool-Design.md §6.3）。
+"""bash 工具的行为测试（对应 docs-site/docs/architecture/shell-tool.md §6.3）。
 
 覆盖重构引入的语义变化：显式 argv、stdout/stderr 分离、超限落盘、
 非零退出不再算错误、退出码归一化。

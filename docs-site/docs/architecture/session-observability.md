@@ -1,8 +1,12 @@
+---
+title: Nono Agent —— 会话存储与可观测性功能设计与优化文档
+---
+
 # Nono Agent —— 会话存储与可观测性功能设计与优化文档
 
 > **文档角色：** 为 `nono_agent/session/` 与 `nono_agent/observability/` 定义**强观测、可回溯的会话存储**设计方案，并记录已落地范围。
-> **配套文档：** 本文与《记忆系统设计》同组；记忆检索/反思的「使用追溯」以本文事件流为落点。事件的写出时机、顺序与 `data` 示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。
-> **对标参考：** deepseek-harness 会话日志设计（`learn_docs/02-session-log.md` 及 `packages/core/session` 事件溯源实现）。
+> **配套文档：** 本文与《记忆系统设计》同组；记忆检索/反思的「使用追溯」以本文事件流为落点。事件的写出时机、顺序与 `data` 示例见 [Session-Event-Catalog.md](./session-event-catalog.md)。
+> **对标参考：** deepseek-harness 会话日志设计（外部仓库的 `learn_docs/02-session-log.md` 及 `packages/core/session` 事件溯源实现 —— **不在本仓**，需要对照时去上游 checkout）。
 > **当前版本基准：** `0.1.0`；P0/P1/P2 已落地 —— `session/` 为事件溯源（落盘只有 `SessionEvent`，默认 LocalFile JSONL，另有 SQLite `events`/`session_header`），§4.1 事件目录全量实装，请求前一致性门禁默认 `strict`。剩余项见 §11。
 
 ---
@@ -22,7 +26,7 @@
 | 现有资产 | 位置 | 能力 | 剩余缺口 |
 |---------|------|------|---------|
 | `MessageStore` | `session/store.py` | 进程内当前上下文窗口；`snapshot_for_request()` 交给管线的是**深拷贝** | 按设计只存「当前窗口」；历史由事件流承载 |
-| `TranscriptWriter` 协议 | `session/transcript.py` | `append_event/read_events/read_events_from/write_header/read_header/flush` | 多进程并发写同一事件流未定义 |
+| `TranscriptWriter` 协议 | `session/transcript.py` | `append_events`（一批事件一次落盘，zstd 打成同一帧，引擎批量入队的实际入口）/`append_event/read_events/read_events_from/write_header/read_header/flush` | 多进程并发写同一事件流未定义 |
 | `LocalFileTranscriptWriter` | 同上 | 默认 `<sid>.jsonl.zst`（zstd 独立帧可追加）+ `<sid>.header.json`；既有 `<sid>.jsonl` 在首次追加时迁成 zst；0600 权限；重启后 seq 续接；残行/残帧跳过；旧格式拒读 | — |
 | `SQLiteTranscriptWriter` | `session/db_transcript.py` | `events(seq, type, data, timestamp, ignorable)` + `type` 索引 + `session_header` 表 | 无按步骤/工具的聚合查询封装 |
 | `derive_messages()` | `session/derive.py` | 事件流 → 消息数组纯函数；`compact/boundary` 整体重置为 `kept` 窗口；连续 `tool/result` 并入一条消息；未知必读事件拒重建 | — |
@@ -32,11 +36,12 @@
 | `fork_transcript` | `session/fork.py` | 按 `seq` 剪一刀复制，`parent_session` 记谱系 | — |
 | 脱敏投影 | `session/redact.py` | 读取/导出侧脱敏（密钥、token、JWT、私钥块、敏感键名） | 启发式匹配，非完备密钥检测 |
 | 回放 | `session/replay.py` | 不调 LLM 重建 SDK 消息序列 / 纯文本记录 | 无独立 CLI 子命令 |
+| `StatsAccumulator` | `session/stats.py` | 由事件流 O(1) 推导 TTFT / TPS / token / 消息数；`engine.session_stats()` 读快照，`add_stats_listener()` 每步推送 | 已有 `GET /session/{id}/stats` 与 `GET /session/{id}/stats/stream`（SSE）；缺按步骤/工具维度的下钻聚合 |
 | `TokenTracker` | `observability/token_tracker.py` | 按模型累计 token/耗时；`usage` 事件已按步落日志 | — |
 | `MetricsRecorder` | `observability/metrics.py` | counter/histogram/gauge + 标签约定 + `record_event_metric` 事件投影 | 内存实现无持久化（可换 OTel/Prometheus） |
 | `structlog` | `observability/logging.py` | 结构化日志、JSON/彩色输出 | 与事件流**无关联**，无法从日志反查会话 |
 
-**结论：** 落盘内容只有事件；§4.1 的 19 个事件类型全部有真实发射路径；「可证明一致」的强门禁已成立 —— 每次 LLM 请求前校验事件流能重建出运行时状态，任何绕过事件流的状态变更都会被拦下（见 §6）。剩余缺口是多进程并发写、structlog 与事件流的关联键。
+**结论：** 落盘内容只有事件；§4.1 的 20 个事件类型全部有真实发射路径；「可证明一致」的强门禁已成立 —— 每次 LLM 请求前校验事件流能重建出运行时状态，任何绕过事件流的状态变更都会被拦下（见 §6）。剩余缺口是多进程并发写、structlog 与事件流的关联键。
 
 ---
 
@@ -69,12 +74,13 @@ SessionEvent {
 
 ### 4.1 事件类型目录（对齐 dsh，映射到 nono-agent Message 类型）
 
-全部 19 个类型都已实装（`KNOWN_EVENT_TYPES` 是权威清单，`tests/test_event_coverage.py` 逐类型断言）。写出时机、顺序与载荷示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。「发射者」一栏说明谁有资格写这条事件 —— 引擎能从循环产出的消息流观察到的由引擎写，循环内部才知道的（step 边界、`store.replace()`、重试次数）由循环通过 `SessionEventSink` 上报，工具/记忆内部发生的由各自的观察者回调上报。
+全部 20 个类型都已实装（`KNOWN_EVENT_TYPES` 是权威清单，`tests/test_event_coverage.py` 逐类型断言）。写出时机、顺序与载荷示例见 [Session-Event-Catalog.md](./session-event-catalog.md)。「发射者」一栏说明谁有资格写这条事件 —— 引擎能从循环产出的消息流观察到的由引擎写，循环内部才知道的（step 边界、`store.replace()`、重试次数）由循环通过 `SessionEventSink` 上报，工具/记忆内部发生的由各自的观察者回调上报。
 
 | 事件类型 | 载荷 | 发射者 | 来源（nono-agent 现有概念） |
 |---------|------|--------|---------------------------|
-| `turn/start` / `turn/end` | `{turn}` / `{turn, reason}` | 引擎 | 一次 `submit_message` 的边界；`reason` 对齐 `SDKResultMessage.subtype` |
-| `step/start` / `step/end` | `{turn, step, model}` / `{turn, step, reason}` | 循环 | 一次 LLM 请求 + 其引起的工具执行；成对出现，`reason` 为 `completed`/`next_turn`/`aborted_tools`/`api_error:*` 等 |
+| `turn/start` / `turn/end` | `{turn}` / `{turn, reason}` | 引擎 | 一次 `submit_message` 的边界；`reason` 取 `TerminalReason.name`（11 个：`COMPLETED` / `ABORTED_STREAMING` / `ABORTED_TOOLS` / `PROMPT_TOO_LONG` / `IMAGE_ERROR` / `MODEL_ERROR` / `BLOCKING_LIMIT` / `STOP_HOOK_PREVENTED` / `HOOK_STOPPED` / `MAX_TURNS` / `TASK_BUDGET_EXHAUSTED`，其中 `PROMPT_TOO_LONG` / `BLOCKING_LIMIT` 是保留值、loop 不产出），另有引擎手写的 `log_reconstruction_desync` 与 `error_during_execution`。对应的 `SDKResultMessage.subtype` 是 `success` 或 `error_<reason 小写>`，两者**不是同一个值** |
+| `step/start` / `step/end` | `{turn, step, model}` / `{turn, step, reason}` | 循环 | 一次 LLM 请求 + 其引起的工具执行；通常成对出现（未捕获异常终止的 step 例外：只有 `step/start`，`turn/end.reason` 为 `error_during_execution`）。`reason` 取 `completed` / `next_turn` / `aborted_tools` / `api_error:*` / `model_error` / `fallback_model` / `stop_hook_prevented` / `stop_hook_blocking` / `hook_stopped`。
+⚠️ `step/*` 的 `turn` 取自循环的 `LoopState.turn_count`，每次转移自增，**与同一提交里 `turn/*` 的回合号不同源** |
 | `request/header` | `{header, reason: initial\|resume\|change}` | 引擎 | 请求配置快照（见 §5）；`config` 含 provider/protocol/model/context_size |
 | `user/input` | `{content, attachments?}` | 引擎 | 用户原始输入（原话）；`turn/start` 之后、`step/start` 之前；不参与 derive |
 | `user/message` | `{content}` | 引擎 | `UserMessage`（组装好的最终用户信息 / stop hook 校验错误 / 截断恢复提示）；`step/start` 之后、`request/header` 之前 |
@@ -88,7 +94,8 @@ SessionEvent {
 | `permission/onchange` | `{from, to}` | 引擎（策略请求回调） | `/permission`、`enter_plan_mode` / `exit_plan_mode`；立刻记录，运行时仍用旧模式 |
 | `permission/changed` | `{from, to, at: turn\|step}` | 引擎（turn/step 边界 commit） | 下一次 `turn/start` 或 `step/start` 之前生效 |
 | `memory/write` / `memory/retrieve` | `{memory_id, kind, adopted, importance}` / `{query, memory_ids, kinds, adopted}` | `MemoryManager` 观察者 | 记忆系统（见《记忆系统设计》§5/§12.5） |
-| `usage` | `{usage, model}` | 引擎 | 每步 `TokenTracker.record_usage`（见 §7） |
+| `usage` | `{usage, model, context}` | 引擎 | 每步 `TokenTracker.record_usage`（见 §7）；`context` 是 `analyze_context_usage()` 的占用快照 | 
+| `ui/tool-result` | `{call_id, tool_name, ui}` | 引擎 | 供 UI 直接渲染的工具结果卡片；`ignorable=true` 且不参与 derive，只写不改会话状态 |
 
 > **`kept` 的语义**：`compact/boundary` 携带**压缩后的完整窗口**（含边界标记本身），`derive_messages()` 遇到它就把消息数组整体替换为 `kept`。这样「压缩」不再是需要 derive 侧猜测的特例，任何策略（手动 / 管线 / 恢复 / 清空）都用同一条事件精确表达。
 
@@ -123,7 +130,9 @@ header = {
 | `resume` | 本引擎实例第一次请求 + 日志中已有 header（进程重启 / fork 后接续 / 换 LLM 后继续） |
 | `change` | 非首次请求 + 新 header 与最新一条在 `config/system/tools` 任一维度字节级不等 |
 
-> 落地为 `canonical_header()` + `header_equals()`（比对 `config`、`system`、`tools[]` 有序），由 `build_request()` 单一入口写。与 `EngineConfig` 的 `frozen` 语义协同：配置不变则 header 不变、只写一条。
+> 落地为 `canonical_header()` + `header_equals()`（比对 `config`、`system`、`tools[]` 有序）；
+> 由 `QueryEngine._compute_request_header()` 计算，`submit_message` 的 `_stage_prelude()` 在首个
+> `step/start` 之后写入。与 `EngineConfig` 的 `frozen` 语义协同：配置不变则 header 不变、只写一条。
 
 ---
 
@@ -132,9 +141,9 @@ header = {
 对标 dsh `invariant.ts`，每次 LLM 请求前（引擎收到 `RequestStartEvent` 时）强制：
 
 1. **状态一致**：`derive_messages(events)` == `messages_to_derived(MessageStore)`（canonical JSON 相等）。
-2. **配置一致**：请求的 `model/system/tools` == 由事件流 `fold_request_header()` 推出的 header（`next_reason()` 只在真变化时补写 header，等价于持续比对）。
+2. **配置一致**：**不设独立比较**。靠 `next_reason()` 只在 `config/system/tools` 任一维度真变化时才补写 `request/header`，保证事件流里始终存在最新 header；`fold_request_header()` 只作为该判定的基线来源。
 
-不一致 → `log-reconstruction desync` → 本轮以 `error_log_reconstruction_desync` 终止，报错定位到第一条不同的消息。**没有「偷偷改上下文」的存活空间。**
+不一致 → `log-reconstruction desync` → 本轮以终止原因 `log_reconstruction_desync` 结束（错误载荷 `{"type": "reconstruction", ...}`），报错定位到第一条不同的消息。**没有「偷偷改上下文」的存活空间。**
 
 **为什么比的是会话状态，而不是发给模型的数组。** 预处理管线会为单次请求截断工具结果、剥离 thinking，请求数组本就不等于会话状态。关键在于管线拿到的是 `snapshot_for_request()` 的**深拷贝**：它无法改写已记录的历史，于是
 
@@ -184,18 +193,18 @@ header = {
 
 事件流是唯一事实来源，指标是它的聚合投影：同一次运行既能按 `seq` 逐条回看，也能按标签聚合成曲线。`_stage_event()` 是单一入口，因此所有事件（含循环与观察者上报的）都会自动计入指标。
 
-| 事件类型 | 指标 | 额外标签 |
+| 事件类型 | 指标（完整名均带 `nono_agent.` 前缀） | 额外标签 |
 |---------|------|---------|
-| 全部 | `session.events` | `event`（事件类型） |
-| `turn/end` | `session.turns` | `reason` |
-| `step/end` | `session.steps` | `reason` |
-| `tool/call` | `tool.executions` | `tool` |
-| `api/retry` | `api.errors` | `reason` |
-| `compact/boundary` | `compact.operations` | — |
-| `permission/denial` | `permission.denials` | `tool` |
-| `memory/write` | `memory.write` | `kind` |
-| `memory/retrieve` | `memory.retrieve` | — |
-| 门禁失败 | `session.desync` | — |
+| 全部 | `nono_agent.session.events` | `event`（事件类型） |
+| `turn/end` | `nono_agent.session.turns` | `reason` |
+| `step/end` | `nono_agent.session.steps` | `reason` |
+| `tool/call` | `nono_agent.tool.executions` | `tool` |
+| `api/retry` | `nono_agent.api.errors` | `reason` |
+| `compact/boundary` | `nono_agent.compact.operations` | — |
+| `permission/denial` | `nono_agent.permission.denials` | `tool` |
+| `memory/write` | `nono_agent.memory.write` | `kind` |
+| `memory/retrieve` | `nono_agent.memory.retrieve` | — |
+| 门禁失败 | `nono_agent.session.desync` | — |
 
 所有指标都带 `session_id`；载荷里缺失的标签取 `unknown`，保证标签集稳定，聚合后端不会因维度漂移而分裂时间序列。
 
@@ -293,10 +302,10 @@ header = {
 - **脱敏在读取/导出侧，不在落盘侧**：落盘就脱敏会让事件流不再等于「模型真的看到了什么」，门禁与回放随之失真，且脱敏是启发式的、不可逆 —— 一旦误伤就永久丢证据。因此磁盘上逐字保留，`redact_events()` 只作用于外发副本（SSE 通道、导出）。
 - **落盘侧靠权限隔离**：会话文件 `0600` / 目录 `0700`（§8）。
 - `redact_event()` 保留信封（`seq/type/timestamp`）只改 `data`，因此脱敏后的流仍可按 `seq` 对齐与断点续传。
-- 覆盖 `sk-`/`ghp_` 类前缀密钥、AWS access key、JWT、`Bearer` 头、PEM 私钥块、`password=`/`token:` 赋值式，以及 `api_key`/`secret`/`credential` 等敏感键名（整值替换）。启发式匹配，不承诺完备。
+- 覆盖 `sk-`、GitHub（`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`、`github_pat_`）、AWS（`AKIA`/`ASIA`）、Slack（`xox[baprs]-`）、Google（`AIza`）等前缀密钥，JWT、`Bearer` 头、PEM 私钥块、`password=`/`token:` 赋值式，以及 `api_key` / `apikey` / `access_token` / `authorization` / `client_secret` / `password` / `passwd` / `refresh_token` / `secret` / `secret_key` / `token` 这 11 个敏感键名（整值替换）。启发式匹配，不承诺完备。
 - `permission/denial` 事件本身是审计资产，完整保留。
 
-HTTP 线上请求体（SDK `params`）**不**进事件流：体积大、含协议字段与 `extra_body`，且管线/中间件改写后的数组本就不等于会话状态。调试用 `EngineConfig.log_api_requests` / CLI `--log-api-requests`，见 [USAGE.md §2.2.1](./USAGE.md)。
+HTTP 线上请求体（SDK `params`）**不**进事件流：体积大、含协议字段与 `extra_body`，且管线/中间件改写后的数组本就不等于会话状态。调试用 `EngineConfig.log_api_requests` / CLI `--log-api-requests`，见 [USAGE.md §2.2.1](./../guide/usage.md)。
 
 ### 12.7 与 deepseek-harness 对照自检
 | dsh 要素 | 本项目落地 |

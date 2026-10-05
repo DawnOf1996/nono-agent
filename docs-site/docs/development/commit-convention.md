@@ -1,3 +1,7 @@
+---
+title: Git 提交规范
+---
+
 # Git 提交规范
 
 本仓库采用 [Conventional Commits](https://www.conventionalcommits.org/) 风格，便于生成变更日志、按类型筛选历史，并与 Roadmap 模块边界对齐。
@@ -59,6 +63,7 @@ BREAKING CHANGE: 消费方若按固定字段反序列化需同步升级。
 | `recovery` | 恢复链 |
 | `hooks` | 引擎内 hooks |
 | `cli` / `server` | 产品 CLI / Server（`apps/`） |
+| `web` / `chat` | 产品 Web 前端 / 会话 UI（`apps/web`） |
 | `providers` | LLM Provider |
 | `session` | MessageStore / Transcript |
 | `tools` | 工具协议与 builtin |
@@ -69,8 +74,10 @@ BREAKING CHANGE: 消费方若按固定字段反序列化需同步升级。
 | `mcp` / `agents` | MCP / 子 Agent |
 | `memory` / `checkpoint` | P2 能力 |
 | `observability` | Token/日志/指标 |
-| `docs` | `docs/`、README（也可直接用 type=docs 省略 scope） |
+| `docs` | `docs-site/`、README（也可直接用 type=docs 省略 scope） |
 | `roadmap` / `arch` | 规划或架构文档专项 |
+| `test` | 仅测试改动 |
+| `runtime-test` | `runtime-test/` 冒烟工作区 |
 
 无合适 scope 时可省略：`chore: 升级 openai SDK`。
 
@@ -95,7 +102,7 @@ docs(arch): 同步完整包树与各包职责
 ```
 refactor(tools): builtin.py 拆分为 tools/builtin 包
 
-保留 tools/builtin.py 薄 re-export，避免打断现有 import。
+旧 tools/builtin.py 直接删除，调用方改从 nono_agent.tools.builtin 导入。
 ```
 
 **避免：**
@@ -131,6 +138,6 @@ WIP
 
 | 文档 | 说明 |
 |------|------|
-| [ROADMAP.md](./ROADMAP.md) | 能力规划与包职责 |
-| [NonoAgent-Architecture.md](./NonoAgent-Architecture.md) | 系统架构 |
-| [README.md](../README.md) | 项目入口 |
+| [ROADMAP.md](./../roadmap/index.md) | 能力规划与包职责 |
+| [NonoAgent-Architecture.md](./../architecture/nono-agent-architecture.md) | 系统架构 |
+| [README.md](https://gitee.com/dawn1996/nono-agent/blob/main/README.md) | 项目入口 |

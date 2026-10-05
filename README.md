@@ -2,7 +2,7 @@
 
 Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 QueryEngine 架构。
 
-已对齐 Claude Code 的 Agent 运行时深度：Prompt 组装、权限规则、Agent 三件套、Rules/Skills/Plugins/MCP、子 Agent、会话治理等均基本落地，见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+已对齐 Claude Code 的 Agent 运行时深度：Prompt 组装、权限规则、Agent 三件套、Rules/Skills/Plugins/MCP、子 Agent、会话治理等均基本落地，见 [docs-site/docs/roadmap/index.md](docs-site/docs/roadmap/index.md)。
 
 ## 现状一览
 
@@ -25,7 +25,7 @@ Python AI Agent **运行时引擎**（`0.1.0`），灵感来自 Claude Code 的 
 | 可观测性：TokenTracker + structlog + Metrics（事件流投影）+ 脱敏导出 + 不调模型回放 | — |
 | CLI + Server（SSE，含鉴权/TTL/AskUser 回调 + 会话事件流通道） | — |
 
-详细架构见 [docs/NonoAgent-Architecture.md](docs/NonoAgent-Architecture.md)，规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+详细架构见 [docs-site/docs/architecture/nono-agent-architecture.md](docs-site/docs/architecture/nono-agent-architecture.md)，规划见 [docs-site/docs/roadmap/index.md](docs-site/docs/roadmap/index.md)。
 
 ## 要求
 
@@ -93,7 +93,7 @@ uv run nono chat --log-api-requests   # 发 HTTP 前 dump 请求体
 uv run nono sessions   # 列出历史会话
 ```
 
-首次交互式运行会引导写入 `~/.nono-agent/config.yaml`（供应商 / 协议 / 模型目录）；API Key 保存在 `~/.nono-agent/credentials`，YAML 只保留自动生成的 `api_key_env` 指针。详见 [docs/USAGE.md](docs/USAGE.md)。
+首次交互式运行会引导写入 `~/.nono-agent/config.yaml`（供应商 / 协议 / 模型目录）；API Key 保存在 `~/.nono-agent/credentials`，YAML 只保留自动生成的 `api_key_env` 指针。详见 [docs-site/docs/guide/usage.md](docs-site/docs/guide/usage.md)。
 
 ### Server（SSE）
 
@@ -120,15 +120,28 @@ uv run nono-app-server
 
 ## 文档
 
+完整文档站在 [`docs-site/`](docs-site/)（MkDocs Material）。本地预览：
+
+```bash
+uv sync --extra dev --group docs
+uv run mkdocs serve -f docs-site/mkdocs.yml
+```
+
 | 文档 | 说明 |
 |------|------|
-| [docs/USAGE.md](docs/USAGE.md) | 使用与测试说明（库 / CLI / Server / 配置 / 工具 / 测试） |
+| [使用手册](docs-site/docs/guide/usage.md) | 库 / CLI / Server / 配置 / 工具 / 测试 |
+| [快速开始](docs-site/docs/getting-started/quickstart.md) | 三种入口的上手路径 |
+| [配置与密钥](docs-site/docs/getting-started/configuration.md) | 供应商目录、密钥分层、环境变量 |
+| [开发指南](docs-site/docs/development/index.md) | 目录结构、加工具 / 插件 / Provider、测试规范 |
+| [架构总览](docs-site/docs/architecture/nono-agent-architecture.md) | 设计理念与系统架构 |
+| [会话事件溯源](docs-site/docs/architecture/session-observability.md) | 门禁、后端、可观测性 |
+| [会话事件目录](docs-site/docs/architecture/session-event-catalog.md) | 20 类会话事件的时机、顺序与载荷示例 |
+| [记忆系统](docs-site/docs/architecture/memory-system.md) | 跨会话记忆的准入、检索、反思 |
+| [上下文压缩](docs-site/docs/architecture/context-compression.md) | 5 级预处理管线与触发阈值 |
+| [Shell 工具](docs-site/docs/architecture/shell-tool.md) | 方言、编码、流分离、超限落盘、超时晋升 |
+| [路线图](docs-site/docs/roadmap/index.md) | 能力现状、未实现项与打磨规划 |
+| [提交规范](docs-site/docs/development/commit-convention.md) | Conventional Commits |
 | [apps/README.md](apps/README.md) | 产品层开发与 Windows 桌面版打包 |
-| [docs/Session-Observability-Design.md](docs/Session-Observability-Design.md) | 会话事件溯源设计（门禁、后端、可观测性） |
-| [docs/Session-Event-Catalog.md](docs/Session-Event-Catalog.md) | 19 类会话事件的时机、顺序与载荷示例 |
-| [docs/NonoAgent-Architecture.md](docs/NonoAgent-Architecture.md) | 设计理念与系统架构 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 能力现状、未实现项与打磨规划 |
-| [docs/COMMIT.md](docs/COMMIT.md) | Git 提交规范（Conventional Commits） |
 
 ## 开发
 
@@ -136,6 +149,7 @@ uv run nono-app-server
 uv sync --extra dev
 uv run pytest
 uv run ruff check .
+uv run mypy nono_agent/
 ```
 
 ## License

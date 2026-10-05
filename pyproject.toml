@@ -38,6 +38,15 @@ dev = [
 nono-app-cli = { path = "apps/cli", editable = true }
 nono-app-server = { path = "apps/server", editable = true }
 
+# 文档站：docs-site/mkdocs.yml
+#   uv sync --group docs
+#   uv run mkdocs serve -f docs-site/mkdocs.yml
+[dependency-groups]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocs-glightbox>=0.4",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -1,14 +1,27 @@
+---
+title: Shell 工具重构方案
+---
+
 # Shell 工具重构方案
 
 > 目标：把 `nono_agent/tools/builtin/bash.py` 从「单文件 + 正则黑名单 + 丢弃式截断 + 超时即杀」
 > 演进为分层能力架构，吸收 DSH（`@deepseek-ai/dsh-tool-pwsh` / `dsh-pwsh-local` / `dsh-sandbox-windows-acl`）
 > 的四项关键设计：**编码生产端钉死、流分离、溢出落盘、超时晋升后台**。
 >
-> 状态：待评审　｜　基线 commit：见 `git log -1`
+> 状态：**P0 / P1 已全部实施完毕**　｜　基线 commit：见 `git log -1`
+>
+> ⚠️ **本文是历史方案，不是当前实现的说明。** P0（编码钉死 / 流分离 / 溢出落盘）与
+> P1（能力缝 / 后台作业 / Job 工具）均已落地，具体实现与最终形态见
+> [Shell 工具设计](../architecture/shell-tool.md)（尤其是 §11 实施结果）。
+> 下面 §0 的「现状盘点」描述的是**重构前**的代码，行号与结论基本都已失效；
+> 唯一仍然有效的待办是 P2（模式分级替代分类器、Windows ConstrainedLanguage）。
 
 ---
 
-## 0. 现状盘点（代码事实）
+## 0. 现状盘点（重构前基线，**已全部失效**）
+
+> 下表是动手前的代码事实快照，仅作决策留痕。当前实现的模块结构、签名与行号请以
+> `docs-site/docs/architecture/shell-tool.md` 为准。
 
 | 事实 | 位置 |
 |---|---|
@@ -107,7 +120,8 @@ _WINDOWS = (
     "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
     "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
 )
-_POSIX = "export LC_ALL=C.UTF-8 LANG=C.UTF-8 PYTHONIOENCODING=utf-8; "
+_POSIX = "export PYTHONIOENCODING=utf-8; "   # 实际落地值（preamble.py:37）
+# 注：不设 LC_ALL=C.UTF-8 / LANG —— macOS 上会告警
 
 def wrap_command(command: str, *, platform: str | None = None) -> str:
     """前置编码声明。用 `;` 分隔而非换行，保证 PowerShell 错误行号不错位。"""
@@ -115,7 +129,7 @@ def wrap_command(command: str, *, platform: str | None = None) -> str:
 
 - 保留 `_common.decode_command_output` 作为**兜底**（应对子进程忽略声明的情况）
 - Windows 上 `create_subprocess_shell` 走 `cmd.exe`，无法直接前置 PS 声明
-  → 需改为**显式 argv**：`["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", wrapped]`
+  → 需改为**显式 argv**：`["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", wrapped]`（`dialect.py:25` `_PS_ARGS`）
   （这一步顺带消除了 `shell=True` 的引号转义层）
 
 **改动文件**：`shell/preamble.py`（新）、`bash.py`
@@ -139,14 +153,14 @@ def wrap_command(command: str, *, platform: str | None = None) -> str:
 ```python
 class SpillWriter:
     """字节 ring + 溢出落盘。对应 DSH 的 maxOutputBytes / maxSpillBytes 双预算。"""
-    def __init__(self, max_bytes: int, spill_dir: Path, max_spill_bytes: int = 64 << 20): ...
+    def __init__(self, max_bytes: int, spill_path: Path | None, max_spill_bytes: int = 64 << 20): ...
     def write(self, data: bytes) -> None: ...
     def read_from(self, offset: int) -> OutputDelta: ...  # {text, next_offset, lossy, spill_path}
     def close(self) -> Path | None: ...
 ```
 
-- 内存 `max_output_chars`（默认 30k）+ 落盘 `max_spill_bytes`（默认 64MB）
-- 落盘位置：`<session_dir>/spill/<job_id>/{stdout,stderr}.log`
+- 内存 `max_output_bytes`（默认 30k）+ 落盘 `max_spill_bytes`（默认 64MB）
+- 落盘位置：`<session_dir>/spill/<session_id>/<job_id>/{stdout,stderr}.log`
 - **回报路径给模型**：`[output truncated; full output: <path>]`
 
 **两条容易踩的坑**（已核实）：
@@ -169,7 +183,7 @@ class SpillWriter:
 class ShellConfig(BaseModel):
     timeout_s: float = 120.0
     max_timeout_s: float = 600.0
-    max_output_chars: int = 30_000
+    max_output_bytes: int = 30_000
     max_spill_bytes: int = 64 * 1024 * 1024
     merge_streams: bool = False
     env_overrides: dict[str, str] = Field(default_factory=dict)  # NO_COLOR / PAGER 等
@@ -228,7 +242,7 @@ if self._promote_on_timeout and registry is not None:
     try:
         outcome = await asyncio.wait_for(proc.wait(), timeout)
     except TimeoutError:
-        registry.detach_abort_watch(job, context.signal)    # 移交，不 cancel
+        registry.attach_abort_watch(job.id, context.signal)    # 移交，不 cancel
         return self._render_promoted(job)                   # 进程继续跑
     registry.detach_abort_watch(job, None)
     return self._render_foreground(outcome)
@@ -285,7 +299,10 @@ class JobKillTool(ToolBase):
 
 ### P2 — 沙箱分级（约 1-2 周）
 
-**前置**：P1 必须先落地。没有能力缝，沙箱只能写成 `bash.py` 里的分支。
+> **状态：未实施。** P2 是本文**唯一仍然有效**的待办项。`permissions/bash_classify.py`
+> 仍是唯一的命令分类器，`bash.py` 仍在调用它；代码里也没有 ConstrainedLanguage 相关实现。
+
+**前置**：P1 必须先落地。没有能力缝，沙箱只能写成 `bash.py` 里的分支。✅ 已满足。
 
 #### P2-1 建议先做的（低成本）
 
@@ -325,7 +342,7 @@ Windows 受限令牌 + capability SID + Low integrity 标签
 | 回归 | `tests/test_builtin_tools.py:31` 现有断言不得破坏 |
 | 平台 | Windows / POSIX 参数化（`platform` 显式注入，不依赖 `sys.platform` 直读） |
 
-新增 `tests/test_shell/` 包。子进程统一用短小的跨平台命令（`python -c`），
+新增 `tests/test_shell_*.py` (flat) 包。子进程统一用短小的跨平台命令（`python -c`），
 不 mock `asyncio` 内部 —— 真实进程才能暴露管道/编码/终止的真实行为。
 
 ---

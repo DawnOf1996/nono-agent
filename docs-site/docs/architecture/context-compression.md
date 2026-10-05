@@ -1,3 +1,7 @@
+---
+title: Nono Agent 上下文压缩策略设计
+---
+
 # Nono Agent 上下文压缩策略设计
 
 > 本文描述 `nono_agent` 的上下文压缩机制，并记录 2026-02 一轮整改（依据本文旧版梳理出的
@@ -22,7 +26,7 @@ Nono Agent 的上下文控制分四个入口，按发生时机排列：
 
 | 入口 | 时机 | 实现位置 | 窗口感知 |
 | --- | --- | --- | --- |
-| ① 主动预处理管线 | 每次 LLM 调用前（`Phase 1`） | `pipeline/`（5 个 stage） | ✅ 按配置窗口百分比触发 |
+| ① 主动预处理管线 | 每次 LLM 调用前（`Phase 1`） | `pipeline/`（5 级阶梯；默认管线注册 4 个 stage，ContextCollapse 需 `context_collapse_enabled=True`） | ✅ 按配置窗口百分比触发 |
 | ② 反应式恢复链 | API 报错之后（`prompt_too_long` 等） | `recovery/` + `core/loop.py` | ❌ 固定 token 数 |
 | ③ 手动压缩 | 用户 `/compact` | `core/engine.py::compact()` | ❌ 按消息条数 |
 | ④ 记忆注入预算 | 组装 system prompt 时 | `memory/manager.py` | ❌ 固定 token 预算 |
@@ -50,12 +54,18 @@ Nono Agent 的上下文控制分四个入口，按发生时机排列：
 ```python
 overhead_tokens = estimate_system_prompt_tokens(system_prompt) + estimate_tools_tokens(api_tools)
 estimated_tokens = overhead_tokens + estimate_messages_tokens(messages)
+provider_floor_tokens = token_tracker.provider_context_floor()   # provider 实测下界
+effective_tokens = max(estimated_tokens, provider_floor_tokens)  # 各 stage 实际按这个判
 ```
 
 即 **system prompt 与工具 schema 计入总上下文**，压缩阈值按「全量请求体积」判断；
 两部分作为固定开销记录在 `PipelineContext.overhead_tokens`（不随消息压缩变化），
 stage 重新估算消息部分后需加回（`AutoCompactStage._reestimate` / SnipCompact 的
 `total + context.overhead_tokens`）。
+
+**估算偏低时的兜底**：token 估算对工具 JSON schema 普遍偏低（实测约差 40%），所以
+`effective_tokens` 取「估算值」与「provider 实测下界」的**较大者**——否则真正超窗时
+压缩还没被触发。压缩边界创建后 `provider_floor_tokens` 清零。
 
 ---
 
@@ -75,7 +85,7 @@ stage 重新估算消息部分后需加回（`AutoCompactStage._reestimate` / Sn
 
 **CLI/文件配置链路**（`apps/cli/nono_app_cli/config.py::build_engine_config`）已接入该字段：
 `~/.nono-agent/config.json` 或 `--config` 文件中的 `provider.model_context`（或顶层
-`model_context`），环境变量 `NONO_MODEL_CONTEXT` 优先级最高（env > provider 段 > 顶层）。
+`model_context`），窗口大小只经 YAML 目录配置：`llm_provider.providers.<id>.models[].context_window` （→ `ProviderConfig.model_context`），**没有** `NONO_MODEL_CONTEXT` 这样的环境变量。
 注意模型配置走的是 `config.json` 链路；`.nono-agent/settings.json` 属于 Settings 体系
 （权限等），与模型上下文无关。
 
@@ -87,22 +97,26 @@ stage 重新估算消息部分后需加回（`AutoCompactStage._reestimate` / Sn
 
 ---
 
-## 4. 主动预处理管线（5 级，成本递进）
+## 4. 主动预处理管线（5 级阶梯，成本递进）
+
+> 「5 级」是阶梯的全量级数。**默认管线只注册 4 个 stage**（`core/engine.py:_create_default_pipeline`
+> 的 docstring 原文：「4 个内置 stage + 可选 ContextCollapse」）；第 4 级 `ContextCollapseStage`
+> 要 `EngineConfig.context_collapse_enabled=True` 才进管线，默认关闭。下表 1–5 是级数序号，不是默认活跃数。
 
 管线骨架在 `pipeline/base.py`：`PreprocessStage` Protocol + `PreprocessPipeline`
 （按 priority 排序、异常不中断、统计 `tokens_saved`、透出 `compact_boundary_created`）。
 `PipelineContext` 携带 `model_id`、`context_window`（配置解析后的窗口）、
 `overhead_tokens`（system+tools 固定开销）与 `estimated_tokens`（含开销的全量估算）。
 
-执行顺序与触发阈值（均基于配置的 `context_window`）：
+执行顺序与触发阈值（均基于配置的 `context_window`，判断值是上一节定义的 `effective_tokens`）：
 
 | # | Stage | priority | 触发条件 | 动作 | 关键常量 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `ToolResultBudgetStage` | 10 | **无条件运行** | 单个 `tool_result` 超 20k tokens 按行截断，保头 500 + 尾 200 | `DEFAULT_TOOL_RESULT_BUDGET=20_000` |
-| 2 | `SnipCompactStage` | 20 | `estimated > 窗口×0.60` | 滑动窗口丢最旧消息（不丢 `SystemMessage`），至少保 3 对；目标 = 阈值×0.8；丢弃后 `estimated = 剩余消息 + overhead` | `SNIP_THRESHOLD=0.60`, `MIN_PRESERVE_PAIRS=3` |
-| 3 | `MicroCompactStage` | 110 | `estimated > 窗口×0.50` | 只处理倒数 4 轮前的消息：剥 thinking；文本/`tool_result` 超 4k 截断（2/3 头 + 1/3 尾） | `MICROCOMPACT_THRESHOLD=0.50`, `MICROCOMPACT_TURN_LOOKBACK=4`, `MAX_TEXT_BLOCK_TOKENS=4_000` |
-| 4 | `ContextCollapseStage` | 150 | `estimated > 窗口×0.75` 且已注入 summarizer | 旧消息（保最近 3 对）交 LLM 摘要，替换为 `compact_boundary` + 摘要消息 | `COLLAPSE_THRESHOLD=0.75` |
-| 5 | `AutoCompactStage` | 200 | `estimated >= 窗口×0.80` | <95%：剥全部 thinking + `tool_result` 截到 2k，直到 ≤ `窗口×0.60`；≥95%：只保系统消息 + 边界 + 倒数第 2 条用户消息起的内容 | `AUTO_COMPACT_THRESHOLD=0.80`, `BLOCKING_LIMIT_THRESHOLD=0.95`, `COMPACT_TARGET_RATIO=0.60` |
+| 2 | `SnipCompactStage` | 20 | `effective > 窗口×0.60` | 滑动窗口丢最旧消息（不丢 `SystemMessage`），至少保 3 对；目标 = 阈值×0.8；丢弃后 `estimated = 剩余消息 + overhead` | `SNIP_THRESHOLD=0.60`, `MIN_PRESERVE_PAIRS=3` |
+| 3 | `MicroCompactStage` | 110 | `effective > 窗口×0.50` | 只处理倒数 4 轮前的消息：剥 thinking；文本/`tool_result` 超 4k 截断（2/3 头 + 1/3 尾） | `MICROCOMPACT_THRESHOLD=0.50`, `MICROCOMPACT_TURN_LOOKBACK=4`, `MAX_TEXT_BLOCK_TOKENS=4_000` |
+| 4 | `ContextCollapseStage` | 150 | `effective > 窗口×0.75` 且已注入 summarizer | 旧消息（保最近 3 对）交 LLM 摘要，替换为 `compact_boundary` + 摘要消息 | `COLLAPSE_THRESHOLD=0.75` |
+| 5 | `AutoCompactStage` | 200 | `effective >= 窗口×0.80` | <95%：剥全部 thinking + `tool_result` 截到 2k，直到 ≤ `窗口×0.60`；≥95%：只保系统消息 + 边界 + 倒数第 2 条用户消息起的内容 | `AUTO_COMPACT_THRESHOLD=0.80`, `BLOCKING_LIMIT_THRESHOLD=0.95`, `COMPACT_TARGET_RATIO=0.60` |
 
 要点：
 
@@ -178,8 +192,8 @@ gauge 指标 `nono_agent.context.tokens`（总占用）与 `nono_agent.messages.
 
 **TUI / 命令展示**：`observability.token_tracker.format_context_usage()` 把快照
 渲染成单行摘要（总量/占比 + system/tools/messages 三分项），`context_usage_color()`
-按占用率给出 rich 颜色（<50% 绿 / <80% 黄 / ≥80% 红）。CLI 的 `_consume_stream` 在
-每轮 `SDKResultMessage` 汇总行下方打印该行；`/tokens` 命令追加同一行（无快照时不
+按占用率给出 rich 颜色（<50% 绿 / <80% 黄 / ≥80% 红）。CLI 的结果渲染分支
+（`apps/cli/nono_app_cli/render.py:194-198`）在每轮 `SDKResultMessage` 汇总行下方打印该行；`/tokens` 命令追加同一行（无快照时不
 渲染，如尚未发起任何请求）。
 
 被移除的旧辅助：`calculate_token_warning_state()`（前缀匹配版告警，功能由分析结果的
@@ -201,7 +215,7 @@ gauge 指标 `nono_agent.context.tokens`（总占用）与 `nono_agent.messages.
 | `PipelineContext.max_tokens` / `is_retry` 未接线 | ⏳ 未处理 | 仍为预留字段（本次整改已新增 `context_window` / `overhead_tokens` 两个实际生效字段） |
 | Stage 1/2/3 构造参数未从 `EngineConfig` 透传 | ⏳ 未处理 | 引擎仍注册默认实例（可注入自定义管线绕过） |
 
-**验证**：全量测试 `413 passed`（`pytest tests/`），新增
+**验证**：全量测试 `1016 passed`（`pytest tests/`），新增
 `tests/test_context_usage.py`（配置解析优先级 / 无前缀匹配 / 分项加总 / overhead 记账），
 扩展 `tests/test_pipeline.py`（配置窗口驱动阈值）；冒烟脚本验证配置解析
 （200000 → 32000 → 8000）、引擎分析与 `/context` 输出。

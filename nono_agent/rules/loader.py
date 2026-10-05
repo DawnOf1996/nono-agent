@@ -1,6 +1,6 @@
 """Rules 发现与加载 —— RuleLoader 协议 + 文件系统实现。
 
-发现约定（docs/ROADMAP.md §2.2）：
+发现约定（docs-site/docs/roadmap/index.md §2.2）：
 - ``.nono-agent/rules/*.md``（项目级，CWD 向上 walk）
 - ``AGENTS.md`` / ``CLAUDE.md``（项目根，CLAUDE.md 兼容读）
 - ``~/.nono-agent/rules/*.md``（用户全局）

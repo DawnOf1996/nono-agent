@@ -1,3 +1,7 @@
+---
+title: Nono Agent —— 使用与测试说明
+---
+
 # Nono Agent —— 使用与测试说明
 
 本文档面向「想跑起来 / 想写测试 / 想接入」的开发者，覆盖安装、三种使用方式（库 / CLI / Server）、配置、内置工具、扩展面与测试方法。所有命令均已在本仓库全部测试中验证；若某处与代码不符，以 `nono_agent/` 源码为准。
@@ -10,7 +14,7 @@
 - 推荐 `uv`（也可用 `pip`）
 
 ```bash
-cd /data/workspace/projects/nono-agent
+cd /path/to/nono-agent
 uv sync --extra dev     # 安装运行时依赖 + pytest/ruff/mypy
 ```
 
@@ -61,7 +65,7 @@ config = EngineConfig(
         model_id="MiniMax-M3",
         adapter="openai_chat_completions",          # openai_responses | anthropic_messages
         api_key="...",             # 建议从环境变量读取
-        base_url="https://api.minimaxi.com/v1",
+        base_url="https://api.minimax.cn/v1",
     ),
 )
 ```
@@ -182,7 +186,7 @@ CLI 的 LLM 配置是**命名供应商目录**，不是扁平的单模型 JSON�
 - 项目级：`.nono-agent/config.yaml`（从 cwd 向上查找）
 - Overlay：CLI `--config` 指向的一层 YAML（测试 / 一次性覆盖）
 
-优先级：**CLI** `--provider` **/** `--model` **>** `--config` **overlay > 项目 YAML > 用户 YAML**。
+优先级：**CLI `--provider` / `--model` > 环境变量 `NONO_MODEL` > `--config` overlay > 项目 YAML > 用户 YAML**。
 
 合并规则：`agent_default_model` 整段覆盖；`llm_provider.providers` 按 provider id 深合并；`models` 按 model id 合并。
 
@@ -246,6 +250,8 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 ├── credentials        # API Key（0600，勿提交）
 ├── settings.json      # 用户级分层设置
 ├── mcp.json           # 自定义 MCP 连接清单（不含工作区启停）
+├── mcp/               # MCP 进程日志（launcher 写）
+├── runtimes/          # MCP 运行时缓存
 ├── sessions/          # 会话事件流
 ├── memory/            # 跨会话记忆（每条一个 JSON）
 ├── rules/             # 用户全局规则
@@ -253,6 +259,8 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 ├── plugins/           # 用户全局插件
 └── agents/            # 用户全局子 Agent
 ```
+
+桌面版 sidecar 另有两个：应用状态库 `app.db`，以及工作区变更快照 `workspace-changes/<session_id>/`。
 
 
 
@@ -285,7 +293,7 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
 ### 3.5 内置工具插件（开关 + API Key 即成工具）
 
-`nono_agent/toolplugins/` 提供**框架**（声明规范、执行器、运行时、配置面板 schema），引擎不打包任何具体厂商集成。插件属于**产品定义**，随产品包发布：桌面版把它们放在 [`apps/server/nono_app_server/features/toolplugins/plugins/`](../apps/server/nono_app_server/features/toolplugins/plugins)，启动时由 `create_app()` 调 `register_builtin_plugins()` 挂进引擎的发现链。
+`nono_agent/toolplugins/` 提供**框架**（声明规范、执行器、运行时、配置面板 schema），引擎不打包任何具体厂商集成。插件属于**产品定义**，随产品包发布：桌面版把它们放在 `apps/server/nono_app_server/features/toolplugins/plugins/`（仓库内路径），启动时由 `create_app()` 调 `register_builtin_plugins()` 挂进引擎的发现链。
 
 用户在设置里打开开关、填一次 API Key，对应工具就出现在模型的工具表里；关掉即消失。设置页的「插件」标签按每个插件自己的 `config` 段渲染字段。
 
@@ -297,7 +305,7 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 | `minimax-image` | `minimax__edit_image` | 同上 | MiniMax 图生图（`subject_reference`），参考图支持工作区本地路径 |
 | `tavily` | `mcp__tavily__*` | `NONO_TAVILY_API_KEY` | Tavily 官方 MCP server 的内置预设（`search`/`extract`） |
 
-启用方式（项目 `settings.json`，与 `mcp.servers.<id>` 同构；**未声明即不启用**）：
+启用方式（**用户级** `~/.nono-agent/settings.json`，设置面板写的就是这里；与 `mcp.servers.<id>` 同构；**未声明即不启用**）：
 
 ```json
 {
@@ -307,7 +315,7 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
       "api_key_env": "NONO_MINIMAX_IMAGE_API_KEY",
       "options": {
         "model": "image-01",
-        "base_url": "https://api.minimax.io",
+        "base_url": "https://api.minimax.cn",
         "output_dir": ".nono-agent/images"
       }
     },
@@ -321,6 +329,10 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 ```
 
 密钥**不写 settings.json**：把值存进 `~/.nono-agent/credentials`（`NONO_MINIMAX_IMAGE_API_KEY=...`）或同名环境变量，配置里只留 `api_key_env` 指针。HTTP 端点（`options.base_url`）可改，因此每次请求都过 SSRF 判定；错误信息里的密钥一律脱敏。
+
+> 上面的 `options.model` 只是示意，具体取值以各插件清单为准（`minimax-image` 实际是 `enum`：`image-01` / `image-01-live`）。
+>
+> 引擎读取走合并后的 Settings，所以工作区 `.nono-agent/settings.json` 里的同名 `tools.<id>` 块**仍会生效**并覆盖用户级设置 —— 那是逃生舱，不是主路径。覆盖发生时面板会把这个插件标成 `project_owned`，用它来排查「面板开关像没反应」。
 
 #### 设置面板
 
@@ -352,7 +364,8 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
   | `auth.type` | 注入位置 | 何时用 |
   |---|---|---|
-  | `bearer`（默认） | `Authorization: Bearer <key>` | 绝大多数服务。Tavily 远程端点实测认这个头 |
+  | `none` | 不注入 | 框架默认。`auth` 段不写 `type` 就是这个 |
+  | `bearer` | `Authorization: Bearer <key>` | 绝大多数服务。两个内置预设用的就是它（要显式写 `"type": "bearer"`）；Tavily 远程端点实测认这个头 |
   | `header` | `header` 指定的头，如 `X-Api-Key` | 厂商自定义头 |
   | `query` | `?<query_param>=<key>` | **兜底**：服务把 Key 设计在 URL 上 |
 
@@ -456,13 +469,15 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 uv run nono sessions
 
 # 直接看某一轮到底发生了什么（新会话是 .jsonl.zst；旧的明文 .jsonl 用 cat）
+# 注意：zstdcat 与 jq 都是外部工具，仓库不提供，需要自己装。
+# Windows 上更省事的是用仓库自带的 session-viewer。
 zstdcat ~/.nono-agent/sessions/<session_id>.jsonl.zst | jq -c '{seq, type}'
 
 # 「模型当时被告诉了什么」——请求配置快照
 zstdcat ~/.nono-agent/sessions/<session_id>.jsonl.zst | jq 'select(.type=="request/header") | .data.header'
 ```
 
-共 19 个事件类型，权威清单是 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`。写出时机、顺序与每条 `data` 的示例见 [Session-Event-Catalog.md](./Session-Event-Catalog.md)。
+共 20 个事件类型，权威清单是 `nono_agent/session/events.py` 的 `KNOWN_EVENT_TYPES`。写出时机、顺序与每条 `data` 的示例见 [Session-Event-Catalog.md](./../architecture/session-event-catalog.md)。
 
 
 | 类型                                 | 回答的问题                                         |
@@ -474,6 +489,7 @@ zstdcat ~/.nono-agent/sessions/<session_id>.jsonl.zst | jq 'select(.type=="reque
 | `user/message`、`assistant/message` | 对话本身（组装好的用户信息 + 含 tool_use blocks 的回复）        |
 | `assistant/chunk`                  | 逐 token 增量，用于不调模型重放 UI                        |
 | `tool/call`、`tool/result`          | 调了什么工具、拿到什么结果                                 |
+| `ui/tool-result`                    | 给 UI 的结构化附件（文件差异等），`ignorable`，不参与消息重建    |
 | `compact/boundary`                 | 上下文在哪里被压缩/清空，压缩后保留了什么                         |
 | `api/retry`                        | 重试与 fallback 切换                               |
 | `permission/denial`                | 被权限规则拦下的操作（审计资产）                              |
@@ -514,7 +530,7 @@ await engine.fork_session(boundary_seq=12, new_session_id="s1-fork")  # 在某�
 
 ### 7.3 一致性门禁
 
-事件流是模型上下文的唯一真源，所以每次 LLM 请求前会校验「事件流重建出的消息 == 引擎当前的会话状态」。不一致说明有人绕过事件流改了上下文，本轮以 `error_log_reconstruction_desync` 终止，错误信息指向第一条不同的消息。
+事件流是模型上下文的唯一真源，所以每次 LLM 请求前会校验「事件流重建出的消息 == 引擎当前的会话状态」。不一致说明有人绕过事件流改了上下文，本轮以终止原因 `log_reconstruction_desync` 结束（错误载荷 `{"type": "reconstruction", ...}`），错误信息指向第一条不同的消息。
 
 ```python
 EngineConfig(session_invariant="strict")  # 默认：不一致即终止本轮
@@ -529,9 +545,13 @@ EngineConfig(session_invariant="off")     # 不校验，省掉每次请求的一
 ### 7.4 脱敏导出与回放
 
 ```python
+from pathlib import Path
+
 from nono_agent.session import LocalFileTranscriptWriter, redact_events, replay_sdk_messages
 
-events = await LocalFileTranscriptWriter("~/.nono-agent/sessions/s1.jsonl").read_events()
+events = await LocalFileTranscriptWriter(
+    Path.home() / ".nono-agent" / "sessions" / "s1.jsonl"
+).read_events()
 # 传入 .jsonl 即可：已有明文文件可直接读；resume 后第一次追加会迁成 .jsonl.zst
 
 # 外发前脱敏（密钥/token/JWT/私钥块/敏感键名）；信封 seq 不变，仍可按序对齐
@@ -614,14 +634,14 @@ async with engine:
 | 测试文件                                                                             | 覆盖                                                     |
 | -------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | `test_permissions.py`                                                            | PermissionMode/PermissionRule/沙箱/Ignore/Bash 分类/denial |
-| `test_builtin_tools.py`                                                          | 22 个内置工具 + 工厂                                          |
+| `test_builtin_tools.py`                                                          | 23 个内置工具 + 工厂                                          |
 | `test_mcp.py`                                                                    | MCP stdio 客户端（mock 服务器）                                |
 | `test_lsp.py`                                                                    | LSP 客户端（mock 语言服务器）                                    |
 | `test_agents.py` / `test_skills.py` / `test_plugins.py` / `test_rules.py`        | 扩展面                                                    |
 | `test_server.py`                                                                 | Server 鉴权/AskUser 端点/事件流 SSE 通道                        |
 | `test_budget.py` / `test_fallback.py` / `test_pipeline.py`                       | 引擎边界                                                   |
 | `test_transcript_events.py` / `test_session_events.py` / `test_engine_events.py` | 事件流后端 / derive 折叠 / 引擎事件发射                             |
-| `test_event_coverage.py`                                                         | 19 个事件类型逐个有真实发射路径 + 管线 compact/boundary + 指标投影         |
+| `test_event_coverage.py`                                                         | 20 个事件类型逐个有真实发射路径 + 管线 compact/boundary + 指标投影         |
 | `test_session_invariant.py`                                                      | 一致性门禁（strict/warn/off）+ 管线深拷贝 + 接续已有事件流                |
 | `test_session_redact.py` / `test_session_replay.py`                              | 脱敏投影 / 不调模型回放                                          |
 | `test_checkpoint.py` / `test_memory.py`                                          | 持久化                                                    |
@@ -648,19 +668,23 @@ nono_agent/
 ├── recovery/      错误恢复决策链
 ├── providers/     协议矩阵（openai_chat_completions / openai_responses / anthropic_messages）
 ├── session/       MessageStore + 事件流 Transcript（JSONL/SQLite + derive + fork）
-├── tools/         工具协议/注册表/执行器 + builtin/（22 个生产工具）
+├── tools/         工具协议/注册表/执行器 + builtin/（23 个生产工具）
+├── shell/ jobs/   本地 Shell 执行器 / 后台作业注册表
 ├── prompt/        Prompt Section 组装（静态/动态边界 + 优先级合并）
-├── rules/ skills/ plugins/ commands/ settings/ permissions/ mcp/ agents/ memory/ checkpoint/
+├── rules/ skills/ plugins/ toolplugins/ commands/ settings/ permissions/ mcp/ agents/ memory/ checkpoint/
 ├── hooks/         引擎内 Middleware + 用户态 hooks.json
 ├── observability/ Token 跟踪/日志/指标
-└── utils/         Abort / token 等原语
+└── utils/         Abort / token / SSRF 闸门等原语
 
 tests/
 └── helpers.py     MockProvider / MockTool / create_test_engine
 
 apps/
 ├── cli/           终端 CLI（Typer + Rich）
-└── server/        FastAPI + SSE sidecar
+├── server/        FastAPI + SSE sidecar
+├── web/           React + Vite 前端
+├── desktop/       Electron 桌面壳
+└── packages/      前后端共享的 TS 协议类型
 ```
 
-详细设计见 [NonoAgent-Architecture.md](./NonoAgent-Architecture.md)，规划与状态见 [ROADMAP.md](./ROADMAP.md)。
+详细设计见 [NonoAgent-Architecture.md](./../architecture/nono-agent-architecture.md)，规划与状态见 [ROADMAP.md](./../roadmap/index.md)。
