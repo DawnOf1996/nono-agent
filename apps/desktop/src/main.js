@@ -144,6 +144,10 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      // 侧边栏浏览器用 <webview> 而不是 <iframe>：webview 是独立的顶层浏览上下文，
+      // 不受 X-Frame-Options / CSP frame-ancestors 约束，否则 github.com 这类
+      // 明确禁止嵌入的站点会整个打不开。Electron 默认禁用该标签，必须显式打开。
+      webviewTag: true,
       additionalArguments: [`--nono-app-version=${app.getVersion()}`],
     },
   });
@@ -187,6 +191,19 @@ app.on("second-instance", () => {
 
 app.setAppUserModelId("com.nono.agent");
 
+// <webview> 里的 target=_blank / window.open 会让 Electron 另开一个原生窗口。
+// webview 的 new-window 事件在 Electron 37 已经不再触发（实测点击后事件不响，
+// 反而多出两个进程），只能在主进程对 guest 的 WebContents 挂 setWindowOpenHandler，
+// 把地址转回渲染进程，由它开成应用内的浏览器标签。
+app.on("web-contents-created", (_event, contents) => {
+  if (contents.getType() !== "webview") return;
+  contents.setWindowOpenHandler(({ url }) => {
+    const owner = contents.getOwnerBrowserWindow();
+    if (owner && /^https?:/i.test(url)) owner.webContents.send("browser:new-tab", url);
+    return { action: "deny" };
+  });
+});
+
 if (gotLock) app.whenReady().then(async () => {
   ipcMain.handle("select-workspace", async () => {
     const result = await dialog.showOpenDialog({
@@ -200,6 +217,23 @@ if (gotLock) app.whenReady().then(async () => {
     if (typeof target !== "string" || !target.trim()) return { ok: false };
     const error = await shell.openPath(target);
     return { ok: !error, error: error || undefined };
+  });
+  // iframe 装不下禁止嵌入的站点，只能交给系统浏览器。渲染进程能把任意字符串递进来，
+  // 所以这里只放行 http/https：file:// 与自定义协议（ms-msdt: 之类）会让 shell
+  // 执行注册过的本地程序，不是「打开一个网页」该有的能力。
+  ipcMain.handle("open-external", async (_event, target) => {
+    if (typeof target !== "string" || !target.trim()) return { ok: false };
+    let url;
+    try {
+      url = new URL(target);
+    } catch {
+      return { ok: false, error: "不是合法的 URL" };
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return { ok: false, error: "只允许打开 http/https 地址" };
+    }
+    await shell.openExternal(url.toString());
+    return { ok: true };
   });
   // 渲染进程的 navigator.clipboard 在 Electron 里要过权限请求，而本进程没设权限处理器，
   // 默认会被拒。终端右键菜单的粘贴/复制走主进程，一次 IPC 解决。

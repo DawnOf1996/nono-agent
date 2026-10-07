@@ -6,6 +6,10 @@ type NonoDesktop = {
   version?: string;
   selectWorkspace?: () => Promise<string | null>;
   openPath?: (target: string) => Promise<{ ok: boolean; error?: string }>;
+  /** 交给系统默认浏览器打开。iframe 装不下禁止嵌入的站点时用。 */
+  openExternal?: (target: string) => Promise<{ ok: boolean; error?: string }>;
+  /** 访客页请求新窗口（target=_blank）时回调地址，返回取消订阅函数。 */
+  onNewTab?: (handler: (url: string) => void) => () => void;
   readClipboardText?: () => Promise<string>;
   writeClipboardText?: (text: string) => Promise<{ ok: boolean }>;
 };
