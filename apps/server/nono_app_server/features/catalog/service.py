@@ -52,6 +52,7 @@ def public_catalog(cwd: str) -> dict[str, Any]:
                         "name": item.name,
                         "context_window": item.context_window,
                         "max_tokens": item.max_tokens,
+                        "input_types": list(item.input_types),
                         "extra_body": item.extra_body,
                     }
                     for item in named.models
@@ -97,11 +98,14 @@ def _parse_models(raw: list[dict[str, Any]]) -> list[ModelEntry]:
                     name=name,
                     context_window=item.get("context_window") or None,
                     max_tokens=item.get("max_tokens") or None,
+                    input_types=item.get("input_types"),
                     extra_body=extra_body,
                 )
             )
         except (ValueError, TypeError) as exc:
-            raise ValueError(f"模型 '{mid}' 参数无效") from exc
+            # 带上原始原因：input_types 写错时用户需要看到"未知输入类型 xxx"，
+            # 而不是一句无信息量的"参数无效"。
+            raise ValueError(f"模型 '{mid}' 参数无效：{exc}") from exc
     return models
 
 

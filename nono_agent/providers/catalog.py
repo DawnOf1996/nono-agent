@@ -30,6 +30,22 @@ PROJECT_CONFIG_NAME = "config.yaml"
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# 输入类型常量与归一化实现在 core.input_types —— 那层不依赖 providers，
+# 避免 core.config ↔ providers.catalog 的循环依赖。这里转出本模块用得到的几个，
+# 其余（INPUT_TYPES / INPUT_TYPE_LABELS）需要时从 core.input_types 直接取。
+from nono_agent.core.input_types import (  # noqa: E402
+    INPUT_TYPE_IMAGE,
+    INPUT_TYPE_TEXT,
+    normalize_input_types,
+)
+
+
+def supports_input(entry: ModelEntry | None, input_type: str) -> bool:
+    """该模型是否支持指定输入类型。``entry`` 为 None 时按纯文本处理。"""
+    if entry is None:
+        return input_type == INPUT_TYPE_TEXT
+    return input_type in entry.input_types
+
 
 def parse_token_size(raw: str) -> int | None:
     """解析 token 数量：纯整数，或 ``128K`` / ``1M``（十进制，K=1000、M=1000000）。"""
@@ -67,7 +83,12 @@ def _coerce_token_size(value: object) -> int | None:
 
 
 class ModelEntry(BaseModel):
-    """目录中的一条模型。``id`` 发给 API；``name`` 仅展示。"""
+    """目录中的一条模型。``id`` 发给 API；``name`` 仅展示。
+
+    ``input_types`` 声明该模型接受哪些输入模态（``text`` / ``image``）。
+    省略时按 ``["text"]`` 处理：目录没声明就不能发图片，避免把图发给
+    纯文本模型后拿到上游 400。
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -75,12 +96,18 @@ class ModelEntry(BaseModel):
     name: str | None = None
     context_window: int | None = None
     max_tokens: int | None = None
+    input_types: list[str] = Field(default_factory=lambda: [INPUT_TYPE_TEXT])
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("context_window", "max_tokens", mode="before")
     @classmethod
     def _parse_sizes(cls, value: object) -> int | None:
         return _coerce_token_size(value)
+
+    @field_validator("input_types", mode="before")
+    @classmethod
+    def _parse_input_types(cls, value: object) -> list[str]:
+        return normalize_input_types(value)
 
     @field_validator("extra_body", mode="before")
     @classmethod
@@ -90,6 +117,10 @@ class ModelEntry(BaseModel):
         if not isinstance(value, dict) or isinstance(value, list):
             raise ValueError("extra_body must be a JSON object")
         return {str(key): item for key, item in value.items() if str(key).strip()}
+
+    @property
+    def supports_image(self) -> bool:
+        return INPUT_TYPE_IMAGE in self.input_types
 
 
 class NamedProvider(BaseModel):
@@ -175,6 +206,7 @@ class LlmCatalog(BaseModel):
             "base_url": named.base_url,
             "model_context": entry.context_window,
             "max_tokens": entry.max_tokens,
+            "input_types": list(entry.input_types),
             "extra_headers": named.extra_headers,
             "extra_body": deep_merge(dict(named.extra_body), dict(entry.extra_body)),
         }

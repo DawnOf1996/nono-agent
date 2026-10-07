@@ -74,6 +74,8 @@ export type CatalogModel = {
   name?: string | null;
   context_window?: number | null;
   max_tokens?: number | null;
+  /** 模型接受的输入模态（text / image）。省略时按 ["text"] 处理。 */
+  input_types?: string[];
   extra_body?: Record<string, unknown>;
 };
 
@@ -109,6 +111,7 @@ export type ProviderUpsert = {
     name?: string;
     context_window?: number | null;
     max_tokens?: number | null;
+    input_types?: string[];
     extra_body?: Record<string, unknown> | null;
   }>;
 };

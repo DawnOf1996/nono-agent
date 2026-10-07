@@ -147,6 +147,7 @@ class TestOnboardingRoundTrip:
                 "MiniMax-M31",
                 "1000000",
                 "128000",
+                "y",  # ⑫ 支持图片输入
             ]
         )
         catalog, api_key = ob.run_onboarding(console)
@@ -173,6 +174,7 @@ class TestOnboardingRoundTrip:
         assert named.models[0].name == "MiniMax-M31"
         assert named.models[0].context_window == 1_000_000
         assert named.models[0].max_tokens == 128_000
+        assert named.models[0].input_types == ["text", "image"]
         assert loaded.resolve().api_key == "sk-secret"
 
     def test_extra_headers_and_body_json(self, tmp_path, monkeypatch):
@@ -189,12 +191,14 @@ class TestOnboardingRoundTrip:
                 "",
                 "",
                 "",
+                "",  # ⑫ 默认不勾图片
             ]
         )
         catalog, _api_key = ob.run_onboarding(console)
         named = catalog.providers["a"]
         assert named.extra_headers == {"X-Foo": "bar"}
         assert named.extra_body == {"reasoning_split": True}
+        assert named.models[0].input_types == ["text"]
 
     def test_display_defaults_title_segments(self):
         console = _FakeConsole(
@@ -210,6 +214,7 @@ class TestOnboardingRoundTrip:
                 "",
                 "",
                 "",
+                "",  # ⑫ 默认不勾图片
             ]
         )
         catalog, _api_key = ob.run_onboarding(console)
@@ -231,6 +236,7 @@ class TestOnboardingRoundTrip:
                 "",
                 "1M",
                 "128K",
+                "y",  # ⑫ 支持图片输入
             ]
         )
         catalog, _api_key = ob.run_onboarding(console)
@@ -238,6 +244,7 @@ class TestOnboardingRoundTrip:
         model = catalog.providers["a"].models[0]
         assert model.context_window == 1_000_000
         assert model.max_tokens == 128_000
+        assert model.input_types == ["text", "image"]
         from nono_agent.providers import catalog as catalog_mod
 
         text = catalog_mod.USER_CONFIG_PATH.read_text(encoding="utf-8")

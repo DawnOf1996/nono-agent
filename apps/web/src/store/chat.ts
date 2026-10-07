@@ -304,6 +304,26 @@ function catalogHasSelectedModel(catalog: CatalogSnapshot | null, model: string)
   return catalog.providers.some((provider) => provider.models.some((item) => item.id === id));
 }
 
+/**
+ * 选中的模型是否声明支持图片输入。
+ *
+ * 返回 true 表示"拦得住"：模型在目录里显式声明了 input_types 却不含 image。
+ * 目录里没声明该字段（老配置 / 尚未落库）时返回 false —— 放行给后端判定，
+ * 避免前端因为拿不到能力信息就误杀正常的图片发送。
+ */
+function modelRejectsImageInput(catalog: CatalogSnapshot | null, model: string): boolean {
+  const id = model.trim();
+  if (!id || !catalog) return false;
+  for (const provider of catalog.providers) {
+    for (const item of provider.models) {
+      if (item.id !== id) continue;
+      if (!item.input_types) return false;
+      return !item.input_types.includes("image");
+    }
+  }
+  return false;
+}
+
 function workspaceByPath(workspaces: Workspace[], path: string): Workspace | undefined {
   return workspaces.find((item) => sameWorkspace(item.path, path));
 }
@@ -1158,6 +1178,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     if (!catalogHasSelectedModel(get().catalog, get().model)) {
       set((state) => patchRun(state, runKey, { error: "先选择模型" }));
+      return;
+    }
+    // 图片门禁：先在前端拦一道，给出可操作的提示，而不是等后端返回一句流式错误。
+    // 附件保留在输入区，用户换模型后可以直接重发。
+    if (pending.length && modelRejectsImageInput(get().catalog, get().model)) {
+      set((state) =>
+        patchRun(state, runKey, {
+          error: `模型 ${get().model} 不支持图片输入。请在「设置 → 模型」中勾选该模型的「图片」，或换一个模型。`,
+        }),
+      );
       return;
     }
     const images = pending.map((item) => ({ src: item.preview }));

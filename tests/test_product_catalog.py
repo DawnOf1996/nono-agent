@@ -78,6 +78,39 @@ class TestUpsertProvider:
         assert provider["models"][0]["max_tokens"] == 32_000
         assert snap["default"] == {"provider": "acme-gateway", "model": "acme-large"}
 
+    def test_persists_input_types(self, tmp_path, monkeypatch):
+        _seed(tmp_path, monkeypatch, LlmCatalog())
+        upsert_provider(
+            ProviderUpsert(
+                id="acme-gateway",
+                display_name="Acme Gateway",
+                api="openai_chat_completions",
+                base_url="https://gateway.example/v1",
+                models=[
+                    {"id": "vision", "input_types": ["text", "image"]},
+                    {"id": "plain"},
+                ],
+            )
+        )
+        snap = public_catalog(str(tmp_path))
+        provider = next(item for item in snap["providers"] if item["id"] == "acme-gateway")
+        by_id = {item["id"]: item for item in provider["models"]}
+        assert by_id["vision"]["input_types"] == ["text", "image"]
+        # 没传的按纯文本回，前端勾选框与后端存储始终一致。
+        assert by_id["plain"]["input_types"] == ["text"]
+
+    def test_rejects_unknown_input_type_with_reason(self, tmp_path, monkeypatch):
+        _seed(tmp_path, monkeypatch, LlmCatalog())
+        with pytest.raises(ValueError, match="Unknown input type 'video'"):
+            upsert_provider(
+                ProviderUpsert(
+                    id="acme-gateway",
+                    display_name="Acme",
+                    api="openai_chat_completions",
+                    models=[{"id": "m1", "input_types": ["video"]}],
+                )
+            )
+
     def test_preserves_extra_headers_on_update(self, tmp_path, monkeypatch):
         catalog = LlmCatalog(
             agent_default_model=AgentDefaultModel(provider="acme", model="m1"),

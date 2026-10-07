@@ -4,11 +4,18 @@ import { useMemo, useState } from "react";
 
 import { fetchRemoteModels } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dropdown, DropdownItem, FieldSelectButton } from "@/components/ui/dropdown";
 import { FieldLabel, Input } from "@/components/ui/input";
 import { ADAPTER_LABELS, PROVIDER_ID_PATTERN, titleFromId } from "@/features/settings/presets";
 import { formatTokenSize, parseTokenSize } from "@/lib/format";
 import { cn } from "@/lib/utils";
+
+/** 可勾选的输入模态。顺序即 UI 里的展示顺序。 */
+const INPUT_TYPE_OPTIONS = [
+  { value: "text", label: "文本" },
+  { value: "image", label: "图片" },
+] as const;
 
 type ModelDraft = {
   key: string;
@@ -16,6 +23,7 @@ type ModelDraft = {
   name: string;
   context_window: string;
   max_tokens: string;
+  input_types: string[];
   extra_body: string;
 };
 
@@ -45,6 +53,24 @@ function nextKey(): string {
   return crypto.randomUUID();
 }
 
+/**
+ * 把后端返回的 input_types 收成草稿形态。
+ *
+ * 缺省 / 脏数据统一退回 ["text"]：后端已保证只会给出合法值，这里再兜一层
+ * 是为了让"勾选框"与"后端会怎么存"永远一致，不会出现界面上一个都没勾、
+ * 保存后却带上了 image 的偏差。
+ */
+function normalizeDraftInputTypes(raw: string[] | null | undefined): string[] {
+  const known = new Set(INPUT_TYPE_OPTIONS.map((item) => item.value));
+  const picked = (raw ?? []).filter((item): item is string => known.has(item as never));
+  return picked.length ? INPUT_TYPE_OPTIONS.map((o) => o.value).filter((v) => picked.includes(v)) : ["text"];
+}
+
+function toggleInputType(current: string[], value: string, checked: boolean): string[] {
+  const next = checked ? [...current, value] : current.filter((item) => item !== value);
+  return normalizeDraftInputTypes(next);
+}
+
 function emptyModel(): ModelDraft {
   return {
     key: nextKey(),
@@ -52,6 +78,9 @@ function emptyModel(): ModelDraft {
     name: "",
     context_window: "256K",
     max_tokens: "32K",
+    // 新模型默认只勾「文本」：图片能力需要用户按模型实际情况显式打开，
+    // 与后端 ModelEntry 的默认值保持一致，避免误把图发给纯文本模型。
+    input_types: ["text"],
     extra_body: "",
   };
 }
@@ -97,6 +126,7 @@ export function draftFromProvider(provider: CatalogProvider): ProviderDraft {
         name: item.name ?? "",
         context_window: formatTokenSize(item.context_window) || "256K",
         max_tokens: formatTokenSize(item.max_tokens) || "32K",
+        input_types: normalizeDraftInputTypes(item.input_types),
         extra_body: jsonObjectText(item.extra_body),
       }))
     : [emptyModel()];
@@ -125,7 +155,10 @@ export function emptyDraft(api: string, preset?: Partial<ProviderDraft>): Provid
     extra_body: "",
     ...rest,
     mode: "create",
-    models: models?.length ? models : [emptyModel()],
+    // 预设若带 models，补齐 input_types，避免渲染时读到 undefined。
+    models: models?.length
+      ? models.map((item) => ({ ...item, input_types: normalizeDraftInputTypes(item.input_types) }))
+      : [emptyModel()],
   };
 }
 
@@ -220,6 +253,7 @@ export function ProviderEditor({
         name: item.name.trim() || undefined,
         context_window: parseTokenSize(item.context_window),
         max_tokens: parseTokenSize(item.max_tokens),
+        input_types: normalizeDraftInputTypes(item.input_types),
         extra_body: modelBody,
       });
     }
@@ -268,6 +302,9 @@ export function ProviderEditor({
             name: item.name && item.name !== item.id ? item.name : titleFromId(item.id),
             context_window: "256K",
             max_tokens: "32K",
+            // 上游 /models 列表不携带模态信息，一律先按纯文本落，
+            // 由用户按模型实际情况补勾「图片」。
+            input_types: ["text"],
             extra_body: "",
           }));
         const next = [...kept, ...incoming];
@@ -486,6 +523,27 @@ export function ProviderEditor({
                         onChange={(event) => patchModel(item.key, { max_tokens: event.target.value })}
                       />
                     </div>
+                  </div>
+                  <div className="mt-2">
+                    <FieldLabel>输入类型</FieldLabel>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg bg-card px-2.5 py-2">
+                      {INPUT_TYPE_OPTIONS.map((option) => (
+                        <Checkbox
+                          key={option.value}
+                          id={`model-input-${item.key}-${option.value}`}
+                          label={option.label}
+                          checked={item.input_types.includes(option.value)}
+                          onCheckedChange={(checked) =>
+                            patchModel(item.key, {
+                              input_types: toggleInputType(item.input_types, option.value, checked),
+                            })
+                          }
+                        />
+                      ))}
+                    </div>
+                    <p className="mt-1.5 text-[11px] leading-5 text-muted">
+                      声明该模型接受哪些输入。未勾选「图片」时，发送图片会直接被拦下。
+                    </p>
                   </div>
                   <div className="mt-2">
                     <FieldLabel htmlFor={`model-body-${item.key}`}>扩展请求体</FieldLabel>

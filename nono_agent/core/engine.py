@@ -155,6 +155,18 @@ def _error_text(terminal_error: Any) -> str:
     return str(terminal_error)
 
 
+def _is_image_attachment(item: Any) -> bool:
+    """判断一个内容块是否是图片。
+
+    兼容两种形态：Anthropic 风格 ``{"type": "image", "source": {...}}``
+    与 OpenAI 风格 ``{"type": "image_url", "image_url": {...}}``。
+    """
+    if not isinstance(item, dict):
+        return False
+    btype = item.get("type")
+    return btype in ("image", "image_url")
+
+
 class QueryEngine:
     """主代理引擎 —— 编排 agentic loop 的核心组件。
 
@@ -381,6 +393,28 @@ class QueryEngine:
     # 公开 API
     # ------------------------------------------------------------------
 
+    def _check_attachments_supported(
+        self,
+        attachments: list[dict[str, Any]] | None,
+    ) -> None:
+        """按当前模型的 ``input_types`` 校验附件，不支持则抛 ValueError。
+
+        只有图片块会被门禁：文本块所有模型都吃。模型没在目录里声明
+        ``image`` 时按不支持处理（``ProviderConfig`` 默认仅 ``text``）。
+        """
+        if not attachments:
+            return
+        if not any(_is_image_attachment(item) for item in attachments):
+            return
+        provider = self._config.provider
+        # 没有任何 ProviderConfig（库直接构造引擎、未走 YAML 目录）时无从判断，
+        # 保持旧行为放行，让调用方自己负责。
+        if provider is not None and not provider.supports_image:
+            raise ValueError(
+                f"模型 {self._config.effective_model} 未声明支持图片输入。"
+                "请在「设置 → 模型」中勾选该模型的「图片」输入类型，或换一个支持图片的模型。"
+            )
+
     async def submit_message(
         self,
         user_input: str,
@@ -400,6 +434,10 @@ class QueryEngine:
         6. 追加 turn/end 事件并发出 SDKResultMessage（最终结果）
         """
         await self.initialize()  # 确保引擎已初始化
+
+        # 图片输入门禁 —— 必须在任何事件落盘 / 轮次自增之前。
+        # 放到这里是为了让"模型不支持图片"成为一次干净的拒绝：不留下半截 turn。
+        self._check_attachments_supported(attachments)
 
         # 重置取消控制器 —— 上一次查询的 abort() 状态不能污染本次查询
         self._abort_controller = AbortController()

@@ -391,3 +391,117 @@ class TestSaveRoundTrip:
         pc = loaded.resolve()
         assert pc.model_id == "MiniMax-M3"
         assert pc.max_tokens == 128_000
+
+
+class TestNormalizeInputTypes:
+    def test_empty_defaults_to_text_only(self):
+        from nono_agent.core.input_types import normalize_input_types
+
+        assert normalize_input_types(None) == ["text"]
+        assert normalize_input_types("") == ["text"]
+        assert normalize_input_types([]) == ["text"]
+
+    def test_dedupes_and_orders_stably(self):
+        from nono_agent.core.input_types import normalize_input_types
+
+        # text 恒排首位，其余按声明序 —— 同一份配置反复序列化结果一致。
+        assert normalize_input_types(["image", "text"]) == ["text", "image"]
+        assert normalize_input_types([" IMAGE ", "text", "image"]) == ["text", "image"]
+
+    def test_bare_string_accepted(self):
+        from nono_agent.core.input_types import normalize_input_types
+
+        assert normalize_input_types("image") == ["image"]
+
+    def test_unknown_type_rejected(self):
+        from nono_agent.core.input_types import normalize_input_types
+
+        with pytest.raises(ValueError, match="Unknown input type 'audio'"):
+            normalize_input_types(["text", "audio"])
+
+    def test_non_list_rejected(self):
+        from nono_agent.core.input_types import normalize_input_types
+
+        with pytest.raises(ValueError, match="must be a list"):
+            normalize_input_types({"text": True})
+
+
+class TestModelEntryInputTypes:
+    def test_defaults_to_text_only(self):
+        from nono_agent.providers.catalog import ModelEntry
+
+        entry = ModelEntry(id="m")
+        assert entry.input_types == ["text"]
+        assert entry.supports_image is False
+
+    def test_declared_image(self):
+        from nono_agent.providers.catalog import ModelEntry
+
+        entry = ModelEntry(id="m", input_types=["text", "image"])
+        assert entry.supports_image is True
+
+    def test_invalid_value_raises(self):
+        from nono_agent.providers.catalog import ModelEntry
+
+        with pytest.raises(ValueError):
+            ModelEntry(id="m", input_types=["video"])
+
+
+class TestResolveInputTypes:
+    def test_resolve_carries_input_types_to_provider(self, tmp_path, monkeypatch):
+        from nono_agent.providers import catalog as catalog_mod
+
+        _write(
+            catalog_mod.USER_CONFIG_PATH,
+            """
+agent_default_model:
+  provider: a
+  model: vision
+llm_provider:
+  providers:
+    a:
+      display_name: A
+      api_key_env: A_API_KEY
+      api: openai_chat_completions
+      models:
+        - id: vision
+          input_types: [text, image]
+        - id: plain
+""",
+        )
+        monkeypatch.setenv("A_API_KEY", "sk-a")
+        catalog = load_catalog(tmp_path)
+        assert catalog.resolve(model_id="vision").input_types == ["text", "image"]
+        assert catalog.resolve(model_id="vision").supports_image is True
+        # 没声明 input_types 的模型按纯文本处理，不能发图。
+        assert catalog.resolve(model_id="plain").input_types == ["text"]
+        assert catalog.resolve(model_id="plain").supports_image is False
+
+
+class TestYamlRoundTripInputTypes:
+    def test_input_types_survives_save_and_load(self, tmp_path, monkeypatch):
+        from nono_agent.providers.catalog import (
+            AgentDefaultModel,
+            LlmCatalog,
+            LlmProviderSection,
+            ModelEntry,
+            NamedProvider,
+        )
+
+        catalog = LlmCatalog(
+            agent_default_model=AgentDefaultModel(provider="a", model="m"),
+            llm_provider=LlmProviderSection(
+                providers={
+                    "a": NamedProvider(
+                        display_name="A",
+                        api_key_env="A_API_KEY",
+                        api="openai_chat_completions",
+                        models=[ModelEntry(id="m", input_types=["text", "image"])],
+                    )
+                }
+            ),
+        )
+        save_user_catalog(catalog)
+        monkeypatch.setenv("A_API_KEY", "sk")
+        reloaded = load_catalog(tmp_path)
+        assert reloaded.providers["a"].models[0].input_types == ["text", "image"]

@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from nono_agent.core.input_types import normalize_input_types
 from nono_agent.paths import resolve_session_cwd
 from nono_agent.utils.tokens import resolve_context_window
 
@@ -59,8 +60,22 @@ class ProviderConfig(BaseModel):
     max_retries: int = 3                       # 最大重试次数
     # 单次补全 max tokens；未配置时由各协议实现自己的默认值
     max_tokens: int | None = None
+    # 模型接受的输入模态（``text`` / ``image``），由目录里的 ``input_types`` 带入。
+    # 发图片前会先比对这里，模型没声明 image 就不放行（见 engine.submit_message）。
+    input_types: list[str] = Field(default_factory=lambda: ["text"])
     # 是否在 SDK 发 HTTP 前把请求 params 打到日志（默认关；体积大，可能含提示词）
     log_api_requests: bool = False
+
+    @field_validator("input_types", mode="before")
+    @classmethod
+    def _normalize_input_types(cls, value: object) -> list[str]:
+        if value is None:
+            return ["text"]
+        return normalize_input_types(value)
+
+    @property
+    def supports_image(self) -> bool:
+        return "image" in self.input_types
 
 
 class ThinkingConfig(BaseModel):

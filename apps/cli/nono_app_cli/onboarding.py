@@ -89,6 +89,18 @@ def _read_optional_int(console: Any, prompt: str) -> int | None:
         return parsed
 
 
+def _read_supports_image(console: Any) -> bool:
+    """问一句「该模型是否支持图片输入」。默认否 —— 猜错会把图发给纯文本模型。"""
+    while True:
+        raw = str(console.input("[yellow]⑫ 该模型支持图片输入吗（y/N）：[/yellow] "))
+        answer = raw.strip().lower()
+        if not answer or answer in ("n", "no", "否"):
+            return False
+        if answer in ("y", "yes", "是", "支持"):
+            return True
+        console.print("[red]请输入 y 或 n。[/red]")
+
+
 def prompt_api_key(console: Any, *, env_name: str | None = None) -> str:
     """读取真实 API Key。``env_name`` 仅用于提示指针名。"""
     hint = f"（将保存为 {env_name}）" if env_name else ""
@@ -181,6 +193,7 @@ def run_onboarding(console: Any) -> tuple[LlmCatalog, str]:
     max_tokens = _read_optional_int(
         console, "[yellow]⑪ max_tokens（可留空，如 128K）：[/yellow] "
     )
+    supports_image = _read_supports_image(console)
 
     named = NamedProvider(
         display_name=display_name,
@@ -195,6 +208,9 @@ def run_onboarding(console: Any) -> tuple[LlmCatalog, str]:
                 name=model_name,
                 context_window=context_window,
                 max_tokens=max_tokens,
+                input_types=(
+                    ["text", "image"] if supports_image else ["text"]
+                ),
             )
         ],
     )
