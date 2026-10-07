@@ -667,6 +667,12 @@ requires-dist = [
 ]
 provides-extras = ["dev"]
 
+[package.metadata.requires-dev]
+docs = [
+    { name = "mkdocs-glightbox", specifier = ">=0.4" },
+    { name = "mkdocs-material", specifier = ">=9.5" },
+]
+
 [[package]]
 name = "nono-app-server"
 version = "0.1.0"

@@ -19,13 +19,21 @@ copyright: Copyright &copy; 2026 Nono Agent contributors · MIT License
 docs_dir: docs
 site_dir: ../site
 
+# 仅 `mkdocs serve` 生效，`mkdocs build` 不读这个键。
+# 不能留在默认的 127.0.0.1:8000：apps/server 的 sidecar 默认就监听 8000
+# （nono_app_server/config.py 的 DEFAULT_PORT），两边同时跑必撞端口。
+# 临时换端口用 `mkdocs serve -a 127.0.0.1:8002` 覆盖。
+dev_addr: 127.0.0.1:8001
+
 theme:
   name: material
   language: zh
   icon:
+    # 注意：内置图标名要放在 theme.icon.* 下（会被内联成 SVG）；
+    # theme.logo / theme.favicon 接受的是**图片文件路径**，填图标名会 404 且
+    # --strict 抓不到（那是运行期请求，不是构建期告警）。
+    logo: material/robot
     repo: fontawesome/brands/git-alt
-  logo: material/robot-outline
-  favicon: material/robot-outline
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default

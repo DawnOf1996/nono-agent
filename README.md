@@ -120,12 +120,15 @@ uv run nono-app-server
 
 ## 文档
 
-完整文档站在 [`docs-site/`](docs-site/)（MkDocs Material）。本地预览：
+完整文档站在 [`docs-site/`](docs-site/)（MkDocs Material）。本地预览（**在仓库根执行**，预览端口 8001，避开 sidecar 的 8000）：
 
 ```bash
 uv sync --extra dev --group docs
 uv run mkdocs serve -f docs-site/mkdocs.yml
+# → http://127.0.0.1:8001
 ```
+
+细节见 [`docs-site/README.md`](docs-site/README.md)。
 
 | 文档 | 说明 |
 |------|------|

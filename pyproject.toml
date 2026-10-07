@@ -39,8 +39,10 @@ nono-app-cli = { path = "apps/cli", editable = true }
 nono-app-server = { path = "apps/server", editable = true }
 
 # 文档站：docs-site/mkdocs.yml
-#   uv sync --group docs
+#   uv sync --extra dev --group docs
 #   uv run mkdocs serve -f docs-site/mkdocs.yml
+# 注意 --extra dev 不能省：uv sync 是精确同步，只同步 docs 会把 pytest/ruff/mypy 卸掉。
+# 预览端口是 8001（mkdocs.yml 的 dev_addr），避开 sidecar 的 8000。
 [dependency-groups]
 docs = [
     "mkdocs-material>=9.5",
