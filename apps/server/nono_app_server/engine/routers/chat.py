@@ -84,6 +84,13 @@ async def chat(
                             "event": sdk_msg.type,
                             "data": json.dumps(sdk_msg.model_dump(), ensure_ascii=False),
                         }
+                    # 任务异常不会自己冒到 SSE：drain_to_queue 只是把异常 re-raise
+                    # 回 Task，必须显式取出来再抛，否则只有 "done" 帧，用户看不到
+                    # 任何提示（比如模型不支持图片输入的门禁错误）。
+                    if not sdk_task.cancelled():
+                        failure = sdk_task.exception()
+                        if failure is not None:
+                            raise failure
                     break
 
                 await asyncio.sleep(0.01)
