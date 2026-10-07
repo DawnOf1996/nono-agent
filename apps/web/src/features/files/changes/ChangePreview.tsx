@@ -3,6 +3,7 @@ import { lazy, Suspense } from "react";
 
 import { usePanelStore } from "@/features/files/panel-store";
 import { PreviewLoading } from "@/features/files/preview/Loading";
+import { startDragSession } from "@/lib/drag-session";
 
 const DiffTab = lazy(() => import("@/features/files/diff/DiffTab").then((module) => ({ default: module.DiffTab })));
 
@@ -23,18 +24,12 @@ export function ChangePreview() {
         aria-valuenow={height}
         className="group h-1.5 shrink-0 cursor-row-resize bg-line hover:bg-ink/20"
         onPointerDown={(event) => {
-          event.preventDefault();
           const startY = event.clientY;
           const start = height;
-          function move(ev: PointerEvent) {
-            setPreviewHeight(start + (startY - ev.clientY));
-          }
-          function end() {
-            window.removeEventListener("pointermove", move);
-            window.removeEventListener("pointerup", end);
-          }
-          window.addEventListener("pointermove", move);
-          window.addEventListener("pointerup", end);
+          startDragSession(event, {
+            cursor: "row-resize",
+            onMove: (ev) => setPreviewHeight(start + (startY - ev.clientY)),
+          });
         }}
       />
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">

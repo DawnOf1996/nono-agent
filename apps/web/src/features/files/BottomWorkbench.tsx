@@ -3,6 +3,7 @@ import { useState, type DragEvent } from "react";
 import { DockedTab } from "@/features/files/DockedTab";
 import { usePanelStore, type PanelTab } from "@/features/files/panel-store";
 import { collectTabIds, type DropZone, type SplitNode } from "@/features/files/split";
+import { startDragSession } from "@/lib/drag-session";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chat";
 
@@ -130,23 +131,20 @@ function SplitView({ node, tabs, root, revision }: { node: SplitNode; tabs: Pane
         aria-label="调整分栏"
         className={cn("shrink-0 bg-line", row ? "w-px cursor-col-resize" : "h-px cursor-row-resize")}
         onPointerDown={(event) => {
-          event.preventDefault();
           const parent = event.currentTarget.parentElement;
           const box = parent?.getBoundingClientRect();
           if (!box) return;
           const start = row ? event.clientX : event.clientY;
           const span = row ? box.width : box.height;
           const origin = node.ratio;
-          function move(ev: PointerEvent) {
-            const delta = (row ? ev.clientX : ev.clientY) - start;
-            resizeDock(node.id, origin + delta / Math.max(1, span));
-          }
-          function end() {
-            window.removeEventListener("pointermove", move);
-            window.removeEventListener("pointerup", end);
-          }
-          window.addEventListener("pointermove", move);
-          window.addEventListener("pointerup", end);
+          // 分栏里可能停着浏览器标签页，指针划进去就不能再由它接管事件。
+          startDragSession(event, {
+            cursor: row ? "col-resize" : "row-resize",
+            onMove: (ev) => {
+              const delta = (row ? ev.clientX : ev.clientY) - start;
+              resizeDock(node.id, origin + delta / Math.max(1, span));
+            },
+          });
         }}
       />
       <div className="flex min-h-0 min-w-0 flex-1">

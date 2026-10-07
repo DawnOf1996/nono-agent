@@ -72,6 +72,24 @@ export function FilePreview({
   const baseHash = useRef<string | null>(null);
   const dirtyRef = useRef(false);
   const setPanelDirty = usePanelStore((state) => state.setDirty);
+  const setDraftText = usePanelStore((state) => state.setDraftText);
+  const draftFor = usePanelStore((state) => state.draftFor);
+  /**
+   * 切走再切回来时接回上次没保存的内容。
+   *
+   * 面板按会话分桶，标签页会在切换时被换成另一批 —— 组件随之卸载，CodeMirror 里
+   * 那份没落盘的编辑也就没了。所以每次变脏都把内容交给 store 存一份（只存内存），
+   * 重新挂载时用它当初始内容填回去，磁盘上那份留作对照和冲突检测的基线。
+   */
+  const carriedDraft = useRef(draftFor(tabId)).current;
+  useEffect(() => {
+    if (carriedDraft === null) return;
+    dirtyRef.current = true;
+    setDirty(true);
+    setEditorOpened(true);
+    setMode("edit");
+    setPanelDirty(tabId, true);
+  }, [carriedDraft, setPanelDirty, tabId]);
   const bumpRevision = usePanelStore((state) => state.bumpRevision);
   const selected = candidates.find((item) => item.id === rendererId) ?? candidates[0];
   const current = loaded !== null && selected !== undefined && loaded.loading === selected.loading ? loaded : null;
@@ -115,9 +133,15 @@ export function FilePreview({
       dirtyRef.current = next;
       setDirty(next);
       setPanelDirty(tabId, next);
-      if (next) setSaveState((state) => (state === "saved" ? "idle" : state));
+      // 变干净了就别再留着旧内容：reset / markSaved 走的是同一条回调。
+      if (!next) {
+        setDraftText(tabId, null);
+        return;
+      }
+      setDraftText(tabId, editorRef.current?.getValue() ?? null);
+      setSaveState((state) => (state === "saved" ? "idle" : state));
     },
-    [setPanelDirty, tabId],
+    [setDraftText, setPanelDirty, tabId],
   );
 
   const save = useCallback(
@@ -172,6 +196,7 @@ export function FilePreview({
   function reloadFromDisk() {
     dirtyRef.current = false;
     setDraft(null);
+    setDraftText(tabId, null);
     setSaveState("idle");
     bumpRevision();
   }
@@ -323,7 +348,7 @@ export function FilePreview({
               <Suspense fallback={<PreviewLoading />}>
                 <CodeEditor
                   path={path}
-                  initial={loadedText}
+                  initial={carriedDraft ?? loadedText}
                   wrap={wrap}
                   editorRef={editorRef}
                   onDirtyChange={onDirtyChange}

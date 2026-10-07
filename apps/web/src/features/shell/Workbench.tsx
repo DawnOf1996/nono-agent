@@ -6,6 +6,7 @@ import { usePanelStore } from "@/features/files/panel-store";
 import { WorkspacePanel } from "@/features/files/WorkspacePanel";
 import { BOTTOM_MIN, columnWidths, loadLayoutPreference, MENU_RAIL_WIDTH, saveLayoutPreference } from "@/features/shell/layout";
 import { Sidebar } from "@/features/shell/Sidebar";
+import { startDragSession } from "@/lib/drag-session";
 
 export function Workbench() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -55,42 +56,29 @@ export function Workbench() {
   }, [sidePath]);
 
   function beginResize(side: "left" | "right", event: ReactPointerEvent<HTMLDivElement>) {
-    event.preventDefault();
-    stopDrag.current?.();
     setResizing(side);
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-
-    function move(ev: PointerEvent) {
-      const box = containerRef.current?.getBoundingClientRect();
-      if (!box) return;
-      const width = window.innerWidth;
-      setViewport(width);
-      if (side === "left") {
-        const next = columnWidths(width, Math.max(0, ev.clientX - box.left), rightPreferred, true, rightOpen);
-        setLeftPreferred(next.left);
-        return;
-      }
-      const next = columnWidths(width, leftPreferred, Math.max(0, box.right - ev.clientX), leftOpen, true);
-      setRightPreferred(next.right);
-    }
-
-    function end() {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", end);
-      window.removeEventListener("pointercancel", end);
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
+    // 拖动中不能被内嵌的网页抢走指针事件：浏览器面板一开，鼠标划进去分隔条就不动了。
+    const end = startDragSession(event, {
+      cursor: "col-resize",
+      onMove: (ev) => {
+        const box = containerRef.current?.getBoundingClientRect();
+        if (!box) return;
+        const width = window.innerWidth;
+        setViewport(width);
+        if (side === "left") {
+          const next = columnWidths(width, Math.max(0, ev.clientX - box.left), rightPreferred, true, rightOpen);
+          setLeftPreferred(next.left);
+          return;
+        }
+        const next = columnWidths(width, leftPreferred, Math.max(0, box.right - ev.clientX), leftOpen, true);
+        setRightPreferred(next.right);
+      },
+    });
+    // 分隔条的高亮跟着会话走，会话怎么结束它就怎么撤。
+    stopDrag.current = () => {
+      end();
       setResizing(null);
-      stopDrag.current = null;
-    }
-
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", end);
-    window.addEventListener("pointercancel", end);
-    stopDrag.current = end;
+    };
   }
 
   return (
@@ -135,20 +123,17 @@ export function Workbench() {
               aria-valuenow={bottomHeight}
               className="group absolute inset-x-0 -top-1.5 z-20 h-3 cursor-row-resize touch-none"
               onPointerDown={(event) => {
-                event.preventDefault();
                 const startY = event.clientY;
                 const startHeight = bottomHeight;
                 const limit = Math.max(BOTTOM_MIN, window.innerHeight - 280);
-                function move(ev: PointerEvent) {
-                  const next = Math.min(limit, Math.max(BOTTOM_MIN, startHeight + (startY - ev.clientY)));
-                  setBottomHeight(next);
-                }
-                function end() {
-                  window.removeEventListener("pointermove", move);
-                  window.removeEventListener("pointerup", end);
-                }
-                window.addEventListener("pointermove", move);
-                window.addEventListener("pointerup", end);
+                const end = startDragSession(event, {
+                  cursor: "row-resize",
+                  onMove: (ev) => {
+                    const next = Math.min(limit, Math.max(BOTTOM_MIN, startHeight + (startY - ev.clientY)));
+                    setBottomHeight(next);
+                  },
+                });
+                stopDrag.current = end;
               }}
             >
               <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-transparent group-hover:bg-ink/30" />

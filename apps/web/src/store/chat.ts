@@ -1105,7 +1105,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   deleteSession: async (sessionId) => {
     if (!sessionId.trim()) return;
     await deleteAppSession(sessionId);
+    const gone = get().sessions.find((item) => item.id === sessionId)?.engine_session_id ?? null;
     set((state) => omitSession(state, sessionId));
+    // 这个会话的面板快照也一起清掉，否则删掉的会话还会在桶里占一个位置。
+    if (gone) usePanelStore.getState().forgetScope(gone);
   },
 
   runCommand: async (line) => {

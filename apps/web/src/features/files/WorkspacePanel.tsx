@@ -18,6 +18,7 @@ import { collectTabIds } from "@/features/files/split";
 import { getSidebarPrefs, subscribeSidebarPrefs } from "@/features/settings/sidebar-prefs";
 import { TerminalPane } from "@/features/files/TerminalPane";
 import { normalizeWorkspace, workspaceLabel } from "@/lib/workspace";
+import { startDragSession } from "@/lib/drag-session";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chat";
 
@@ -41,18 +42,13 @@ function TreeResize({
       aria-label={label}
       className="w-px shrink-0 cursor-col-resize bg-line hover:bg-ink/30"
       onPointerDown={(event) => {
-        event.preventDefault();
         const startX = event.clientX;
         const start = width;
-        function move(ev: PointerEvent) {
-          onWidth(Math.min(480, Math.max(160, start + sign * (ev.clientX - startX))));
-        }
-        function end() {
-          window.removeEventListener("pointermove", move);
-          window.removeEventListener("pointerup", end);
-        }
-        window.addEventListener("pointermove", move);
-        window.addEventListener("pointerup", end);
+        // 右边可能正是 HTML 预览的 <iframe>，指针划进去拖拽就断了。
+        startDragSession(event, {
+          cursor: "col-resize",
+          onMove: (ev) => onWidth(Math.min(480, Math.max(160, start + sign * (ev.clientX - startX)))),
+        });
       }}
     />
   );
@@ -74,9 +70,10 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   const taskCount = usePanelStore((state) => state.taskCount);
   const sessionId = useChatStore((state) => state.sessionId);
   const sessions = useChatStore((state) => state.sessions);
+  const draftRunKey = useChatStore((state) => state.draftRunKey);
   const streaming = useChatStore((state) => state.streaming);
   const messages = useChatStore((state) => state.messages);
-  const setRoot = usePanelStore((state) => state.setRoot);
+  const bindContext = usePanelStore((state) => state.bindContext);
   const activate = usePanelStore((state) => state.activate);
   const openPin = usePanelStore((state) => state.openPin);
   const closePin = usePanelStore((state) => state.closePin);
@@ -94,6 +91,8 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   const openSideChat = usePanelStore((state) => state.openSideChat);
   const retainSideChats = usePanelStore((state) => state.retainSideChats);
   const parentSession = sessions.find((item) => item.engine_session_id === sessionId) ?? null;
+  // 面板按会话分桶：已落库的用引擎会话 id，还没发第一句的用它的草稿键。
+  const scope = sessionId ?? draftRunKey;
   const [pendingClose, setPendingClose] = useState<PanelTab | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [treeWidth, setTreeWidth] = useState(240);
@@ -104,22 +103,23 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   const treeBeside = mergedExplorer || sideFile !== null;
 
   useEffect(() => {
-    setRoot(root);
-    if (!root) return;
+    // 面板跟着会话走：先把当前这份存回旧会话，再换上这个会话自己的那一份。
+    bindContext(root, scope);
+    if (!root || !scope) return;
     // 服务端是终端存在性的真源：切换工作区不终止进程，切回来先问它还留着哪些，
-    // 再和本地布局缓存对账。缓存丢了也不会丢终端。
+    // 再和本地快照对账。快照之外的终端**不认领** —— 那是别的会话开的。
     let cancelled = false;
     void listTerminals(root)
       .then((live) => {
-        if (!cancelled) restorePanel(root, live);
+        if (!cancelled) restorePanel(live);
       })
       .catch(() => {
-        if (!cancelled) restorePanel(root, []);
+        if (!cancelled) restorePanel([]);
       });
     return () => {
       cancelled = true;
     };
-  }, [root, restorePanel, setRoot]);
+  }, [root, scope, restorePanel, bindContext]);
 
   const conversationOpen = usePanelStore((state) => state.conversationOpen);
   const seenConversation = useRef(conversationOpen);
@@ -128,6 +128,11 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
     seenConversation.current = conversationOpen;
     const prefsNow = getSidebarPrefs();
     if (!sessionId || !root || !prefsNow.files || !prefsNow.defaultOpenFileTree) return;
+    // 只有「这个会话的面板还是空的」才自动展开文件树。上面刚按会话恢复完的面板
+    // 有它自己的选中的标签页，被这里强行拨到文件树上，恢复就白做了。
+    const panel = usePanelStore.getState();
+    const empty = !panel.tabs.length && !panel.pins.files && !panel.pins.changes && !panel.pins.tasks;
+    if (!empty) return;
     openPin("files");
   }, [conversationOpen, sessionId, root, openPin]);
 
@@ -136,20 +141,26 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
     retainSideChats(parentId);
     if (!parentId) return;
     let live = true;
-    void fetchSideSessions(parentId).then((rows) => {
-      if (!live) return;
-      for (const row of rows) {
-        openSideChat(
-          {
-            productId: row.id,
-            engineId: row.engine_session_id,
-            parentId,
-            title: row.title || "侧边对话",
-          },
-          false,
-        );
-      }
-    });
+    void fetchSideSessions(parentId)
+      .then((rows) => {
+        if (!live) return;
+        // 服务端还活着的才算数：面板快照里可能有已经被删掉的侧边对话。
+        retainSideChats(parentId, new Set(rows.map((row) => row.id)));
+        for (const row of rows) {
+          openSideChat(
+            {
+              productId: row.id,
+              engineId: row.engine_session_id,
+              parentId,
+              title: row.title || "侧边对话",
+            },
+            false,
+          );
+        }
+      })
+      .catch(() => {
+        // 拉不到就按原样留着，别因为一次网络抖动把用户的侧边对话从面板上抹掉。
+      });
     return () => {
       live = false;
     };

@@ -180,6 +180,17 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 拖拽期间（lib/drag-session.ts 挂上的标记）内嵌页面一律不接指针事件。
+   侧边浏览器的 <webview> 和 HTML 预览的 <iframe> 都跑在各自的渲染进程里：指针一进去，
+   后续的 pointermove / pointerup 就归访客了，宿主上分隔条的拖拽会当场卡住，松手也没人
+   复原。关掉它们的命中测试，事件就回到宿主文档，拖拽才拖得完。 */
+html[data-drag-session] iframe,
+html[data-drag-session] webview,
+html[data-drag-session] embed,
+html[data-drag-session] object {
+  pointer-events: none;
+}
+
 /* 标准属性一旦不是 initial，Chromium 就会整个忽略 ::-webkit-scrollbar 伪元素
    （CSSWG 2024-04 决议：scrollbar-width / scrollbar-color 优先于 legacy 伪元素），
    滚动条会退回 Fluent 细条，下面 webkit 的 4px 永远不生效。

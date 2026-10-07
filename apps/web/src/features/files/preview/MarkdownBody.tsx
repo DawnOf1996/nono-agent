@@ -6,7 +6,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 
-import { httpUrl } from "@/features/files/BrowserPane";
+import { httpUrl } from "@/lib/url";
 import { CodeFence } from "@/components/CodeFence";
 import { usePanelStore } from "@/features/files/panel-store";
 import { MdToc } from "@/features/files/preview/markdown/MdToc";
