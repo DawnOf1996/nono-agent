@@ -88,9 +88,11 @@ export async function fetchAppInfo(): Promise<AppInfo> {
   return readJson(await fetch("/app/info"));
 }
 
-export async function updateSessionDir(path: string): Promise<{ session_dir: string; moved: number }> {
+export async function updateDataDir(
+  path: string,
+): Promise<{ data_dir: string; moved: number; restart_required: boolean }> {
   return readJson(
-    await fetch("/app/session-dir", {
+    await fetch("/app/data-dir", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path }),

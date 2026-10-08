@@ -66,6 +66,13 @@ export type AppInfo = {
   model: string;
   catalog_ready: boolean;
   catalog_error: string | null;
+  /** 数据目录（.nono-agent 整体）—— 配置、密钥、会话、记忆都在这里面。 */
+  data_dir: string;
+  /** 还在默认位置（~/.nono-agent），没搬过。 */
+  data_dir_is_default: boolean;
+  /** 推荐的新位置。 */
+  data_dir_suggested: string;
+  /** 会话目录 —— 数据目录的派生量，只读展示。 */
   session_dir: string;
 };
 

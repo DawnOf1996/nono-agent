@@ -133,9 +133,10 @@ class TestUpsertProvider:
                 models=[{"id": "m2", "name": "Two"}],
             )
         )
-        loaded = yaml.safe_load(
-            (tmp_path / ".nono-agent" / "config.yaml").read_text(encoding="utf-8")
-        )
+        # 读实际写入的位置：数据目录由 conftest 隔离，路径不是 tmp_path/.nono-agent。
+        from nono_agent.providers import catalog as catalog_mod
+
+        loaded = yaml.safe_load(catalog_mod.USER_CONFIG_PATH.read_text(encoding="utf-8"))
         named = loaded["llm_provider"]["providers"]["acme"]
         assert named["display_name"] == "Acme 2"
         assert named["extra_headers"] == {"X-Project": "1"}

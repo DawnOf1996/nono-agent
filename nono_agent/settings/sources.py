@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from nono_agent.paths import CONFIG_DIR_NAME, project_dir, user_home
+from nono_agent.paths import CONFIG_DIR_NAME, is_data_dir, project_dir, user_home
 from nono_agent.settings.merge import deep_merge
 from nono_agent.settings.models import Settings
 
@@ -65,29 +65,26 @@ def user_settings_path() -> Path:
     return user_home() / "settings.json"
 
 
-def _same_file(left: Path, right: Path) -> bool:
-    """两个路径是不是同一个文件（跨平台大小写/分隔符归一）。"""
-    return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
-
-
 def load_project_settings(cwd: str | Path) -> dict[str, Any]:
     """加载项目级设置（``.nono-agent/settings.json``，从 cwd 向上查找第一个）。
 
-    **用户级设置文件不能被当成项目级的。** cwd 在 ``$HOME`` 下面时（比如
-    ``~/projects/foo``），向上查找会撞上 ``~/.nono-agent/settings.json`` ——
-    同一个文件已经在 user 层读过一次了，再当 project 层读一遍会让优先级
-    凭空多出一层，``source_of()`` 也会把 user 层的键误报成 project。
+    **数据目录不能被当成项目级的。** cwd 在数据目录下面时（比如
+    ``~/projects/foo``，数据目录在默认的 ``~/.nono-agent``），向上查找会撞上
+    那份 ``settings.json`` —— 同一个文件已经在 user 层读过一次了，再当 project
+    层读一遍会让优先级凭空多出一层，``source_of()`` 也会把 user 层的键误报成
+    project。用 :func:`is_data_dir` 判定，数据目录搬过家之后同样生效。
 
     同时**不越过家目录**：家目录之上（``C:\\Users``、``C:\\``）几乎不可能是
     真正的项目根，继续往上只会捡到别的用户或整机的配置。
     """
     current = Path(cwd).resolve()
-    user_path = user_settings_path()
-    # user_home() 返回的是配置目录本身（``~/.nono-agent``），父目录才是家目录
+    # 边界取数据目录的父目录（而不是 default_user_home）：数据目录搬到哪儿，
+    # 它的父目录就是那条「之上不算项目根」的分界。数据目录本身由
+    # is_data_dir 单独挡 —— 搬过家之后老位置那一份也得挡住。
     home = user_home().parent.resolve()
     while True:
         candidate = current / _PROJECT_SETTINGS_REL
-        if candidate.exists() and not _same_file(candidate, user_path):
+        if candidate.exists() and not is_data_dir(candidate.parent):
             data = _read_json(candidate)
             if data:
                 return data

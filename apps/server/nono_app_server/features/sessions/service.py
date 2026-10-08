@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -18,10 +17,7 @@ from nono_agent.session.transcript import (
     LocalFileTranscriptWriter,
     active_session_dir,
     existing_transcript_path,
-    relocate_session_files,
-    use_session_dir,
 )
-from nono_agent.settings.sources import patch_user_settings
 from nono_app_server.engine.session_manager import SessionManager
 from nono_app_server.engine.views import session_info
 from nono_app_server.features.permissions.service import cancel_session_permissions
@@ -98,38 +94,3 @@ async def _note_interrupted(engine_session_id: str, text: str) -> None:
             )
         ]
     )
-
-
-async def change_session_directory(raw: str, manager: SessionManager) -> dict[str, Any]:
-    """改会话保存目录，并把已有会话文件从旧目录迁过去。"""
-    cleaned = raw.strip()
-    if not cleaned:
-        raise ValueError("请填写保存目录")
-    new = Path(cleaned).expanduser()
-    try:
-        new = new.resolve()
-    except OSError as exc:
-        raise ValueError("这个路径无效") from exc
-    old = active_session_dir()
-    async with manager.lock:
-        writers = [
-            engine.transcript_writer
-            for engine in manager.sessions.values()
-            if isinstance(engine.transcript_writer, LocalFileTranscriptWriter)
-        ]
-        for writer in writers:
-            await writer._write_lock.acquire()
-        try:
-            moved = relocate_session_files(old, new)
-            try:
-                patch_user_settings({"session_dir": str(new)})
-            except Exception:
-                relocate_session_files(new, old)
-                raise
-            for writer in writers:
-                writer.retarget(new)
-            use_session_dir(new)
-        finally:
-            for writer in reversed(writers):
-                writer._write_lock.release()
-    return {"session_dir": str(new), "moved": moved}

@@ -1,8 +1,8 @@
 import { Bot, Boxes, Cable, Monitor, Moon, Puzzle, Settings2, SlidersHorizontal, Sun, X } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
-import type { SettingsTab } from "@nono/protocol";
+import type { AppInfo, SettingsTab } from "@nono/protocol";
 
-import { openCatalogConfig, updateSessionDir } from "@/api/client";
+import { openCatalogConfig, updateDataDir } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { ConnectorSettings } from "@/features/settings/ConnectorSettings";
 import { PresetPicker, ProviderList } from "@/features/settings/ModelSettings";
@@ -263,9 +263,7 @@ export function SettingsPanel() {
             />
           ) : null}
 
-          {tab === "general" ? (
-            <GeneralPane configPath={catalog?.config_path} info={info} />
-          ) : null}
+          {tab === "general" ? <GeneralPane info={info} /> : null}
           {tab === "connectors" ? (
             <ConnectorSettings onViewChange={setConnectorTitle} />
           ) : null}
@@ -316,16 +314,18 @@ function PaneSection({ children }: { children: ReactNode }) {
 }
 
 function GeneralPane({
-  configPath,
   info,
 }: {
-  configPath?: string | null;
-  info: { session_dir?: string } | null;
+  info: AppInfo | null;
 }) {
-  const [path, setPath] = useState(info?.session_dir ?? "");
+  const dataDir = info?.data_dir ?? "";
   const [picking, setPicking] = useState(false);
+  const [migrating, setMigrating] = useState(false);
   // 假检查：先转圈再告诉你是最新的，之后再点重新检查。暂不接真实更新/热更新。
   const [updateState, setUpdateState] = useState<"idle" | "checking" | "latest">("idle");
+  // 搬家要重启才生效，成功后一直挂着提示，直到用户关掉应用。
+  const [pendingRestart, setPendingRestart] = useState<string | null>(null);
+  const [dataDirError, setDataDirError] = useState<string | null>(null);
 
   function checkForUpdates() {
     if (updateState === "checking") return;
@@ -333,15 +333,28 @@ function GeneralPane({
     window.setTimeout(() => setUpdateState("latest"), 1200);
   }
 
-  useEffect(() => {
-    if (info?.session_dir) setPath(info.session_dir);
-  }, [info?.session_dir]);
-
   async function chooseDirectory(next: string) {
-    const result = await updateSessionDir(next);
-    setPath(result.session_dir);
-    const current = useChatStore.getState().info;
-    if (current) useChatStore.setState({ info: { ...current, session_dir: result.session_dir } });
+    setDataDirError(null);
+    setMigrating(true);
+    try {
+      const result = await updateDataDir(next);
+      setPendingRestart(result.data_dir);
+      // 顶部立刻显示新路径，但真正生效要等重启 —— 提示条一直在，不会被覆盖掉。
+      const current = useChatStore.getState().info;
+      if (current) {
+        useChatStore.setState({
+          info: {
+            ...current,
+            data_dir: result.data_dir,
+            data_dir_is_default: false,
+          },
+        });
+      }
+    } catch (error) {
+      setDataDirError(error instanceof Error ? error.message : "迁移数据目录失败");
+    } finally {
+      setMigrating(false);
+    }
   }
 
   return (
@@ -350,26 +363,42 @@ function GeneralPane({
 
       <PaneSection>
         <SettingGroup label="存储">
-          <SettingRow label="配置文件" hint="模型和密钥存放在这里">
-            <span className="break-all font-mono text-[12px] text-muted">
-              {configPath || "~/.nono-agent/config.yaml"}
-            </span>
-          </SettingRow>
-          <SettingRow label="对话文件" hint="切换目录会把已有会话一起迁过去">
+          <SettingRow
+            label="数据目录"
+            hint="模型、密钥、会话、记忆和插件都在这里。更换会把全部内容搬过去"
+          >
             <div className="flex items-center gap-3">
               <span className="break-all font-mono text-[12px] text-muted">
-                {path || "~/.nono-agent/sessions"}
+                {dataDir || "~/.nono-agent"}
               </span>
               <Button
                 variant="outline"
                 size="sm"
                 className="shrink-0 rounded-full"
+                disabled={migrating}
                 onClick={() => setPicking(true)}
               >
-                更改
+                {migrating ? "迁移中…" : "更改"}
               </Button>
             </div>
           </SettingRow>
+          {pendingRestart ? (
+            <div className="px-4 py-3">
+              <p className="text-[12px] text-muted">
+                数据已搬到 <span className="break-all font-mono text-ink">{pendingRestart}</span>，
+                关闭并重新打开 NoNo 后生效。
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mt-1 -ml-2 rounded-full text-muted"
+                onClick={() => setPendingRestart(null)}
+              >
+                知道了
+              </Button>
+            </div>
+          ) : null}
+          {dataDirError ? <p className="px-4 py-3 text-[12px] text-danger">{dataDirError}</p> : null}
         </SettingGroup>
       </PaneSection>
 
@@ -399,9 +428,9 @@ function GeneralPane({
       <WorkspacePicker
         open={picking}
         onClose={() => setPicking(false)}
-        title="选择对话文件目录"
+        title="选择数据目录"
         confirmLabel="迁移到这里"
-        initialPath={path || "~/.nono-agent/sessions"}
+        initialPath={dataDir || info?.data_dir_suggested || "~/.nono-agent"}
         onConfirm={chooseDirectory}
       />
     </div>

@@ -20,8 +20,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import shutil
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -39,10 +37,13 @@ from nono_agent.session.header import (
 
 logger = logging.getLogger(__name__)
 
-# 默认会话文件存储目录。运行中的实际目录见 active_session_dir()。
+# 默认会话文件存储目录（<数据目录>/sessions）。
+# 它是数据目录的**派生量**，不再单独配置 —— 数据目录搬走了这里自动跟着走。
+# 运行中的实际目录见 active_session_dir()（测试可以覆盖）。
 DEFAULT_SESSION_DIR = user_home() / "sessions"
 
-# 用户在设置里指定的目录。None 表示沿用 DEFAULT_SESSION_DIR（测试会改那个常量）。
+# 测试与库用方的显式覆盖。生产路径不走这里 ——
+# 设置里的「数据目录」才是唯一的用户入口。
 _configured_session_dir: Path | None = None
 
 # 会话元信息侧车文件后缀（与事件流同目录、同 session_id）
@@ -72,94 +73,33 @@ SESSION_DIR_MODE = 0o700
 # ------------------------------------------------------------------
 
 def active_session_dir() -> Path:
-    """当前会话目录。未单独配置时就是 DEFAULT_SESSION_DIR。"""
+    """当前会话目录。未覆盖时就是 ``<数据目录>/sessions``。"""
     return _configured_session_dir if _configured_session_dir is not None else DEFAULT_SESSION_DIR
 
 
 def use_session_dir(path: Path | None) -> None:
-    """切换进程内使用的会话目录。None 表示回到 DEFAULT_SESSION_DIR。"""
+    """进程内覆盖会话目录。None 表示回到 ``<数据目录>/sessions``。
+
+    只给测试和库用方用。产品侧改位置走「数据目录」，没有单独的会话目录开关 ——
+    会话文件本来就是数据目录的一部分，拆开设会让两个设置互相打架。
+    """
     global _configured_session_dir
     _configured_session_dir = path
 
 
 def load_session_dir_setting() -> Path:
-    """从用户设置读会话目录。没配过就用默认目录。"""
-    from nono_agent.settings.sources import load_user_settings
+    """解析当前会话目录并同步到进程内状态。
 
-    raw = load_user_settings().get("session_dir")
-    if isinstance(raw, str) and raw.strip():
-        path = Path(raw).expanduser().resolve()
-        use_session_dir(path)
-        return path
+    数据目录在启动时解析一次（见 :mod:`nono_agent.paths`），这里只是把
+    派生出来的会话目录落到模块状态上，让 :func:`active_session_dir` 有值可返。
+    保留这个函数名是因为 CLI / sidecar 启动流程都调它。
+    """
+    from nono_agent.paths import user_home
+
+    global DEFAULT_SESSION_DIR
+    DEFAULT_SESSION_DIR = user_home() / "sessions"
     use_session_dir(None)
     return DEFAULT_SESSION_DIR
-
-
-def relocate_session_files(old: Path, new: Path) -> int:
-    """把旧目录里的会话文件迁到新目录。
-
-    只搬事件流和元信息（``.jsonl`` / ``.jsonl.zst`` / ``.header.json``）。
-    新目录里已有同名文件时整次放弃，已经搬走的会移回去。
-    """
-    source = old.expanduser().resolve()
-    target = new.expanduser().resolve()
-    if _same_path(source, target):
-        return 0
-    if source.exists() and not source.is_dir():
-        raise ValueError("当前会话目录不是文件夹")
-    if target.exists() and not target.is_dir():
-        raise ValueError("新的保存路径已经是一个文件")
-    if source.exists() and (_inside(source, target) or _inside(target, source)):
-        raise ValueError("新目录不能放在当前会话目录里面，也不能把当前目录包进去")
-    files = _session_files(source)
-    collisions = [path.name for path in files if (target / path.name).exists()]
-    if collisions:
-        shown = "、".join(collisions[:3])
-        raise FileExistsError(f"新目录里已经有同名会话文件：{shown}")
-    target.mkdir(parents=True, exist_ok=True)
-    try:
-        target.chmod(SESSION_DIR_MODE)
-    except OSError:
-        pass
-    moved: list[tuple[Path, Path]] = []
-    try:
-        for path in files:
-            dest = target / path.name
-            shutil.move(str(path), str(dest))
-            moved.append((path, dest))
-    except OSError:
-        for src, dest in reversed(moved):
-            if dest.exists() and not src.exists():
-                shutil.move(str(dest), str(src))
-        raise
-    return len(moved)
-
-
-def _same_path(left: Path, right: Path) -> bool:
-    return os.path.normcase(str(left)) == os.path.normcase(str(right))
-
-
-def _inside(parent: Path, child: Path) -> bool:
-    parent_key = os.path.normcase(str(parent))
-    child_key = os.path.normcase(str(child))
-    if child_key == parent_key:
-        return False
-    prefix = parent_key if parent_key.endswith(os.sep) else parent_key + os.sep
-    return child_key.startswith(prefix)
-
-
-def _session_files(directory: Path) -> list[Path]:
-    if not directory.is_dir():
-        return []
-    files: list[Path] = []
-    for path in directory.iterdir():
-        if not path.is_file():
-            continue
-        name = path.name
-        if name.endswith(".header.json") or name.endswith(".jsonl.zst") or name.endswith(".jsonl"):
-            files.append(path)
-    files.sort(key=lambda item: item.name)
-    return files
 
 
 def transcript_session_id(path: Path) -> str:

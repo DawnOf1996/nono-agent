@@ -112,7 +112,7 @@ POSIX 侧仍用 `sh -c`，管道/重定向由 sh 提供，行为不变。
 - 复用唯一既有产物约定（`session/transcript.py:74-76`），不新造 artifacts 目录
 - 自动继承 C9 的测试隔离
 - 权限对齐会话文件：`0o600` / 目录 `0o700`（`transcript.py:64,67`）
-- 生命周期：随会话删除/迁移（`relocate_session_files`，`transcript.py:98`）一并处理
+- 生命周期：随会话删除/迁移（`nono_agent.datadir.migrate_data_dir`）一并处理
 
 ### D4 — 配置下发方式
 
@@ -915,7 +915,7 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="PowerShell dial
 | Q3 | `job_kill` 如何绕开 `deny_all_permission_checker`（C11） | ✅ 已定：白名单放行（见 §11.3） | 白名单 |
 | Q4 | `jobs/board.py` 的去留 | ✅ 已定：保留为按会话分片门面（`registry_for`，见 §11.3） | 先保留 re-export，`apps/server` 引用面确认后再删 |
 | Q5 | P2 OS 级沙箱与 `README.md:17` 的「❌」声明冲突 | **需产品决策** | 见下 |
-| Q6 | spill 文件的保留期与清理时机 | ✅ 已定：落盘在会话目录 `spill/`（见 §11.3） | 随会话删除（对齐 `relocate_session_files`） |
+| Q6 | spill 文件的保留期与清理时机 | ✅ 已定：落盘在会话目录 `spill/`（见 §11.3） | 随会话删除（对齐 `migrate_data_dir`） |
 
 > **Q5 值得单独强调**：`README.md:17` 把「OS 级硬沙箱（容器/bubblewrap）❌」列为**有意的能力缺口**。
 > 这不是遗漏，是产品定位。因此 P2 不是我该单方面推进的技术债，而是需要你确认是否改变产品承诺的决策。

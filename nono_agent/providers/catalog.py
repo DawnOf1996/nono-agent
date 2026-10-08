@@ -20,7 +20,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from nono_agent.core.config import ProviderConfig
-from nono_agent.paths import project_dir, user_home
+from nono_agent.paths import is_data_dir, project_dir, user_home
 from nono_agent.providers.base import CANONICAL_ADAPTERS
 from nono_agent.settings.merge import deep_merge
 
@@ -378,13 +378,13 @@ def save_credential(
 def find_project_config(cwd: str | Path) -> Path | None:
     """从 cwd 向上查找第一个项目级 ``.nono-agent/config.yaml``。
 
-    跳过用户主目录下的 ``~/.nono-agent/config.yaml``，避免把用户级目录当成项目配置。
+    跳过**数据目录本身**（不管是默认位置还是搬过家之后的路径）——
+    它已经在 user 层读过了，当成项目配置会让优先级凭空多出一层。
     """
     current = Path(cwd).resolve()
-    user_file = (user_home() / PROJECT_CONFIG_NAME).resolve()
     while True:
         candidate = project_dir(current) / PROJECT_CONFIG_NAME
-        if candidate.exists() and candidate.resolve() != user_file:
+        if candidate.exists() and not is_data_dir(candidate.parent):
             return candidate
         if current.parent == current:
             break
