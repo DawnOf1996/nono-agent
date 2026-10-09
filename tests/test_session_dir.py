@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,6 @@ from nono_agent.datadir import (
     DataDirError,
     DataDirOccupiedError,
     migrate_data_dir,
-    suggested_data_dir,
     validate_target,
 )
 
@@ -249,10 +249,6 @@ def test_migrate_into_empty_existing_dir(tmp_path) -> None:
     assert (target / "config.yaml").is_file()
 
 
-def test_suggested_data_dir_is_a_dedicated_folder() -> None:
-    assert suggested_data_dir().name == "NonoAgent"
-
-
 # ------------------------------------------------------------------
 # 向上 walk：数据目录不能被当成「某个项目的配置」
 # ------------------------------------------------------------------
@@ -349,6 +345,56 @@ def test_app_info_reports_data_dir(tmp_path) -> None:
     assert body["restart_required"] is True
     assert Path(body["data_dir"]) == new
     assert (new / "sessions" / "abc.jsonl.zst").read_bytes() == b"events"
+
+
+def test_app_info_checkpoints_app_db_before_moving(tmp_path) -> None:
+    """搬之前要 checkpoint，让 ``app.db`` 单独就能打开。
+
+    不 checkpoint 的话表结构本身还在 WAL 里：``app.db`` 单独打开是「no such table」。
+    平时看不出来，是因为整目录拷贝会连 ``-wal``/``-shm`` 一起带走，靠伴生文件才读得出
+    数据；一旦只留主库（备份、单独拷库），工作区与会话列表整个是空的。
+    """
+    from nono_agent.core.config import EngineConfig
+    from nono_app_server.config import SidecarSettings
+    from nono_app_server.engine import create_server_app
+    from nono_app_server.features.router import mount_product_routes
+
+    old = tmp_path / paths_module.CONFIG_DIR_NAME
+    _seed(old)
+    _point_at(old)
+    new = tmp_path / "new-home"
+
+    config = EngineConfig(cwd=str(tmp_path))
+    app = create_server_app(config)
+    mount_product_routes(
+        app,
+        SidecarSettings(
+            host="127.0.0.1",
+            port=8000,
+            cwd=str(tmp_path),
+            cors_origins=[],
+            catalog_ready=False,
+            catalog_error=None,
+        ),
+        config,
+        db_path=old / "app.db",
+        import_engine_index=False,
+    )
+    app.state.app_store.upsert_workspace(str(tmp_path / "ws"))
+
+    fastapi = pytest.importorskip("fastapi.testclient")
+    with fastapi.TestClient(app) as client:
+        response = client.post("/app/data-dir", json={"path": str(new)})
+
+    assert response.status_code == 200
+    # 只留主库，删掉随行拷贝的伴生文件 —— 主库必须自己能站住。
+    for suffix in ("-wal", "-shm"):
+        sidecar = new / f"app.db{suffix}"
+        if sidecar.exists():
+            sidecar.unlink()
+    with sqlite3.connect(str(new / "app.db")) as conn:
+        rows = conn.execute("SELECT path FROM workspaces").fetchall()
+    assert [row[0] for row in rows] == [str(tmp_path / "ws")]
 
 
 def test_app_info_rejects_bad_target(tmp_path) -> None:

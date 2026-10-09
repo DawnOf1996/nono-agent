@@ -47,17 +47,6 @@ def data_dir() -> Path:
     return user_home()
 
 
-def suggested_data_dir() -> Path:
-    """给用户推荐一个默认目标：``文档/NonoAgent``。
-
-    数据目录通常有几百 MB（托管运行时 + 会话），放系统盘不合适；
-    但也不能默认挪到 OneDrive —— 会话文件被云同步反复重写会损坏事件流。
-    """
-    docs = Path.home() / "Documents"
-    base = docs if docs.is_dir() else Path.home()
-    return base / "NonoAgent"
-
-
 def _same_path(left: Path, right: Path) -> bool:
     return os.path.normcase(str(left)) == os.path.normcase(str(right))
 
@@ -206,6 +195,5 @@ __all__ = [
     "data_dir",
     "migrate_data_dir",
     "revert_pointer",
-    "suggested_data_dir",
     "validate_target",
 ]

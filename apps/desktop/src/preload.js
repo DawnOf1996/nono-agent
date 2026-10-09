@@ -21,4 +21,6 @@ contextBridge.exposeInMainWorld("nonoDesktop", {
   },
   readClipboardText: () => ipcRenderer.invoke("read-clipboard-text"),
   writeClipboardText: (text) => ipcRenderer.invoke("write-clipboard-text", text),
+  // 改过数据目录后重启应用。渲染进程不能自己重启，只有点一次主进程。
+  relaunch: () => ipcRenderer.invoke("relaunch"),
 });

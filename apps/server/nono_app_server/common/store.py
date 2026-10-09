@@ -134,6 +134,17 @@ class AppStore:
         with self._lock:
             self._conn.close()
 
+    def checkpoint(self) -> None:
+        """把 WAL 里还没并进主库的事务落盘，让 ``app.db`` 自己就是完整的库。
+
+        搬数据目录之前要调：WAL 模式下建表和写入都先进 ``-wal``，主库可能还是空的。
+        整目录拷贝会连 ``-wal``/``-shm`` 一起带走，所以当场看不出问题；但那份
+        ``app.db`` 脱离伴生文件就打不开（表根本不存在），备份、单独拷库、任何
+        「只留 app.db」的场景都会拿到空数据。
+        """
+        with self._lock:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
         with self._lock:

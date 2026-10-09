@@ -12,6 +12,8 @@ type NonoDesktop = {
   onNewTab?: (handler: (url: string) => void) => () => void;
   readClipboardText?: () => Promise<string>;
   writeClipboardText?: (text: string) => Promise<{ ok: boolean }>;
+  /** 改过数据目录后重启应用。浏览器里没有这个桥，只能提示用户自己重开。 */
+  relaunch?: () => Promise<boolean>;
 };
 
 interface Window {

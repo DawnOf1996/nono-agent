@@ -2,9 +2,10 @@ import { Bot, Boxes, Cable, Monitor, Moon, Puzzle, Settings2, SlidersHorizontal,
 import { useEffect, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import type { AppInfo, SettingsTab } from "@nono/protocol";
 
-import { openCatalogConfig, updateDataDir } from "@/api/client";
+import { openCatalogConfig } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { ConnectorSettings } from "@/features/settings/ConnectorSettings";
+import { DataDirDialog } from "@/features/settings/DataDirDialog";
 import { PresetPicker, ProviderList } from "@/features/settings/ModelSettings";
 import { titleFromId, type ProviderPreset } from "@/features/settings/presets";
 import {
@@ -320,41 +321,15 @@ function GeneralPane({
 }) {
   const dataDir = info?.data_dir ?? "";
   const [picking, setPicking] = useState(false);
-  const [migrating, setMigrating] = useState(false);
+  // 选完目录不直接搬：先过 DataDirDialog 确认，避免「点一下就不可逆地搬走几百 MB」。
+  const [pendingTarget, setPendingTarget] = useState<string | null>(null);
   // 假检查：先转圈再告诉你是最新的，之后再点重新检查。暂不接真实更新/热更新。
   const [updateState, setUpdateState] = useState<"idle" | "checking" | "latest">("idle");
-  // 搬家要重启才生效，成功后一直挂着提示，直到用户关掉应用。
-  const [pendingRestart, setPendingRestart] = useState<string | null>(null);
-  const [dataDirError, setDataDirError] = useState<string | null>(null);
 
   function checkForUpdates() {
     if (updateState === "checking") return;
     setUpdateState("checking");
     window.setTimeout(() => setUpdateState("latest"), 1200);
-  }
-
-  async function chooseDirectory(next: string) {
-    setDataDirError(null);
-    setMigrating(true);
-    try {
-      const result = await updateDataDir(next);
-      setPendingRestart(result.data_dir);
-      // 顶部立刻显示新路径，但真正生效要等重启 —— 提示条一直在，不会被覆盖掉。
-      const current = useChatStore.getState().info;
-      if (current) {
-        useChatStore.setState({
-          info: {
-            ...current,
-            data_dir: result.data_dir,
-            data_dir_is_default: false,
-          },
-        });
-      }
-    } catch (error) {
-      setDataDirError(error instanceof Error ? error.message : "迁移数据目录失败");
-    } finally {
-      setMigrating(false);
-    }
   }
 
   return (
@@ -368,37 +343,24 @@ function GeneralPane({
             hint="模型、密钥、会话、记忆和插件都在这里。更换会把全部内容搬过去"
           >
             <div className="flex items-center gap-3">
-              <span className="break-all font-mono text-[12px] text-muted">
+              {/* 路径换行会让这一行在 660px 里能塞下更多字符，但纯路径折成两三行
+                  时「哪一坨是目录名」很难读。这里单行截断 + title 挂全串。 */}
+              <span
+                className="truncate font-mono text-[12px] text-muted"
+                title={dataDir || "~/.nono-agent"}
+              >
                 {dataDir || "~/.nono-agent"}
               </span>
               <Button
                 variant="outline"
                 size="sm"
                 className="shrink-0 rounded-full"
-                disabled={migrating}
                 onClick={() => setPicking(true)}
               >
-                {migrating ? "迁移中…" : "更改"}
+                更改
               </Button>
             </div>
           </SettingRow>
-          {pendingRestart ? (
-            <div className="px-4 py-3">
-              <p className="text-[12px] text-muted">
-                数据已搬到 <span className="break-all font-mono text-ink">{pendingRestart}</span>，
-                关闭并重新打开 NoNo 后生效。
-              </p>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="mt-1 -ml-2 rounded-full text-muted"
-                onClick={() => setPendingRestart(null)}
-              >
-                知道了
-              </Button>
-            </div>
-          ) : null}
-          {dataDirError ? <p className="px-4 py-3 text-[12px] text-danger">{dataDirError}</p> : null}
         </SettingGroup>
       </PaneSection>
 
@@ -430,9 +392,32 @@ function GeneralPane({
         onClose={() => setPicking(false)}
         title="选择数据目录"
         confirmLabel="迁移到这里"
-        initialPath={dataDir || info?.data_dir_suggested || "~/.nono-agent"}
-        onConfirm={chooseDirectory}
+        // 浏览起点必须是「已存在」的目录：initialPath 的语义是打开时先进入这里。
+        // 不能拿推荐目标当起点 —— 那是个还不存在的路径，列表接口会 404，用户每次
+        // 打开都先撞一句「打不开这个目录」。想搬到哪，让用户自己在树里挑或新建。
+        initialPath={dataDir || undefined}
+        onConfirm={(next) => {
+          setPicking(false);
+          setPendingTarget(next);
+        }}
       />
+      {pendingTarget ? (
+        <DataDirDialog
+          target={pendingTarget}
+          current={dataDir || "~/.nono-agent"}
+          onClose={() => setPendingTarget(null)}
+          onMigrated={(next) => {
+            // 顶部立刻显示新路径，但真正生效要等重启 —— 弹窗里的提示一直在，
+            // 不会被这里覆盖掉。
+            const current = useChatStore.getState().info;
+            if (current) {
+              useChatStore.setState({
+                info: { ...current, data_dir: next, data_dir_is_default: false },
+              });
+            }
+          }}
+        />
+      ) : null}
     </div>
   );
 }

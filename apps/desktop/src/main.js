@@ -243,6 +243,20 @@ if (gotLock) app.whenReady().then(async () => {
     clipboard.writeText(text);
     return { ok: true };
   });
+  // 重启整个应用。换过数据目录之后只有重启才生效：数据目录在进程启动时解析一次
+  // （见 nono_agent/paths），会话事件流、app.db 和托管运行时都被当前进程占着。
+  // 顺序是「先停 sidecar 再退」：app.quit() 不会替我们回收子进程，sidecar 拿着旧
+  // 数据目录的句柄活到新进程起来，Windows 上就变成两个进程抢同一个 app.db。
+  ipcMain.handle("relaunch", async () => {
+    quitting = true;
+    stopSidecar();
+    // taskkill 是异步的：旧 sidecar 还没退干净时新进程就抢端口，开发态（固定 8000）
+    // 会直接撞上「端口已被占用」而启动失败。给它一点收尾时间。
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    app.relaunch();
+    app.quit();
+    return true;
+  });
 
   const port = isPackaged() ? await pickFreePort() : Number(process.env.NONO_PORT || 8000);
   const healthUrl = isPackaged()
