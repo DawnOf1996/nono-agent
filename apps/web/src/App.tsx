@@ -7,6 +7,7 @@ import { SettingsPanel } from "@/features/settings/SettingsPanel";
 import { Workbench } from "@/features/shell/Workbench";
 import { useChatStore } from "@/store/chat";
 import { httpUrl } from "@/lib/url";
+import { useGlobalLinkRouter } from "@/lib/use-link-router";
 
 export function App() {
   const refresh = useChatStore((state) => state.refresh);
@@ -16,6 +17,9 @@ export function App() {
   const unwatchSessionStats = useChatStore((state) => state.unwatchSessionStats);
   const sessionId = useChatStore((state) => state.sessionId);
   const openBrowser = usePanelStore((state) => state.openBrowser);
+  // 根节点上一层点击代理：正文里的网址开成侧边栏浏览器标签，文件路径开成侧边栏
+  // 文件查看器。桌面版装在 <webview> 里，链接一旦自己开窗口就会弹出原生窗体。
+  useGlobalLinkRouter();
 
   useEffect(() => {
     void refresh();

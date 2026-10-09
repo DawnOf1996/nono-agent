@@ -329,10 +329,66 @@ textarea {
   font-weight: 600;
 }
 
+/* 正文里的链接：颜色走 --color-info（深浅两套各自调过对比度），比 inherit 更容易
+   扫读时认出"这里能点"。锚点（#标题）留在原地，不染色 —— 那是目录跳转，不是导航出去。
+
+   下划线用 currentColor 而不是固定色：悬停变深时线跟着一起深，不会留下一道浅线。 */
 .prose-md a {
-  color: inherit;
+  color: var(--color-info);
   text-decoration: underline;
+  text-decoration-thickness: 1px;
   text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  border-radius: 3px;
+  /* 链接本身也可聚焦：键盘 Tab 过来时必须有明确的落点，否则读屏用户无从判断读到哪了。 */
+  transition: color 120ms ease, text-decoration-color 120ms ease, background-color 120ms ease;
+}
+
+.prose-md a:hover {
+  text-decoration-color: currentColor;
+  background-color: color-mix(in srgb, var(--color-info) 8%, transparent);
+}
+
+/* 焦点环跟全站按钮一致（focus-visible:ring-2 ring-ink/15），这里用 outline 实现 ——
+   正文是流式重绘的，box-shadow 会跟着每一行重算，outline 只画一次外框。 */
+.prose-md a:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-ink) 15%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* 页内锚点不该看起来像"要去别处"：不着色、不加底色，交给浏览器自己跳。
+   仍然保留可见的焦点环，键盘用户才知道自己停在了一个锚点上。 */
+.prose-md a.md-anchor {
+  color: inherit;
+  text-decoration-color: color-mix(in srgb, currentColor 30%, transparent);
+}
+
+.prose-md a.md-anchor:hover {
+  background-color: transparent;
+  text-decoration-color: currentColor;
+}
+
+/* 文件链接：留在应用内开预览，用 --color-muted 的下划线 + 一个等宽的文件字形，
+   和"跳去外网"的蓝链接一眼分开。鼠标停在上面时给出「可以打开」的暗示。 */
+.prose-md a.md-file {
+  color: inherit;
+  text-decoration-color: color-mix(in srgb, var(--color-muted) 55%, transparent);
+  text-decoration-style: dotted;
+}
+
+.prose-md a.md-file:hover {
+  color: var(--color-ink);
+  background-color: var(--color-hover);
+  text-decoration-color: currentColor;
+  text-decoration-style: solid;
+}
+
+/* 裸网址（正文里直接贴出来的链接，常无锚文本）：让它在段末可断行，否则一个长 URL
+   会把整段的版心撑歪。break-word 只在"这个词自己都放不下"时断，断点仍在词边界。 */
+.prose-md a.md-web {
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .prose-md blockquote {
@@ -606,6 +662,16 @@ textarea {
 .prose-md-muted pre,
 .prose-md-muted code {
   background: color-mix(in srgb, var(--color-card) 80%, transparent);
+}
+
+/* 次级行里的链接要跟着这一行的层级一起降下来：摘要里夹着的地址多半是过程说明，
+   不该和正文里的引用一样抢视线。字号、对比度都压一档，但保持可点、可辨。 */
+.prose-md-muted a {
+  color: color-mix(in srgb, var(--color-info) 78%, var(--color-muted));
+}
+
+.prose-md-muted a.md-file {
+  color: var(--color-muted);
 }
 
 .prose-md-muted .code-fence pre,

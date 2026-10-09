@@ -191,14 +191,21 @@ app.on("second-instance", () => {
 
 app.setAppUserModelId("com.nono.agent");
 
-// <webview> 里的 target=_blank / window.open 会让 Electron 另开一个原生窗口。
+// 正文里的 target=_blank / window.open 会让 Electron 另开一个原生窗口。
 // webview 的 new-window 事件在 Electron 37 已经不再触发（实测点击后事件不响，
 // 反而多出两个进程），只能在主进程对 guest 的 WebContents 挂 setWindowOpenHandler，
 // 把地址转回渲染进程，由它开成应用内的浏览器标签。
+//
+// 这里同时覆盖两类 guest：侧边栏浏览器的 <webview>，以及装着应用自己的主窗口
+// （type 为 window）。主窗口里的正文链接 —— 对话气泡、README 预览 —— 走的就是
+// 主窗口这条；漏掉它的话点一下链接整个应用就被新窗体顶到后面去了。
 app.on("web-contents-created", (_event, contents) => {
-  if (contents.getType() !== "webview") return;
+  const type = contents.getType();
+  if (type !== "webview" && type !== "window") return;
   contents.setWindowOpenHandler(({ url }) => {
     const owner = contents.getOwnerBrowserWindow();
+    // 只有 http/https 能转成浏览器标签；别的协议没有安全的落地方式，直接丢弃，
+    // 免得 file: 之类被当成「打开一个网页」而执行本地程序。
     if (owner && /^https?:/i.test(url)) owner.webContents.send("browser:new-tab", url);
     return { action: "deny" };
   });

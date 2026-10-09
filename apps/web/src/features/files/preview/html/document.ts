@@ -21,6 +21,21 @@ export function createHtmlDocument(bundle: HtmlBundle): string {
 const bytes=data=>Uint8Array.from(atob(data),character=>character.charCodeAt(0));
 const text=data=>new TextDecoder("utf-8",{fatal:true}).decode(bytes(data));
 const bundle=JSON.parse(text("${payload}"));
+// 预览页里的链接不许自己开窗口：sandbox 放开 allow-popups 后，target=_blank 会让
+// 桌面版弹出一个原生窗体。改成把地址递给宿主，由宿主开成侧边栏的浏览器/文件标签。
+// 监听器必须挂在 document.open 之前 —— document.open/write 只换 DOM，window 还在，
+// 反过来写就只剩一个已经作废的文档引用了。
+window.addEventListener("click",(event)=>{
+  if(event.defaultPrevented||event.button!==0)return;
+  if(event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+  const anchor=event.target&&event.target.closest?event.target.closest("a[href]"):null;
+  if(!anchor)return;
+  const href=anchor.getAttribute("href")||"";
+  if(!href||href.startsWith("#"))return;
+  event.preventDefault();
+  // 原样递过去：相对路径要由宿主按这个 HTML 文件的位置解析，iframe 里没有这个上下文。
+  parent.postMessage({nono:"open-link",href},"*");
+},true);
 let html=bundle.html;
 if(bundle.assets.length){
   const parsed=new DOMParser().parseFromString(html,"text/html");

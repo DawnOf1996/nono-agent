@@ -6,9 +6,8 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 
-import { httpUrl } from "@/lib/url";
 import { CodeFence } from "@/components/CodeFence";
-import { usePanelStore } from "@/features/files/panel-store";
+import { MarkdownLink } from "@/components/MarkdownLink";
 import { MdToc } from "@/features/files/preview/markdown/MdToc";
 import { previewImageSrc } from "@/features/files/preview/markdown/media";
 import { SvgFigure, svgBlockSource } from "@/components/SvgFigure";
@@ -66,21 +65,14 @@ function previewComponents(root: string, filePath: string): Components {
       if (!resolved) return alt ? <span>{alt}</span> : null;
       return <img src={resolved} alt={alt ?? ""} />;
     },
-    a: ({ href, children }) => (
-      <a
-        href={href}
-        target="_blank"
-        rel="noreferrer"
-        onClick={(event) => {
-          if (!href || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
-          const safe = httpUrl(href);
-          if (!safe) return;
-          event.preventDefault();
-          usePanelStore.getState().openBrowser(safe);
-        }}
-      >
+    // 不带 target：<webview> 里的 target=_blank 会让桌面版另开一个原生窗口。
+    // 点击交给 lib/use-link-router 的全局代理，网址开侧边栏浏览器、文件路径
+    // （含 ./README.md 这类相对路径）开侧边栏文件查看器。data-link-dir 让代理
+    // 知道要把相对路径接在哪个文件目录下。
+    a: ({ href, children, title }) => (
+      <MarkdownLink href={href} title={title}>
         {children}
-      </a>
+      </MarkdownLink>
     ),
   };
   componentCache.set(key, created);
@@ -100,7 +92,7 @@ export const MarkdownBody = memo(function MarkdownBody({ root, path, content }: 
   const segments = useMemo(() => (content.kind === "text" ? segmentReadmeHtml(content.text) : []), [content]);
   if (content.kind !== "text") return null;
   return (
-    <div className="file-preview relative h-full overflow-auto px-4 py-4">
+    <div className="file-preview relative h-full overflow-auto px-4 py-4" data-link-file={path}>
       <MdToc />
       <div className="prose-md">
         {segments.map((segment, index) => {

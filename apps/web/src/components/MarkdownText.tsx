@@ -4,6 +4,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { CodeFence } from "@/components/CodeFence";
+import { MarkdownLink } from "@/components/MarkdownLink";
 import { SvgFigure, svgBlockSource } from "@/components/SvgFigure";
 import { MermaidDiagram, mermaidBlockSource } from "@/features/files/preview/markdown/MermaidDiagram";
 import {
@@ -36,11 +37,11 @@ const tableComponents: Components = {
 
 const linkComponents: Components = {
   ...tableComponents,
-  a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer">
-      {children}
-    </a>
-  ),
+  // 不带 target：不带的话 <webview> 里的 target=_blank 会让桌面版另开一个原生窗口。
+  // 点击由 App 上的全局代理接管（见 lib/use-link-router），网址开侧边栏浏览器、
+  // 文件路径开侧边栏文件查看器。保留 href 是为了「复制链接地址」和
+  // Ctrl/Cmd+点击（用户明确要新开窗口）仍然可用。
+  a: ({ href, children, title }) => <MarkdownLink href={href} title={title}>{children}</MarkdownLink>,
 };
 
 const components: Components = {
