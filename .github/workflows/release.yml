@@ -58,8 +58,9 @@ jobs:
       PYTHONUTF8: "1"
 
     steps:
-      # fetch-depth: 0 —— electron-builder 靠 git tag 决定 Release 挂在哪个 tag 上，
-      # 默认的浅克隆看不到 tag，会退回按分支名发布或者直接报错。
+      # fetch-depth: 0 —— 浅克隆看不到 git tag。发版本身走 GITHUB_REF_NAME，不受影响；
+      # 但单独重跑某一步、或在 runner 上排查时还要靠 git tag，浅克隆会让这些判断
+      # 悄悄走进兜底分支。
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -126,8 +127,8 @@ jobs:
           }
           Get-ChildItem $out -File | Select-Object Name, Length | Format-Table -AutoSize
 
-      # 发版单独一步，日志只有几行。失败时能一眼看出是 gh 哪条命令挂了，
-      # 而且可以原样只重跑这一步，不用再等一遍完整构建。
+      # 发版单独一步，日志只有几行。失败时能一眼看出是 gh 哪条命令挂在哪，
+      # 不用去十几分钟的打包日志里翻。
       - name: 发布 GitHub Release
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         env:
@@ -149,8 +150,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # 上一条只证明了「生成出来了」，这一条才证明「真的传上去了」——
-      # --publish 有可能静默跳过（比如令牌权限不够）。用 gh CLI 直接问 GitHub。
+      # 上一条只证明了「发布命令跑完了」，这一条才证明「东西真的在 GitHub 上了」——
+      # 上传有可能被静默跳过（比如令牌权限不够）。用 gh CLI 直接问 GitHub。
       - name: 确认 Release 资产已上传
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         # 这步要用 gh CLI 问 GitHub，令牌得单独再挂一次 —— env 是按 step 生效的，
@@ -165,7 +166,7 @@ jobs:
           # 抛错，只会安静地把自动更新废掉，所以在这里显式断言。
           $draft = gh release view $tag --json isDraft --jq '.isDraft'
           if ($draft -eq "true") {
-            Write-Error "Release $tag 还是 draft，匿名用户拉不到，自动更新会 404。检查 package.json 的 build.publish.releaseType。"
+            Write-Error "Release $tag 还是 draft，匿名用户拉不到，自动更新会 404。发版走的是 gh release create，检查它有没有被带上了 --draft。"
             exit 1
           }
           $raw = gh release view $tag --json assets --jq '.assets[].name'

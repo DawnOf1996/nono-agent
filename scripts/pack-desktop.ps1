@@ -273,6 +273,45 @@ fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
     }
 }
 
+# 允许失败地调 native 命令，并把退出码交回调用方判断。
+# 为什么要专门包一层：脚本开头把 $ErrorActionPreference 设成了 Stop，而 PS 5.1 下
+# native 命令只要往 stderr 写一行，就会被判成终止性的 NativeCommandError ——
+# 2>$null、2>&1、接管道，全都挡不住（已实测）。于是「这条命令失败了我自己看
+# $LASTEXITCODE」这种写法根本走不到判断那一步，脚本会带着一句看不懂的
+# NativeCommandError 直接退出。问一个不存在的 remote、问一个不存在的 Release，
+# 都属于这一类。
+function Invoke-NativeCapture([scriptblock]$Cmd) {
+    $ErrorActionPreference = "Continue"
+    $out = & $Cmd 2>$null
+    return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($out) }
+}
+
+# 认出这次该发到哪个 GitHub 仓库。
+# gh 默认从 origin remote 推断，而本机 origin 指的是 Gitee，不显式指定的话本地手工
+# 发版会发到 Gitee 去 —— 那种错发出去再撤回来很麻烦。
+function Resolve-GitHubRepo {
+    # CI 里以 GITHUB_REPOSITORY 为准：它就是当前 workflow 所属的仓库，比从 remote
+    # 名字猜可靠得多。CI 上 actions/checkout 建出来的 remote 叫 origin，各人本地的
+    # remote 名字又不统一，所以按名字猜注定要猜错一次。
+    if ($env:GITHUB_REPOSITORY) {
+        return $env:GITHUB_REPOSITORY
+    }
+    # 本地：一次性读 git remote -v 再挑出 github.com 的那条。不逐个去问 remote 名字，
+    # 因为问一个不存在的名字会直接抛（见 Invoke-NativeCapture）。
+    $remotes = Invoke-NativeCapture { git remote -v }
+    if ($remotes.ExitCode -ne 0) {
+        return $null
+    }
+    foreach ($line in $remotes.Output) {
+        # 去掉行尾的 " (fetch)" / " (push)"，好让下面的正则能按行尾锚定。
+        $url = ($line -replace '\s+\((?:fetch|push)\)\s*$', '')
+        if ($url -match 'github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$') {
+            return "$($Matches[1])/$($Matches[2])"
+        }
+    }
+    return $null
+}
+
 # 用 gh CLI 发 Release，而不是 electron-builder 的 --publish。
 # 换掉的理由（踩过的坑）：
 #   1. electron-builder 一次构建会建出两条 Release —— exe 和 latest.yml 走的是两个
@@ -283,38 +322,31 @@ fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
 #      Release 上却只剩 .blockmap，而打包那一步的日志早已被 PyInstaller 的输出
 #      撑爆被 GitHub 截断，事后根本查不出原因。
 # gh 的好处是：一条 Release、失败会明确报错、日志只有几行，出问题一眼看得见。
-function Publish-GitHubRelease([string]$OutDir, [string]$Version) {
+function Publish-GitHubRelease([string]$OutDir, [string]$Tag) {
     Require-Cmd gh
-    # gh 默认从 origin remote 推断仓库。本机 origin 指的是 Gitee，不显式指定的话
-    # 本地手工发版会发到 Gitee 去 —— 那种错发出去再撤回来很麻烦。
-    $repo = $null
-    foreach ($remote in @("github", "origin")) {
-        $url = (& git remote get-url $remote 2>$null)
-        if ($url -and $url -match 'github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$') {
-            $repo = "$($Matches[1])/$($Matches[2])"
-            break
-        }
-    }
+    $repo = Resolve-GitHubRepo
     $repoArgs = @()
     if ($repo) {
         Write-Host "==> 目标仓库 $repo"
         $repoArgs = @("--repo", $repo)
     } else {
-        Write-Host "警告: 从 git remote 认不出 GitHub 仓库，改由 gh 自己推断。"
+        Write-Host "警告: 认不出 GitHub 仓库，改由 gh 自己推断。"
     }
 
-    $raw = gh release view $Version @repoArgs --json tagName --jq '.tagName' 2>$null
-    if ($LASTEXITCODE -eq 0 -and $raw) {
-        Write-Host "==> Release $raw 已存在，补传产物"
+    # Release 不存在时 gh 会往 stderr 写 "release not found" 并 exit 1 —— 那是正常
+    # 分支不是故障，所以走 Invoke-NativeCapture 拿退出码，而不是让它把脚本打断。
+    $existing = Invoke-NativeCapture { gh release view $Tag @repoArgs --json tagName --jq '.tagName' }
+    if ($existing.ExitCode -eq 0 -and $existing.Output.Count -gt 0) {
+        Write-Host "==> Release $($existing.Output[0]) 已存在，补传产物"
     } else {
         # --generate-notes 而不是 --notes-from-tag：后者要求 annotated tag，
         # 而我们打的是 lightweight tag，那样会直接失败。
         # --verify-tag 必须带：没有它时，若 tag 在远端不存在，gh 会拿默认分支的
         # HEAD 自动建一个 tag —— 而我们的 main 远落后于 dev-ai，那样发出来的
         # Release 指向的代码根本不是刚打好的这个包。
-        gh release create $Version @repoArgs --title $Version --generate-notes --verify-tag
+        gh release create $Tag @repoArgs --title $Tag --generate-notes --verify-tag
         Assert-LastExit "gh release create"
-        Write-Host "==> 已创建 Release $Version"
+        Write-Host "==> 已创建 Release $Tag"
     }
     # 只取输出目录顶层的文件。递归会把 win-unpacked 里的一堆 .dll 也拖上去。
     $assets = Get-ChildItem -Path $OutDir -File |
@@ -324,7 +356,7 @@ function Publish-GitHubRelease([string]$OutDir, [string]$Version) {
     }
     $paths = @($assets | ForEach-Object { $_.FullName })
     Write-Host "==> 上传 $($paths.Count) 个资产"
-    gh release upload $Version @repoArgs @paths --clobber
+    gh release upload $Tag @repoArgs @paths --clobber
     Assert-LastExit "gh release upload"
 }
 
@@ -333,7 +365,13 @@ function Publish-GitHubRelease([string]$OutDir, [string]$Version) {
 function Resolve-ReleaseTag([string]$Version) {
     $tag = $env:GITHUB_REF_NAME
     if (-not $tag) {
-        $tag = (& git describe --tags --exact-match 2>$null)
+        # 用 git tag --points-at 而不是 git describe --exact-match：后者在当前 commit
+        # 没打 tag 时会往 stderr 写 "fatal: no tag exactly matches..."，在 Stop 模式
+        # 下直接抛，下面 v$Version 的兜底永远走不到。
+        $local = Invoke-NativeCapture { git tag --points-at HEAD }
+        if ($local.ExitCode -eq 0 -and $local.Output.Count -gt 0) {
+            $tag = [string]($local.Output[0]).Trim()
+        }
     }
     if (-not $tag) {
         $tag = "v$Version"
