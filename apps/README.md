@@ -57,12 +57,13 @@ cd apps
 pnpm dev:web
 
 # 3. 桌面壳（可选；会复用已启动的 sidecar）
+cd apps
 pnpm dev:desktop
 ```
 
 Windows 也可在仓库根执行 `.\scripts\dev.ps1`，会拉起 sidecar 与 Vite。
 
-浏览器打开 http://127.0.0.1:5173 。Electron 加载同一地址。点「新任务」可选本地目录作为工作空间；「设置」里配置 / 切换模型。
+浏览器打开 [http://127.0.0.1:5173](http://127.0.0.1:5173) 。Electron 加载同一地址。点「新任务」可选本地目录作为工作空间；「设置」里配置 / 切换模型。
 
 ### 不接模型调流式渲染
 
@@ -73,13 +74,17 @@ node scripts/dev/mock-sidecar.mjs --port 8010 --tokens 8000 --think 500 --interv
 cd apps && $env:NONO_SIDECAR_URL="http://127.0.0.1:8010"; pnpm dev:web
 ```
 
-| 参数 | 说明 |
-|------|------|
-| `--tokens` | 正文分片数，越大越接近长输出场景 |
-| `--think` | 思考分片数 |
-| `--interval` | 每片之间的毫秒间隔 |
-| `--tools` | 中间插入几个「思考 → 正文 → 工具调用」步骤 |
+
+| 参数                 | 说明                                             |
+| ------------------ | ---------------------------------------------- |
+| `--tokens`         | 正文分片数，越大越接近长输出场景                               |
+| `--think`          | 思考分片数                                          |
+| `--interval`       | 每片之间的毫秒间隔                                      |
+| `--tools`          | 中间插入几个「思考 → 正文 → 工具调用」步骤                       |
 | `--sample torture` | 换成一份专门压 markdown 结构的样本（松散列表、嵌套引用、围栏/缩进代码、表格对齐） |
+
+
+
 
 ## 打包 Windows 桌面版
 
@@ -107,10 +112,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\pack-desktop.ps1
 
 产物：
 
-| 文件 | 说明 |
-|------|------|
-| `apps/desktop/release/win-unpacked/NoNo.exe` | 免安装，解压目录里直接双击 |
+
+| 文件                                                     | 说明                                          |
+| ------------------------------------------------------ | ------------------------------------------- |
+| `apps/desktop/release/win-unpacked/NoNo.exe`           | 免安装，解压目录里直接双击                               |
 | `apps/desktop/release/NoNo-<x.y.yyyyMMddHH>-setup.exe` | NSIS 安装包，例如 `NoNo-0.2.2026092813-setup.exe` |
+
 
 运行时 Electron 会拉起本机 sidecar，sidecar 托管前端并提供 `/health`、`/chat` 等 API。模型配置仍读 `~/.nono-agent/`（与开发态相同）。
 
