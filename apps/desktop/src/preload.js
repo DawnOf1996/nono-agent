@@ -23,4 +23,16 @@ contextBridge.exposeInMainWorld("nonoDesktop", {
   writeClipboardText: (text) => ipcRenderer.invoke("write-clipboard-text", text),
   // 改过数据目录后重启应用。渲染进程不能自己重启，只有点一次主进程。
   relaunch: () => ipcRenderer.invoke("relaunch"),
+  // 更新：查 / 下 / 装分三个动作，和 electron-updater 的「检查」与「下载」是两步
+  // 对应的 —— autoDownload 关着，下载只能由用户点了按钮才发生。
+  checkForUpdate: () => ipcRenderer.invoke("app:update-check"),
+  downloadUpdate: () => ipcRenderer.invoke("app:update-download"),
+  installUpdate: () => ipcRenderer.invoke("app:update-install"),
+  // 进度、结果、错误都走这一条事件流返回 unsubscribe 函数，
+  // 调用方在组件卸载时退订，避免热重载后重复挂监听。
+  onUpdateEvent: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on("app:update-event", listener);
+    return () => ipcRenderer.removeListener("app:update-event", listener);
+  },
 });

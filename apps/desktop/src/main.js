@@ -199,6 +199,69 @@ async function createTray(win) {
   return trayIcon;
 }
 
+// ---------------------------------------------------------------------------
+// 更新检测
+//
+// 通道的形状：安装包发到 GitHub Releases，electron-builder 顺带产出 latest.yml
+// （里面写着最新版本号和安装包地址），并把同一个地址打进 app-update.yml，
+// electron-updater 启动时读它就知道该去哪儿问。喂给谁由 package.json 的
+// publish 段决定 —— 没有这一段，打包就不会产出 latest.yml，更新也就无从谈起。
+//
+// 三条约束：
+// 1. 开发态没有 app-update.yml（那是 electron-builder 打进包里的），硬调
+//    checkForUpdates() 会抛。所以只在打包态 require，且每个入口先问 isPackaged()。
+// 2. autoDownload 保持 false：一次 130MB 的下载是用户的事，不该在他对话说到
+//    一半时偷偷占带宽。检查和下载分成两步，由设置页那行按钮驱动。
+// 3. 下载完没点「重启」也别浪费：autoInstallOnAppQuit 让用户正常退出时顺手装上。
+// ---------------------------------------------------------------------------
+
+let autoUpdater = null;
+let updaterLoaded = false;
+
+/** 把更新进度转给渲染进程。没窗口的时候直接丢 —— 托盘常驻期间事件可能比窗口活得久。 */
+function sendUpdateEvent(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("app:update-event", payload);
+  }
+}
+
+/** 首次调用时才 require electron-updater。开发态永远返回 null，调用方自己判。 */
+function loadUpdater() {
+  if (updaterLoaded) return autoUpdater;
+  updaterLoaded = true;
+  if (!isPackaged()) return null;
+
+  const { autoUpdater: updater } = require("electron-updater");
+  autoUpdater = updater;
+  updater.autoDownload = false;
+  updater.autoInstallOnAppQuit = true;
+
+  updater.on("checking-for-update", () => sendUpdateEvent({ type: "checking" }));
+  updater.on("update-available", (info) => {
+    sendUpdateEvent({ type: "available", version: info.version });
+  });
+  updater.on("update-not-available", (info) => {
+    sendUpdateEvent({ type: "latest", version: info?.version || null });
+  });
+  updater.on("download-progress", (progress) => {
+    sendUpdateEvent({
+      type: "progress",
+      percent: Math.round(progress.percent),
+      transferred: progress.transferred,
+      total: progress.total,
+    });
+  });
+  updater.on("update-downloaded", (info) => {
+    sendUpdateEvent({ type: "downloaded", version: info.version });
+  });
+  updater.on("error", (error) => {
+    // 检查失败绝大多数是断网或仓库还没搬过去，不该在用户面前变成一句红色报错，
+    // 但也不能吞掉 —— 设置页那行要能告诉用户「这次没查成」。
+    sendUpdateEvent({ type: "error", message: error?.message || String(error) });
+  });
+  return updater;
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -284,6 +347,49 @@ if (gotLock) app.whenReady().then(async () => {
     return true;
   });
 
+  // ---- 更新 ----
+  // 三个动作对应设置页那一行的三种状态：查 → 下 → 装。每一步都只回执成败，
+  // 真正的进度和结果都靠 app:update-event 事件流推回去，避免这里再包一层轮询。
+  ipcMain.handle("app:update-check", async () => {
+    const updater = loadUpdater();
+    // 开发态没有 app-update.yml，直接告诉调用方「这里不查」，让 UI 走降级文案
+    // 而不是弹一个"检查失败"。
+    if (!updater) return { ok: false, reason: "dev" };
+    try {
+      // autoDownload 是 false，这里只会查不会下。
+      await updater.checkForUpdates();
+      return { ok: true };
+    } catch (error) {
+      // 失败原因已经由 error 事件推给渲染进程了，这里只回执给直接调用方。
+      return { ok: false, error: error?.message || String(error) };
+    }
+  });
+
+  ipcMain.handle("app:update-download", async () => {
+    const updater = loadUpdater();
+    if (!updater) return { ok: false, error: "开发模式不支持更新下载" };
+    try {
+      await updater.downloadUpdate();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error?.message || String(error) };
+    }
+  });
+
+  // 装完更新要重启应用。收尾顺序和 relaunch 完全一样：先停 sidecar 再退 ——
+  // app.quit() 不回收子进程，sidecar 拿着旧 app.db 的句柄活到新进程起来，
+  // Windows 上就变成两个进程抢同一个库。第二个参数 isForceRunAfter=true 是
+  // 让安装器装完直接把新版本拉起来，否则用户会以为更新没生效。
+  ipcMain.handle("app:update-install", async () => {
+    const updater = loadUpdater();
+    if (!updater) return { ok: false, error: "开发模式不支持更新安装" };
+    quitting = true;
+    stopSidecar();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    updater.quitAndInstall(false, true);
+    return { ok: true };
+  });
+
   const port = isPackaged() ? await pickFreePort() : Number(process.env.NONO_PORT || 8000);
   const healthUrl = isPackaged()
     ? `http://127.0.0.1:${port}/health`
@@ -303,6 +409,13 @@ if (gotLock) app.whenReady().then(async () => {
   }
   await sidecarReady;
   await mainWindow.loadURL(webUrl);
+
+  // 启动后静默问一次有没有新版。不下载、不弹窗，只把结果留给设置页那一行 ——
+  // 用户打开设置时按钮已经是"有新版本"，而不是还得先点一下才知道。
+  // 失败无所谓：error 事件会把「这次没查成」带到 UI 上，不该让启动路径受牵连。
+  if (isPackaged()) {
+    loadUpdater()?.checkForUpdates().catch(() => {});
+  }
 
   app.on("activate", () => {
     if (!mainWindow) mainWindow = createWindow();

@@ -33,6 +33,16 @@ import {
   THEME_MODES,
   type ThemeMode,
 } from "@/lib/theme";
+import {
+  canCheckForUpdates,
+  checkForUpdate,
+  downloadUpdate,
+  INITIAL_UPDATE_STATE,
+  installUpdate,
+  reduceUpdateEvent,
+  subscribeUpdateEvents,
+  type UpdateState,
+} from "@/lib/updater";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chat";
 
@@ -315,6 +325,43 @@ function PaneSection({ children }: { children: ReactNode }) {
   return <section className="mt-7 border-t border-line pt-6">{children}</section>;
 }
 
+/**
+ * 更新状态机。事件全部由主进程推过来（见 desktop/src/main.js 的 sendUpdateEvent），
+ * 渲染进程自己不碰网络。能不能更新取决于两件事：preload 有没有暴露桥接
+ * （纯 web 打开没有），以及主进程是不是打包态（Electron 开发态没有
+ * app-update.yml，主进程会回 unsupported）。
+ */
+function useUpdater() {
+  const [state, setState] = useState<UpdateState>(INITIAL_UPDATE_STATE);
+
+  useEffect(
+    () => subscribeUpdateEvents((event) => setState((prev) => reduceUpdateEvent(prev, event))),
+    [],
+  );
+
+  const supported = canCheckForUpdates();
+
+  async function check() {
+    setState(await checkForUpdate());
+  }
+
+  async function download() {
+    // 立刻把按钮切到「下载中」，不等主进程第一个 progress 事件 —— 那可能有一两秒。
+    setState({ kind: "downloading", percent: 0 });
+    if (!(await downloadUpdate())) {
+      setState({ kind: "error", message: "下载没能开始，请重试" });
+    }
+  }
+
+  async function install() {
+    if (!(await installUpdate())) {
+      setState({ kind: "error", message: "安装没能启动，请手动重启应用" });
+    }
+  }
+
+  return { state, supported, check, download, install };
+}
+
 function GeneralPane({
   info,
 }: {
@@ -324,14 +371,51 @@ function GeneralPane({
   const [picking, setPicking] = useState(false);
   // 选完目录不直接搬：先过 DataDirDialog 确认，避免「点一下就不可逆地搬走几百 MB」。
   const [pendingTarget, setPendingTarget] = useState<string | null>(null);
-  // 假检查：先转圈再告诉你是最新的，之后再点重新检查。暂不接真实更新/热更新。
-  const [updateState, setUpdateState] = useState<"idle" | "checking" | "latest">("idle");
+  const updater = useUpdater();
 
-  function checkForUpdates() {
-    if (updateState === "checking") return;
-    setUpdateState("checking");
-    window.setTimeout(() => setUpdateState("latest"), 1200);
-  }
+  // 一个按钮扛完 查 → 报结果 → 下载 → 装 整条流程。文案跟着状态走，
+  // 用户点之前就知道会发生什么。
+  const updateButton = (() => {
+    switch (updater.state.kind) {
+      case "checking":
+        return { label: "检查中…", disabled: true, action: updater.check };
+      case "latest":
+        return { label: "重新检查", disabled: false, action: updater.check };
+      case "available":
+        return { label: "下载更新", disabled: false, action: updater.download };
+      case "downloading":
+        return { label: `下载中 ${updater.state.percent}%`, disabled: true, action: updater.download };
+      case "downloaded":
+        return { label: "重启并安装", disabled: false, action: updater.install };
+      case "error":
+        return { label: "重试", disabled: false, action: updater.check };
+      default:
+        // idle 和 unsupported 都落这儿，按钮必须一直在。手动触发是这个功能的
+        // 主入口 —— 启动时那次静默检查只是锦上添花，没跑或者失败了，用户还得
+        // 能自己点一下。曾经这里 return null，把「还没查」和「开发态」都变成
+        // 了整行只剩一个版本号，等于把按钮删了。
+        return { label: "检查更新", disabled: false, action: updater.check };
+    }
+  })();
+
+  const updateNote = (() => {
+    switch (updater.state.kind) {
+      case "available":
+        return `发现新版本 ${updater.state.version}`;
+      case "downloading":
+        return "正在下载安装包";
+      case "downloaded":
+        return `新版本 ${updater.state.version} 已下载，重启后生效`;
+      case "error":
+        return `没查成：${updater.state.message}`;
+      case "unsupported":
+        // 两种情况都会落这儿：浏览器里打开（没有 preload 桥），以及 Electron
+        // 开发态（桥在，但主进程没有 app-update.yml，不会真去查）。
+        return "浏览器打开或开发模式下不支持更新检查";
+      default:
+        return null;
+    }
+  })();
 
   return (
     <div className="max-w-[660px]">
@@ -383,17 +467,22 @@ function GeneralPane({
       <PaneSection>
         <SettingGroup label="关于">
           <SettingRow label="当前版本">
-            <div className="flex items-center justify-end gap-3">
-              <span className="text-[13px] text-muted">{appVersionLabel()}</span>
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-full"
-                disabled={updateState === "checking"}
-                onClick={checkForUpdates}
-              >
-                {updateState === "checking" ? "检查中…" : updateState === "latest" ? "已是最新" : "检查更新"}
-              </Button>
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center justify-end gap-3">
+                <span className="text-[13px] text-muted">{appVersionLabel()}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  disabled={updateButton.disabled}
+                  onClick={updateButton.action}
+                >
+                  {updateButton.label}
+                </Button>
+              </div>
+              {/* 状态说明挂在按钮下面，而不是塞进 SettingRow 的 hint：hint 说的是
+                  这一行固定是什么，「有新版」是此刻的临时状态，不该长期占着 hint。 */}
+              {updateNote ? <div className="text-[11px] text-muted">{updateNote}</div> : null}
             </div>
           </SettingRow>
         </SettingGroup>
