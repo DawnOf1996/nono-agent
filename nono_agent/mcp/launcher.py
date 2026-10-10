@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mcp.client.stdio import get_default_environment
-
 from nono_agent.mcp.config import MCPServerConfig
 from nono_agent.mcp.runtimes import apply_hosted_env, rewrite_stdio_command
 from nono_agent.paths import user_home
@@ -36,6 +34,11 @@ def mcp_data_dir() -> Path:
 
 def synthesize_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """SDK 默认宿主环境 + 用户在清单里声明的变量。"""
+    # 只有真要拉起 stdio server 时才需要官方 SDK 的宿主环境计算，放在函数内导入：
+    # 模块级导入会把整个 mcp SDK 拖进 sidecar 的启动链（实测约 630ms），
+    # 而 sidecar 启动只需要这里的一个纯函数。
+    from mcp.client.stdio import get_default_environment
+
     env = get_default_environment()
     if extra:
         env.update(extra)

@@ -5,13 +5,19 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from nono_agent.mcp.bridge import MCPTool, tools_from_client
-from nono_agent.mcp.client import MCPClient, describe_exception
 from nono_agent.mcp.config import MCPServerConfig, load_mcp_config, user_mcp_path
 from nono_agent.mcp.launcher import resolve_launch
 from nono_agent.mcp.policy import as_bool, resolve_server_policy
 from nono_agent.settings import Settings, load_settings_from_env
+
+if TYPE_CHECKING:
+    # 只有类型注解用得到；真正的官方 SDK 推迟到 start_mcp_runtime() 内部再导入。
+    # sidecar 启动链会经过本模块（features/mcp/api.py 用 collect_mcp_servers），
+    # 而模块级导入会把整个 mcp SDK 拖进启动路径，实测约 630ms。
+    from nono_agent.mcp.bridge import MCPTool
+    from nono_agent.mcp.client import MCPClient
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +85,9 @@ async def start_mcp_runtime(
     mcp_path: str | Path | None = None,
 ) -> MCPRuntime:
     """按设置启动工作区 MCP。单个 server 失败不影响其它。"""
+    from nono_agent.mcp.bridge import tools_from_client
+    from nono_agent.mcp.client import MCPClient, describe_exception
+
     resolved = settings if settings is not None else load_settings_from_env(cwd)
     if not as_bool(resolved.get("mcp.enabled", True)):
         return MCPRuntime(enabled=False)

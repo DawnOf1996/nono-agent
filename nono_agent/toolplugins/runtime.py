@@ -15,8 +15,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from nono_agent.mcp.bridge import tools_from_client
-from nono_agent.mcp.client import MCPClient
 from nono_agent.mcp.config import MCPServerConfig
 from nono_agent.mcp.launcher import resolve_launch
 from nono_agent.plugins.manifest import PluginManifest, load_manifest
@@ -239,6 +237,11 @@ async def _build_mcp_tool(
     external_servers: set[str],
 ) -> tuple[list[Any], list[Any]]:
     """启用插件已声明的 MCP server，把它的工具按白名单接进来。"""
+    # 官方 MCP SDK 推迟到这里导入：本模块在 sidecar 启动链上（register_builtin_plugins），
+    # 但只有真的要拉起 MCP server 时才需要 SDK。
+    from nono_agent.mcp.bridge import tools_from_client
+    from nono_agent.mcp.client import MCPClient
+
     raw = manifest.mcp.get(spec.server)
     if not isinstance(raw, dict):
         raise RuntimeError(f"plugin declares no mcp server named '{spec.server}'")
