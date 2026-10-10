@@ -97,19 +97,18 @@ jobs:
         shell: pwsh
         run: .\scripts\pack-desktop.cmd
 
-      # 打 tag：打包 + 发 Release。ref_name 就是 tag 名（v0.3.1），
+      # 打 tag：按 tag 里的版本号打包。ref_name 就是 tag 名（v0.3.1），
       # pack-desktop 会剥掉 v 前缀写进 package.json。
-      - name: 打包并发布 Release
+      # 这一步故意不带 -Publish：它要跑十几分钟，PyInstaller 的输出早把日志
+      # 撑爆被 GitHub 截断，发版的事挤在里面等于什么都看不见。发布交给下一步。
+      - name: 打包（按 tag 版本号）
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        env:
-          # electron-updater 读 GH_TOKEN，electron-builder 的 github provider 也认它。
-          # GITHUB_TOKEN 是仓库自动带的令牌，不需要另外配 secret。
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
-        run: .\scripts\pack-desktop.cmd -Version "${{ github.ref_name }}" -Publish
+        run: .\scripts\pack-desktop.cmd -Version "${{ github.ref_name }}"
 
-      # 自动更新只认 latest.yml。它没生成或没传上去，客户端就永远查不到新版，
+      # 自动更新只认 latest.yml。它没生成，客户端就永远查不到新版，
       # 而且全程不会有人报错 —— 只能等到用户投诉才发现。这种坏法必须在这里拦。
+      # 放在发布之前：本地产物不齐就别去建 Release，省得又留一条半成品在那儿。
       - name: 校验更新所需产物齐全
         shell: pwsh
         run: |
@@ -122,10 +121,20 @@ jobs:
             }
           }
           if ($missing.Count -gt 0) {
-            Write-Error "本地产物缺少: $($missing -join ', ')。latest.yml 没了自动更新就是哑的，检查 package.json 的 publish 段。"
+            Write-Error "本地产物缺少: $($missing -join ', ')。latest.yml 没了自动更新就是哑的。"
             exit 1
           }
           Get-ChildItem $out -File | Select-Object Name, Length | Format-Table -AutoSize
+
+      # 发版单独一步，日志只有几行。失败时能一眼看出是 gh 哪条命令挂了，
+      # 而且可以原样只重跑这一步，不用再等一遍完整构建。
+      - name: 发布 GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        env:
+          # gh CLI 认 GH_TOKEN。GITHUB_TOKEN 是仓库自动带的令牌，不需要另外配 secret。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: .\scripts\pack-desktop.cmd -PublishOnly
 
       # 只打包的那些跑次，把安装包留成 Actions artifact，方便直接下载试装。
       # 这是「合并后能拿到包」这件事的落点，不是发版 —— 发版仍然只认 tag。

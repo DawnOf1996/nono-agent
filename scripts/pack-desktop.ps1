@@ -25,7 +25,7 @@
 #   走，两边对不上，用户在「关于」里看到的版本就会和 Release 名对不起来。
 #
 # -Publish:
-#   打包完直接把产物发成 GitHub Release（安装包 / latest.yml / blockmap 一起）。
+#   打包完把产物发成 GitHub Release（安装包 / latest.yml / blockmap 一起）。
 #   需要环境变量 GH_TOKEN。本地手工打包别开 —— 免得误传。
 #
 
@@ -36,7 +36,8 @@ param(
     [switch]$SkipElectron,
     [string]$OutputDir = "release",
     [string]$Version,
-    [switch]$Publish
+    [switch]$Publish,
+    [switch]$PublishOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -272,6 +273,54 @@ fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
     }
 }
 
+# 用 gh CLI 发 Release，而不是 electron-builder 的 --publish。
+# 换掉的理由（踩过的坑）：
+#   1. electron-builder 一次构建会建出两条 Release —— exe 和 latest.yml 走的是两个
+#      publisher 实例（getOrCreatePublisher 用整个 publishConfig 当缓存键，而写
+#      update info 时会多带一个 updaterCacheDirName 字段），两个实例各自
+#      getOrCreateRelease，于是同一个 tag 出现两条 Release。
+#   2. .exe（几十 MB）的上传失败会被静默吞掉：构建步骤 exit 0、CI 全绿，
+#      Release 上却只剩 .blockmap，而打包那一步的日志早已被 PyInstaller 的输出
+#      撑爆被 GitHub 截断，事后根本查不出原因。
+# gh 的好处是：一条 Release、失败会明确报错、日志只有几行，出问题一眼看得见。
+function Publish-GitHubRelease([string]$OutDir, [string]$Version) {
+    Require-Cmd gh
+    $raw = gh release view $Version --json tagName --jq '.tagName' 2>$null
+    if ($LASTEXITCODE -eq 0 -and $raw) {
+        Write-Host "==> Release $raw 已存在，补传产物"
+    } else {
+        # --generate-notes 而不是 --notes-from-tag：后者要求 annotated tag，
+        # 而我们打的是 lightweight tag，那样会直接失败。
+        gh release create $Version --title $Version --generate-notes
+        Assert-LastExit "gh release create"
+        Write-Host "==> 已创建 Release $Version"
+    }
+    # 只取输出目录顶层的文件。递归会把 win-unpacked 里的一堆 .dll 也拖上去。
+    $assets = Get-ChildItem -Path $OutDir -File |
+        Where-Object { $_.Name -like "*.exe" -or $_.Name -like "*.exe.blockmap" -or $_.Name -eq "latest.yml" }
+    if (-not $assets) {
+        throw "在 $OutDir 没找到可上传的产物（*.exe / *.exe.blockmap / latest.yml）。"
+    }
+    $paths = @($assets | ForEach-Object { $_.FullName })
+    Write-Host "==> 上传 $($paths.Count) 个资产"
+    gh release upload $Version @paths --clobber
+    Assert-LastExit "gh release upload"
+}
+
+# tag 名要带 v 前缀，和打 tag 的写法对齐。CI 上 GITHUB_REF_NAME 就是它；
+# 本地则从当前 commit 反查。都拿不到时才退回 "v$Version"。
+function Resolve-ReleaseTag([string]$Version) {
+    $tag = $env:GITHUB_REF_NAME
+    if (-not $tag) {
+        $tag = (& git describe --tags --exact-match 2>$null)
+    }
+    if (-not $tag) {
+        $tag = "v$Version"
+        Write-Host "警告: 取不到当前 git tag，按 $tag 处理。"
+    }
+    return $tag
+}
+
 function Prepare-AppIcon {
     $logo = Join-Path $apps "logo.png"
     if (-not (Test-Path $logo)) {
@@ -314,6 +363,20 @@ print(f"wrote {web_path} ({web_path.stat().st_size} bytes)")
     if (-not (Test-Path (Join-Path $buildDir "icon.ico"))) {
         throw "生成 icon.ico 失败"
     }
+}
+
+if ($PublishOnly) {
+    # 只发版、不重建。CI 上把「打包」和「发布」拆成两个 step 就是为了这个：
+    # 打包那一步十几分钟、日志被 PyInstaller 撑爆会被 GitHub 截断，出事时
+    # 根本看不到 electron-builder 说了什么。发布单独一步，日志只有几行，
+    # 而且失败了可以原样重跑，不用再等一遍完整构建。
+    if (-not $env:GH_TOKEN) {
+        throw "-PublishOnly 需要环境变量 GH_TOKEN。"
+    }
+    $tag = Resolve-ReleaseTag ""
+    Write-Host "==> 发布到 GitHub Release: $tag"
+    Publish-GitHubRelease $outDir $tag
+    return
 }
 
 Require-Cmd uv
@@ -393,14 +456,10 @@ if (-not $SkipElectron) {
     try {
         Write-DesktopPackVersion $pkgPath $spec.Version $spec.WinVersion
         $builderArgs = @("--win", "--config.directories.output=$OutputDir")
-        if ($Publish) {
-            # always = 打出来的产物直接变成一条 GitHub Release，tag 就是这个版本号。
-            # 安装包、latest.yml、blockmap 会一起传上去 —— 少了后两个，
-            # 客户端那边 electron-updater 就查不到任何东西（它只认 latest.yml）。
-            $builderArgs += "--publish"
-            $builderArgs += "always"
-            Write-Host "==> 发布目标: GitHub Release（tag 取当前 git tag）"
-        }
+        # 刻意不给 electron-builder 加 --publish。它一次构建会建出两条 Release
+        # （exe 和 latest.yml 走两个缓存键不同的 publisher 实例，各自 getOrCreateRelease），
+        # 而且大文件上传被静默吞掉 —— CI 全绿、exit 0，Release 上却只有 blockmap，
+        # 排查成本远高于自己发。发版交给下面的 Publish-GitHubRelease。
         pnpm exec electron-builder @builderArgs
         if ($LASTEXITCODE -ne 0) {
             Write-Host "electron-builder 失败。常见原因: 输出目录里的旧产物被占用（编辑器打开过里面的文件也算），或上一次打包的 NoNo.exe 仍在运行。"
@@ -433,4 +492,12 @@ if (Test-Path $latestYml) {
     Write-Host "更新清单: $latestYml"
 } elseif ($desktopVersion) {
     Write-Host "警告: 没找到 latest.yml，这次打出来的包没法给已安装的用户推送更新。"
+}
+
+# 发版放在最后：产物校验过了才值得传上去，而且失败要真的让 CI 红掉。
+if ($Publish -and $desktopVersion) {
+    $tag = Resolve-ReleaseTag $desktopVersion
+    Write-Host ""
+    Write-Host "==> 发布到 GitHub Release: $tag"
+    Publish-GitHubRelease $outDir $tag
 }
