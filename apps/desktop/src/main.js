@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, clipboard, dialog, ipcMain, nativeImage, shell } = require("electron");
+const { app, BrowserWindow, Menu, Tray, clipboard, dialog, ipcMain, nativeImage, nativeTheme, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -99,9 +99,13 @@ async function ensureSidecar(healthUrl, port) {
   if (process.env.NONO_SIDECAR === "0") return;
   if (await sidecarUp(healthUrl)) return;
   startSidecar(port);
-  const attempts = isPackaged() ? 120 : 40;
-  const delayMs = isPackaged() ? 500 : 250;
-  for (let i = 0; i < attempts; i += 1) {
+  // 以前打包态 500ms 一轮，平均要多等 250ms 才发现 sidecar 好了。80ms 一轮在本机
+  // 几乎不花钱：Node 的 fetch 连空回环端口走 ConnectEx + SIO_LOOPBACK_FAST_PATH，
+  // 实测 1~40ms 就返回。总预算（60s / 10s）保持不变，只是探测更密。
+  const timeoutMs = isPackaged() ? 60_000 : 10_000;
+  const delayMs = 80;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, delayMs));
     if (await sidecarUp(healthUrl)) return;
   }
@@ -130,6 +134,21 @@ function resolveAppIcon() {
   return candidates.find((candidate) => candidate && fs.existsSync(candidate));
 }
 
+// 加载页与应用本体必须同主题，否则 loadURL 那一刻会闪一次明暗翻转，白色主题用户
+// 尤其明显（以前窗口底色写死 #14181F，深色用户也跟着受了一次多余的变色）。
+// 两个值取自 apps/web/src/index.css 的 --color-bg。
+//
+// 只能给系统值：loading.html 走 file://，应用本体走 http://127.0.0.1:<port>，
+// localStorage 不同源，主进程读不到用户显式选过的主题。对 theme=system（默认）的
+// 用户是准的；手动改过主题的用户在加载页会有一次轻微不一致，但不会再是黑屏。
+function appTheme() {
+  return nativeTheme.shouldUseDarkColors ? "dark" : "light";
+}
+
+function appBackground() {
+  return nativeTheme.shouldUseDarkColors ? "#16181d" : "#ffffff";
+}
+
 function createWindow() {
   const icon = resolveAppIcon();
   const win = new BrowserWindow({
@@ -137,7 +156,7 @@ function createWindow() {
     height: 800,
     minWidth: 960,
     minHeight: 640,
-    backgroundColor: "#14181F",
+    backgroundColor: appBackground(),
     autoHideMenuBar: true,
     ...(icon ? { icon } : {}),
     webPreferences: {
@@ -271,12 +290,18 @@ if (gotLock) app.whenReady().then(async () => {
     : DEV_SIDECAR_HEALTH;
   const webUrl = isPackaged() ? `http://127.0.0.1:${port}/` : DEV_WEB_URL;
 
+  // 先把 sidecar 拉起来再开窗：这里刻意不 await。ensureSidecar() 的第一步就是
+  // spawn（打包态），Python 进程启动与建窗口、渲染 loading.html 并行进行。
+  // 以前是建完窗口才 spawn，白白串行了一整个 Python 启动时间。
+  const sidecarReady = ensureSidecar(healthUrl, port);
   mainWindow = createWindow();
   tray = await createTray(mainWindow);
   if (isPackaged()) {
-    await mainWindow.loadFile(path.join(__dirname, "loading.html"));
+    await mainWindow.loadFile(path.join(__dirname, "loading.html"), {
+      query: { theme: appTheme() },
+    });
   }
-  await ensureSidecar(healthUrl, port);
+  await sidecarReady;
   await mainWindow.loadURL(webUrl);
 
   app.on("activate", () => {
