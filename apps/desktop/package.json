@@ -21,12 +21,6 @@
     "electron": "^37.3.1",
     "electron-builder": "^26.0.12"
   },
-  "publish": {
-    "provider": "github",
-    "owner": "DawnOf1996",
-    "repo": "nono-agent",
-    "releaseType": "release"
-  },
   "build": {
     "appId": "com.nono.agent",
     "productName": "NoNo",
@@ -69,6 +63,12 @@
       "uninstallerIcon": "icon.ico"
     },
     "npmRebuild": false,
-    "nodeGypRebuild": false
+    "nodeGypRebuild": false,
+    "publish": {
+      "provider": "github",
+      "owner": "DawnOf1996",
+      "repo": "nono-agent",
+      "releaseType": "release"
+    }
   }
 }

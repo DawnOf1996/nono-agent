@@ -144,9 +144,21 @@ jobs:
       # --publish 有可能静默跳过（比如令牌权限不够）。用 gh CLI 直接问 GitHub。
       - name: 确认 Release 资产已上传
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        # 这步要用 gh CLI 问 GitHub，令牌得单独再挂一次 —— env 是按 step 生效的，
+        # 不会从上面「打包并发布 Release」那步继承过来。少了它 gh 直接拒跑。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
+          # 必须是已发布状态。draft 对匿名用户不存在，releases/latest/download/latest.yml
+          # 直接 404，而 electron-builder 建完 draft 后并不会再发一次 —— 这个坑不会
+          # 抛错，只会安静地把自动更新废掉，所以在这里显式断言。
+          $draft = gh release view $tag --json isDraft --jq '.isDraft'
+          if ($draft -eq "true") {
+            Write-Error "Release $tag 还是 draft，匿名用户拉不到，自动更新会 404。检查 package.json 的 build.publish.releaseType。"
+            exit 1
+          }
           $raw = gh release view $tag --json assets --jq '.assets[].name'
           # gh 输出是换行分隔的一列，先摊成数组再做精确匹配。
           # 不能用 -match：PowerShell 的 -match 默认不是多行模式，^latest\.yml$
