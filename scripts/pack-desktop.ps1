@@ -456,10 +456,13 @@ if (-not $SkipElectron) {
     try {
         Write-DesktopPackVersion $pkgPath $spec.Version $spec.WinVersion
         $builderArgs = @("--win", "--config.directories.output=$OutputDir")
-        # 刻意不给 electron-builder 加 --publish。它一次构建会建出两条 Release
-        # （exe 和 latest.yml 走两个缓存键不同的 publisher 实例，各自 getOrCreateRelease），
-        # 而且大文件上传被静默吞掉 —— CI 全绿、exit 0，Release 上却只有 blockmap，
-        # 排查成本远高于自己发。发版交给下面的 Publish-GitHubRelease。
+        # 必须显式 --publish never，而不是「什么都不传」：
+        # electron-builder 的默认策略是 onTagOrDraft —— 在 CI 的 tag 构建里它
+        # 照样会去建 GitHubPublisher、照样要 GH_TOKEN，找不到就直接抛错退出。
+        # never 才是「构建归构建、发版归发版」。latest.yml 照常在本地生成
+        # （更新清单是「regardless of publish state」写的），只是不再由它上传。
+        $builderArgs += "--publish"
+        $builderArgs += "never"
         pnpm exec electron-builder @builderArgs
         if ($LASTEXITCODE -ne 0) {
             Write-Host "electron-builder 失败。常见原因: 输出目录里的旧产物被占用（编辑器打开过里面的文件也算），或上一次打包的 NoNo.exe 仍在运行。"
