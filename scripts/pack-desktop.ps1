@@ -285,13 +285,34 @@ fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
 # gh 的好处是：一条 Release、失败会明确报错、日志只有几行，出问题一眼看得见。
 function Publish-GitHubRelease([string]$OutDir, [string]$Version) {
     Require-Cmd gh
-    $raw = gh release view $Version --json tagName --jq '.tagName' 2>$null
+    # gh 默认从 origin remote 推断仓库。本机 origin 指的是 Gitee，不显式指定的话
+    # 本地手工发版会发到 Gitee 去 —— 那种错发出去再撤回来很麻烦。
+    $repo = $null
+    foreach ($remote in @("github", "origin")) {
+        $url = (& git remote get-url $remote 2>$null)
+        if ($url -and $url -match 'github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$') {
+            $repo = "$($Matches[1])/$($Matches[2])"
+            break
+        }
+    }
+    $repoArgs = @()
+    if ($repo) {
+        Write-Host "==> 目标仓库 $repo"
+        $repoArgs = @("--repo", $repo)
+    } else {
+        Write-Host "警告: 从 git remote 认不出 GitHub 仓库，改由 gh 自己推断。"
+    }
+
+    $raw = gh release view $Version @repoArgs --json tagName --jq '.tagName' 2>$null
     if ($LASTEXITCODE -eq 0 -and $raw) {
         Write-Host "==> Release $raw 已存在，补传产物"
     } else {
         # --generate-notes 而不是 --notes-from-tag：后者要求 annotated tag，
         # 而我们打的是 lightweight tag，那样会直接失败。
-        gh release create $Version --title $Version --generate-notes
+        # --verify-tag 必须带：没有它时，若 tag 在远端不存在，gh 会拿默认分支的
+        # HEAD 自动建一个 tag —— 而我们的 main 远落后于 dev-ai，那样发出来的
+        # Release 指向的代码根本不是刚打好的这个包。
+        gh release create $Version @repoArgs --title $Version --generate-notes --verify-tag
         Assert-LastExit "gh release create"
         Write-Host "==> 已创建 Release $Version"
     }
@@ -303,7 +324,7 @@ function Publish-GitHubRelease([string]$OutDir, [string]$Version) {
     }
     $paths = @($assets | ForEach-Object { $_.FullName })
     Write-Host "==> 上传 $($paths.Count) 个资产"
-    gh release upload $Version @paths --clobber
+    gh release upload $Version @repoArgs @paths --clobber
     Assert-LastExit "gh release upload"
 }
 
