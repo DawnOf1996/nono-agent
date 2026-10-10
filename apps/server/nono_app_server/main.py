@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
-import socket
 import sys
 from pathlib import Path
 
@@ -63,21 +62,31 @@ def main() -> None:
         settings.cwd,
         settings.catalog_ready,
     )
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        if probe.connect_ex((settings.host, settings.port)) == 0:
-            print(
-                f"端口 {settings.host}:{settings.port} 已被占用。"
-                "关掉占用进程，或设置 NONO_PORT 换端口。",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    # 这里刻意不做「端口是否被占用」的预检。Windows 上 connect 一个**空闲**回环
+    # 端口要空等约 2s（本机装有拦截回环流量的 WFP filter 时尤其明显，连空闲端口
+    # 恒定 2030~2050ms，连有监听的端口 0ms），而打包态几乎必然失败——Electron 刚用
+    # pickFreePort() 选了个空端口传进来，预检只能白等。更关键的是预检本身是
+    # TOCTOU：查完到真正 bind 之间仍有窗口，真正的竞态它一个都挡不住。占用情况交给
+    # uvicorn 的 bind 报错兜底即可（见下方 except），语义不变。
+    #
     # 冻结 exe 不能走 factory 字符串导入；开发态同样直接实例化即可。
-    uvicorn.run(
-        create_app(),
-        host=settings.host,
-        port=settings.port,
-        log_level="info",
-    )
+    app = create_app()
+    try:
+        uvicorn.run(
+            app,
+            host=settings.host,
+            port=settings.port,
+            log_level="info",
+        )
+    except SystemExit:
+        # uvicorn 的 bind_socket() 捕获 OSError 后 logger.error + sys.exit(1)，
+        # 这里只补一条人话提示，不改退出码。
+        print(
+            f"端口 {settings.host}:{settings.port} 已被占用。"
+            "关掉占用进程，或设置 NONO_PORT 换端口。",
+            file=sys.stderr,
+        )
+        raise
 
 
 if __name__ == "__main__":
