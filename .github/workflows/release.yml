@@ -31,6 +31,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
 
+    # runner 默认代码页是 cp1252，Python 的 stdout 会跟着用它，于是 print 一个
+    # 中文字面量就抛 UnicodeEncodeError（本地中文系统是 cp936，所以只有 CI 炸）。
+    # 打开 UTF-8 模式（PEP 540），Python 全程按 UTF-8 处理 —— 包括 PyInstaller
+    # 派生的子进程。scripts/build_sidecar.py 里也自己做了一次 stdout 重配，
+    # 那是给本地在非中文 Windows 上跑的人兜底，两边不互相依赖。
+    env:
+      PYTHONUTF8: "1"
+
     steps:
       # fetch-depth: 0 —— electron-builder 靠 git tag 决定 Release 挂在哪个 tag 上，
       # 默认的浅克隆看不到 tag，会退回按分支名发布或者直接报错。

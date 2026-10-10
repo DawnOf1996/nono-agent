@@ -239,7 +239,27 @@ def _report_tiktoken_cache(dist_root: Path) -> None:
         print("  ! sidecar 里没有 tiktoken 词表：离线运行将退回 ~4 字符/token 估算")
 
 
+def _force_utf8_console() -> None:
+    """让中文输出在任何代码页下都不炸。
+
+    stdout/stderr 的编码是跟着系统 locale 走的：中文 Windows 是 cp936，中文编得下，
+    所以这个脚本本地一直没事；但 GitHub 的 windows runner 默认代码页是 cp1252，
+    那里 print 一个中文字面量就会抛 UnicodeEncodeError，把整个构建打断。
+
+    必须在任何输出之前换掉流，而且 errors="replace" 兜底 —— 宁可让某个字显示成
+    问号，也不能让一次编码错误把 PyInstaller 弄挂。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            # 流被重定向成了不支持 reconfigure 的对象。顶多输出难看，不该中断构建。
+            pass
+
+
 def main() -> None:
+    _force_utf8_console()
+
     if not ENTRY.is_file():
         raise SystemExit(f"missing sidecar entry: {ENTRY}")
 
