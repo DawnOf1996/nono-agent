@@ -18,13 +18,25 @@
 #   编辑器（Cursor/VS Code 等）可能长期占着 release 里的旧文件，
 #   导致 electron-builder 删不掉而报 EBUSY；这时换一个输出目录即可继续打包:
 #     .\scripts\pack-desktop.cmd -OutputDir release-run
+#
+# -Version:
+#   显式指定产品版本，形如 0.3.0（v 前缀会自动剥掉）。不给就退回上面的时间戳方案。
+#   CI 上必须给：GitHub Release 的 tag 才是权威版本号，而时间戳跟着 runner 的时区
+#   走，两边对不上，用户在「关于」里看到的版本就会和 Release 名对不起来。
+#
+# -Publish:
+#   打包完直接把产物发成 GitHub Release（安装包 / latest.yml / blockmap 一起）。
+#   需要环境变量 GH_TOKEN。本地手工打包别开 —— 免得误传。
+#
 
 [CmdletBinding()]
 param(
     [switch]$SkipWeb,
     [switch]$SkipSidecar,
     [switch]$SkipElectron,
-    [string]$OutputDir = "release"
+    [string]$OutputDir = "release",
+    [string]$Version,
+    [switch]$Publish
 )
 
 $ErrorActionPreference = "Stop"
@@ -182,8 +194,11 @@ function Clear-StaleAppOutDir([string]$OutPath) {
     }
 }
 
-# x.y 来自 desktop/package.json；z 与 Windows 四段版本由当前本地时间生成。
-function Get-DesktopPackVersion([string]$PackageJson) {
+# 不传 $Explicit：x.y 来自 desktop/package.json，z 是当前时间 yyyyMMddHH（本地手工打包）。
+# 传了 $Explicit：以它为准（CI 从 Release tag 来）。但 Windows 四段版本仍然跟构建
+#   时间走 —— 那四个数字只喂给 Windows 资源，管的是「资源有没有变过」，
+#   不参与用户看到的版本号语义，所以不必跟着 tag 变。
+function Get-DesktopPackVersion([string]$PackageJson, [string]$Explicit) {
     $pkg = Get-Content -Raw -Encoding UTF8 $PackageJson | ConvertFrom-Json
     $raw = [string]$pkg.version
     if ($raw -notmatch '^(\d+)\.(\d+)(?:\.\d+)?$') {
@@ -197,19 +212,40 @@ function Get-DesktopPackVersion([string]$PackageJson) {
 
     $now = Get-Date
     $revision = $now.ToString("yyyyMMddHH")
-    if ([int64]$revision -gt 2147483647) {
-        throw "打包时间版本 $revision 超过 NSIS 产品版本上限 2147483647。"
-    }
     $monthDay = [int]$now.ToString("MMdd")
     $hourMinute = [int]$now.ToString("HHmm")
+
+    $version = "$major.$minor.$revision"
+    $stampText = "前两段 $($major).$($minor) 来自 package.json，末段为打包时间 " +
+        $now.ToString("yyyy-MM-dd HH") + " 时"
+
+    if ($Explicit) {
+        $candidate = ($Explicit.Trim() -replace '^v', '')
+        if ($candidate -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
+            throw "-Version 须为 x.y.z（可带 v 前缀），当前为 '$Explicit'。"
+        }
+        $cMajor = [int64]$Matches[1]
+        $cMinor = [int64]$Matches[2]
+        $cPatch = [int64]$Matches[3]
+        if ($cMajor -gt 65535 -or $cMinor -gt 65535 -or $cPatch -gt 65535) {
+            throw "-Version 的每一段都必须 ≤ 65535，当前为 '$candidate'。"
+        }
+        $major = $cMajor
+        $minor = $cMinor
+        $version = $candidate
+        $stampText = "版本由 -Version 指定为 $candidate"
+    }
+    elseif ([int64]$revision -gt 2147483647) {
+        throw "打包时间版本 $revision 超过 NSIS 产品版本上限 2147483647。"
+    }
 
     [pscustomobject]@{
         Major      = $major
         Minor      = $minor
         Revision   = $revision
-        Version    = "$major.$minor.$revision"
+        Version    = $version
         WinVersion = "$major.$minor.$monthDay.$hourMinute"
-        StampText  = $now.ToString("yyyy-MM-dd HH") + " 时"
+        StampText  = $stampText
     }
 }
 
@@ -327,15 +363,22 @@ Copy-Tree $webDist (Join-Path $resources "web")
 $desktopVersion = $null
 if (-not $SkipElectron) {
     $pkgPath = Join-Path $desktop "package.json"
-    $spec = Get-DesktopPackVersion $pkgPath
+    $spec = Get-DesktopPackVersion $pkgPath $Version
     $desktopVersion = $spec.Version
-    Write-Host "==> 桌面版本 $desktopVersion（前两段 $($spec.Major).$($spec.Minor) 来自 package.json，末段为打包时间 $($spec.StampText)）"
+    Write-Host "==> 桌面版本 $desktopVersion（$($spec.StampText)）"
     Write-Host "==> electron-builder 打 Windows 安装包"
-    if (-not $env:ELECTRON_MIRROR) {
-        $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+    # 本地（国内网络）默认走 npmmirror 加速。GitHub runner 在美国机房，走镜像反而
+    # 慢一大截，而且镜像偶尔会缺刚发布的版本 —— 所以 CI 上不设。
+    if (-not $env:GITHUB_ACTIONS) {
+        if (-not $env:ELECTRON_MIRROR) {
+            $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+        }
+        if (-not $env:ELECTRON_BUILDER_BINARIES_MIRROR) {
+            $env:ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-builder-binaries/"
+        }
     }
-    if (-not $env:ELECTRON_BUILDER_BINARIES_MIRROR) {
-        $env:ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-builder-binaries/"
+    if ($Publish -and -not $env:GH_TOKEN) {
+        throw "-Publish 需要环境变量 GH_TOKEN（GitHub Actions 里用 secrets.GITHUB_TOKEN 注入）。"
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     $originalPkg = [System.IO.File]::ReadAllText($pkgPath)
@@ -349,7 +392,16 @@ if (-not $SkipElectron) {
     Push-Location $desktop
     try {
         Write-DesktopPackVersion $pkgPath $spec.Version $spec.WinVersion
-        pnpm exec electron-builder --win "--config.directories.output=$OutputDir"
+        $builderArgs = @("--win", "--config.directories.output=$OutputDir")
+        if ($Publish) {
+            # always = 打出来的产物直接变成一条 GitHub Release，tag 就是这个版本号。
+            # 安装包、latest.yml、blockmap 会一起传上去 —— 少了后两个，
+            # 客户端那边 electron-updater 就查不到任何东西（它只认 latest.yml）。
+            $builderArgs += "--publish"
+            $builderArgs += "always"
+            Write-Host "==> 发布目标: GitHub Release（tag 取当前 git tag）"
+        }
+        pnpm exec electron-builder @builderArgs
         if ($LASTEXITCODE -ne 0) {
             Write-Host "electron-builder 失败。常见原因: 输出目录里的旧产物被占用（编辑器打开过里面的文件也算），或上一次打包的 NoNo.exe 仍在运行。"
             throw "electron-builder 失败，exit=$LASTEXITCODE"
@@ -373,4 +425,12 @@ if (Test-Path $unpacked) {
 }
 if ($setup) {
     Write-Host "安装包: $($setup.FullName)"
+}
+# 更新检测只认 latest.yml。它不在，说明 package.json 的 publish 段没配好或者
+# 打包器没生成 —— 这时候客户端永远查不到新版，而且没人会报错，很容易漏掉。
+$latestYml = Join-Path $outDir "latest.yml"
+if (Test-Path $latestYml) {
+    Write-Host "更新清单: $latestYml"
+} elseif ($desktopVersion) {
+    Write-Host "警告: 没找到 latest.yml，这次打出来的包没法给已安装的用户推送更新。"
 }
