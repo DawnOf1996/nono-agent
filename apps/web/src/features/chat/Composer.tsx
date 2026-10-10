@@ -228,6 +228,10 @@ export function Composer() {
                   key={item.id}
                   text={item.text}
                   source={item.source}
+                  path={item.path}
+                  startLine={item.startLine}
+                  endLine={item.endLine}
+                  comment={item.comment}
                   onRemove={() => removeQuote(item.id)}
                 />
               ))}

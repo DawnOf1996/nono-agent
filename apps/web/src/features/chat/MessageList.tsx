@@ -98,7 +98,15 @@ const MessageBlock = memo(function MessageBlock({
             <MessageImages images={message.images} messageId={message.id} />
           ) : null}
           {quoted.quotes.map((quote, index) => (
-            <QuoteCard key={`${message.id}-quote-${index}`} text={quote.text} source={quote.source} />
+            <QuoteCard
+              key={`${message.id}-quote-${index}`}
+              text={quote.text}
+              source={quote.source}
+              path={quote.path}
+              startLine={quote.startLine}
+              endLine={quote.endLine}
+              comment={quote.comment}
+            />
           ))}
           {quoted.body ? <UserBubble text={quoted.body} /> : null}
           <div className="flex items-center gap-2 pr-1">

@@ -3,6 +3,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useS
 
 import { SaveConflictError, saveWorkspaceFile } from "@/api/client";
 import { Dropdown, DropdownItem } from "@/components/ui/dropdown";
+import { SelectionQuote } from "@/features/chat/SelectionQuote";
 import type { CodeEditorHandle } from "@/features/files/editor/CodeEditor";
 import { usePanelStore } from "@/features/files/panel-store";
 import { PreviewLoading } from "@/features/files/preview/Loading";
@@ -69,6 +70,8 @@ export function FilePreview({
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
   const editorRef = useRef<CodeEditorHandle>(null);
+  // 预览容器的滚动壳。选区层挂在它上面，滚动时要跟着重算气泡位置。
+  const previewRef = useRef<HTMLDivElement>(null);
   const baseHash = useRef<string | null>(null);
   const dirtyRef = useRef(false);
   const setPanelDirty = usePanelStore((state) => state.setDirty);
@@ -342,7 +345,7 @@ export function FilePreview({
       ) : !current || !Body || !selected ? (
         <PreviewLoading />
       ) : (
-        <div className="relative min-h-0 flex-1 overflow-hidden">
+        <div className="relative min-h-0 flex-1 overflow-hidden" ref={previewRef}>
           {showEditor ? (
             <div className={cn("h-full", mode === "edit" ? "" : "hidden")}>
               <Suspense fallback={<PreviewLoading />}>
@@ -364,6 +367,19 @@ export function FilePreview({
               name={fileNameOf(path)}
               content={draft !== null ? { kind: "text", text: draft } : current.content}
               wrap={wrap}
+            />
+          ) : null}
+          {/* 预览态读浏览器选区；编辑态读 CodeMirror 自己的选区。 */}
+          {mode === "view" ? (
+            <SelectionQuote containerRef={previewRef} />
+          ) : showEditor ? (
+            <SelectionQuote
+              containerRef={previewRef}
+              external={{
+                read: () => editorRef.current?.getSelection() ?? null,
+                root,
+                path,
+              }}
             />
           ) : null}
         </div>

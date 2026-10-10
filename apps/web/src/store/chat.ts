@@ -98,12 +98,13 @@ import { MAX_PENDING_IMAGES, toApiAttachments, type PendingImage } from "@/lib/i
 import type { TurnTokens } from "@/lib/usage";
 import {
   MAX_QUOTE_CHARS,
-  MAX_QUOTES,
   clipQuote,
   composeQuotedMessage,
+  resolveMaxQuotes,
   splitQuotedMessage,
   type QuoteSource,
 } from "@/lib/quote";
+import { getSidebarPrefs } from "@/features/settings/sidebar-prefs";
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 export type MainView = "chat" | "trajectory";
@@ -114,11 +115,25 @@ export type ChatImage = {
   src: string;
 };
 
+/** addQuote 的附加信息：文件定位 + 用户评论。 */
+export type QuoteMeta = {
+  path?: string;
+  startLine?: number;
+  endLine?: number;
+  comment?: string;
+};
+
 export type ChatQuote = {
   id: string;
   text: string;
-  /** 引用出处，决定写进正文的标记是 quoted-from-assistant-message 还是 quoted-from-terminal。 */
+  /** 引用出处，决定写进正文的标记是 quoted-from-assistant-message / quoted-from-terminal / quoted-from-file。 */
   source: QuoteSource;
+  /** 仅 file 来源：相对工作区的路径，模型可直接拿去 Read。 */
+  path?: string;
+  startLine?: number;
+  endLine?: number;
+  /** 用户针对这段写的话。有值才输出 <user-comment> 子标签，没有就是纯引用。 */
+  comment?: string;
 };
 
 export type ChatMessage = {
@@ -218,7 +233,8 @@ type ChatState = {
   setError: (message: string | null) => void;
   addAttachments: (items: PendingImage[]) => void;
   removeAttachment: (id: string) => void;
-  addQuote: (text: string, source?: QuoteSource) => void;
+  addQuote: (text: string, source?: QuoteSource, meta?: QuoteMeta) => void;
+  updateQuote: (id: string, patch: { comment?: string }) => void;
   removeQuote: (id: string) => void;
   setWorkspace: (value: string) => void;
   addWorkspace: (value: string) => Promise<void>;
@@ -272,7 +288,11 @@ function nextId(): string {
 
 function titleFromText(text: string, hasImages = false): string {
   const parsed = splitQuotedMessage(text);
-  const source = parsed.body || parsed.quotes[0]?.text || "";
+  // 文件引用可能只选中表格里的一小块，或者只写了评论没有原文，
+  // 这时切不出可读的首行，退回用路径末段（docs/DESIGN.md -> DESIGN.md）。
+  const first = parsed.quotes[0];
+  const fromPath = first?.path ? (first.path.split("/").pop() ?? "") : "";
+  const source = parsed.body || first?.text || first?.comment || fromPath || "";
   const line = source.trim().split(/\r?\n/)[0] ?? "";
   return line.slice(0, 32) || (hasImages ? "图片问答" : parsed.quotes.length ? "引用" : "新会话");
 }
@@ -658,22 +678,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       attachments: state.attachments.filter((item) => item.id !== id),
     })),
-  addQuote: (text, source = "assistant") => {
+  addQuote: (text, source = "assistant", meta) => {
     const normalized = text.replace(/\r\n/g, "\n").trim();
-    if (!normalized) return;
+    const comment = meta?.comment?.replace(/\r\n/g, "\n").trim();
+    // 纯引用要有原文；只写评论的话允许原文为空，但仍要求评论内容存在。
+    if (!normalized && !comment) return;
     const clipped = clipQuote(normalized);
+    const limit = resolveMaxQuotes(getSidebarPrefs().maxQuotes);
     set((state) => {
-      if (state.quotes.length >= MAX_QUOTES) {
-        return patchRun(state, activeKey(state), { error: `最多添加 ${MAX_QUOTES} 条引用` });
+      if (state.quotes.length >= limit) {
+        return patchRun(state, activeKey(state), { error: `最多添加 ${limit} 条引用` });
       }
       return {
-        quotes: [...state.quotes, { id: nextId(), text: clipped.text, source }],
+        quotes: [
+          ...state.quotes,
+          {
+            id: nextId(),
+            text: clipped.text,
+            source,
+            ...(meta?.path ? { path: meta.path } : {}),
+            ...(typeof meta?.startLine === "number" ? { startLine: meta.startLine } : {}),
+            ...(typeof meta?.endLine === "number" ? { endLine: meta.endLine } : {}),
+            ...(comment ? { comment } : {}),
+          },
+        ],
         ...patchRun(state, activeKey(state), {
           error: clipped.clipped ? `引用过长，已保留前 ${MAX_QUOTE_CHARS} 字` : null,
         }),
       };
     });
   },
+  updateQuote: (id, patch) =>
+    set((state) => ({
+      quotes: state.quotes.map((item) => {
+        if (item.id !== id) return item;
+        const comment = typeof patch.comment === "string" ? patch.comment.replace(/\r\n/g, "\n").trim() : item.comment;
+        return comment ? { ...item, comment } : { ...item, comment: undefined };
+      }),
+    })),
   removeQuote: (id) =>
     set((state) => ({
       quotes: state.quotes.filter((item) => item.id !== id),

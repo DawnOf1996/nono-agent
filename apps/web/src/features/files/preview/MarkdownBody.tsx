@@ -3,7 +3,8 @@ import { memo, useMemo, type ComponentProps } from "react";
 import Markdown from "react-markdown";
 import type { Components } from "react-markdown";
 import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeSanitize from "rehype-sanitize";
+import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 
 import { CodeFence } from "@/components/CodeFence";
@@ -12,27 +13,37 @@ import { MdToc } from "@/features/files/preview/markdown/MdToc";
 import { previewImageSrc } from "@/features/files/preview/markdown/media";
 import { SvgFigure, svgBlockSource } from "@/components/SvgFigure";
 import { MermaidDiagram, mermaidBlockSource } from "@/features/files/preview/markdown/MermaidDiagram";
+import { AlertBlock } from "@/features/files/preview/markdown/AlertBlock";
 import { segmentReadmeHtml } from "@/features/files/preview/markdown/segments";
+import { frontmatterLineOffset } from "@/features/files/preview/markdown/line-numbers";
+import { remarkLineNumbers } from "@/features/files/preview/markdown/remark-lines";
 import { FrontmatterCard } from "@/features/files/preview/markdown/FrontmatterCard";
 import { splitFrontmatter } from "@/features/files/preview/markdown/frontmatter";
+import { markdownSchema } from "@/features/files/preview/markdown/schema";
+import { rehypeMathLines } from "@/features/files/preview/markdown/rehype-math-lines";
+import { KATEX_OPTIONS } from "@/lib/katex";
 import type { DocumentPreviewProps } from "@/features/files/preview/types";
 
-const schema = {
-  ...defaultSchema,
-  tagNames: [...new Set([...(defaultSchema.tagNames ?? []), "div", "details", "summary", "center"])],
-  attributes: {
-    ...defaultSchema.attributes,
-    div: [...(defaultSchema.attributes?.div ?? []), "align"],
-    center: ["align"],
-    img: [...(defaultSchema.attributes?.img ?? []), "src", "alt", "title", "width", "height", "align"],
-    a: [...(defaultSchema.attributes?.a ?? []), "href", "title", "name"],
-    details: ["open"],
-  },
-};
+/** 行号属性由 remarkLineNumbers 注入，sanitize 不放行的话到不了 DOM。 */
 
 type MarkdownProps = ComponentProps<typeof Markdown>;
-const remarkPlugins: MarkdownProps["remarkPlugins"] = [remarkGfm];
-const rehypePlugins: MarkdownProps["rehypePlugins"] = [rehypeRaw, [rehypeSanitize, schema]];
+const remarkPlugins: MarkdownProps["remarkPlugins"] = [remarkGfm, remarkMath, remarkLineNumbers];
+
+/**
+ * rehypeKatex 必须排在 sanitize 之后。
+ *
+ * KaTeX 吐出来的标签和 class 非常多（span/math/mrow/semantics… 外加上百个 katex-* 类），
+ * 放前面就得把整套 MathML 塞进白名单，白名单等于形同虚设。放后面则输出全部由 KaTeX
+ * 自己拼，KATEX_OPTIONS 里 trust 关着就没有用户输入能进到 HTML 里，配合那道闸是安全的。
+ * KaTeX 的选项和"为什么 trust 要写死"写在 lib/katex.ts，聊天侧共用同一份。
+ */
+const rehypePlugins: MarkdownProps["rehypePlugins"] = [
+  rehypeRaw,
+  [rehypeSanitize, markdownSchema],
+  // 用 rehypeMathLines 而不是裸的 rehypeKatex：它渲染完会把行号还回去，
+  // 选中公式里的文字做引用时才换得出源文件行号。见 rehype-math-lines.ts。
+  [rehypeMathLines, KATEX_OPTIONS],
+];
 
 /**
  * components 按 root/path 缓存，不能每次渲染都新建。
@@ -62,6 +73,8 @@ function previewComponents(root: string, filePath: string): Components {
       // 和对话里同一个围栏组件：语言名 + 复制按钮 + 头部那条细线，预览和聊天长得一样。
       return <CodeFence>{children}</CodeFence>;
     },
+    // `> [!NOTE]` 走 AlertBlock，不是提示块就退回普通 blockquote。
+    blockquote: ({ children }) => <AlertBlock>{children}</AlertBlock>,
     img: ({ src, alt }) => {
       const resolved = previewImageSrc(root, filePath, typeof src === "string" ? src : undefined);
       if (!resolved) return alt ? <span>{alt}</span> : null;
@@ -95,29 +108,51 @@ export const MarkdownBody = memo(function MarkdownBody({ root, path, content }: 
   // （`description: |` 后面跟着 <details>）会被 segments 当成真的标签拆出来。
   const frontmatter = useMemo(() => (content.kind === "text" ? splitFrontmatter(content.text) : null), [content]);
   const segments = useMemo(() => (frontmatter ? segmentReadmeHtml(frontmatter.body) : []), [frontmatter]);
+  // 分段时行号是相对 body 的；frontmatter 剥掉的头几行还得再补回来，
+  // 补完才是源文件里的真实行号。挂到容器上，选区层靠它换算。
+  const fmOffset = useMemo(
+    () => (content.kind === "text" ? frontmatterLineOffset(content.text) : 0),
+    [content],
+  );
   if (content.kind !== "text") return null;
   return (
-    <div className="file-preview relative h-full overflow-auto px-4 py-4" data-link-file={path}>
+    <div
+      className="file-preview relative h-full overflow-auto px-4 py-4"
+      data-link-file={path}
+      data-quote-source="file"
+      data-file-path={path}
+      data-file-root={root}
+    >
       <MdToc />
       <div className="prose-md">
         {frontmatter?.present ? <FrontmatterCard raw={frontmatter.raw} variant="card" /> : null}
         {segments.map((segment, index) => {
+          // 前端这层再叠一次 frontmatter 偏移，得到源文件行号基准。
+          const lineOffset = segment.lineOffset + fmOffset;
           if (segment.kind === "details") {
             return (
-              <details key={index} open={segment.open || undefined}>
-                <summary dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(segment.summary) }} />
-                <MarkdownChunk root={root} path={path} text={segment.body} />
+              <details key={index} open={segment.open || undefined} data-line-offset={lineOffset}>
+                <summary dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(segment.summary ?? "") }} />
+                <MarkdownChunk root={root} path={path} text={segment.body ?? ""} />
               </details>
             );
           }
           if (segment.kind === "div") {
             return (
-              <div key={index} style={segment.align ? { textAlign: segment.align } : undefined}>
-                <MarkdownChunk root={root} path={path} text={segment.body} />
+              <div
+                key={index}
+                style={segment.align ? { textAlign: segment.align } : undefined}
+                data-line-offset={lineOffset}
+              >
+                <MarkdownChunk root={root} path={path} text={segment.body ?? ""} />
               </div>
             );
           }
-          return <MarkdownChunk key={index} root={root} path={path} text={segment.text} />;
+          return (
+            <div key={index} data-line-offset={lineOffset}>
+              <MarkdownChunk root={root} path={path} text={segment.text ?? ""} />
+            </div>
+          );
         })}
       </div>
     </div>

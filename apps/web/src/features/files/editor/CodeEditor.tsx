@@ -20,6 +20,14 @@ import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
 
 import { languageForPath } from "@/features/files/preview/languages";
 
+export type EditorSelection = {
+  text: string;
+  startLine: number;
+  endLine: number;
+  /** 选区在视口里的矩形，用来放气泡。 */
+  rect: { top: number; bottom: number; left: number; right: number };
+};
+
 export type CodeEditorHandle = {
   getValue: () => string;
   /** 换成新内容并把它当作已保存的基线（不进撤销历史的脏判断）。 */
@@ -27,6 +35,8 @@ export type CodeEditorHandle = {
   /** 把当前内容记为已保存。 */
   markSaved: () => void;
   focus: () => void;
+  /** 当前选区；没有选中文字时返回 null。 */
+  getSelection: () => EditorSelection | null;
 };
 
 const surface = EditorView.theme({
@@ -153,6 +163,31 @@ export function CodeEditor({
         callbacks.current.onDirtyChange(false);
       },
       focus: () => viewRef.current?.focus(),
+      getSelection: () => {
+        const view = viewRef.current;
+        if (!view) return null;
+        const range = view.state.selection.main;
+        if (range.empty) return null;
+        const text = view.state.sliceDoc(range.from, range.to).replace(/\u00a0/g, " ").trim();
+        if (!text) return null;
+        const startLine = view.state.doc.lineAt(range.from).number;
+        const endLine = view.state.doc.lineAt(range.to).number;
+        // coordsAtPos 拿到的是 content 坐标，cm6 里要自己加滚动偏移。
+        const from = view.coordsAtPos(range.from);
+        const to = view.coordsAtPos(range.to);
+        if (!from || !to) return null;
+        return {
+          text,
+          startLine,
+          endLine,
+          rect: {
+            top: Math.min(from.top, to.top),
+            bottom: Math.max(from.bottom, to.bottom),
+            left: Math.min(from.left, to.left),
+            right: Math.max(from.right, to.right),
+          },
+        };
+      },
     }),
     [],
   );

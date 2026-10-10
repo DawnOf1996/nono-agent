@@ -1,5 +1,7 @@
 /** 侧边栏每种标签的开关，以及它们的二级设置。写在本机 localStorage。 */
 
+import { resolveMaxQuotes } from "@/lib/quote";
+
 export type SidebarPrefs = {
   files: boolean;
   changes: boolean;
@@ -8,6 +10,8 @@ export type SidebarPrefs = {
   browser: boolean;
   sidechat: boolean;
   terminalFontSize: number;
+  /** 一次最多能挂多少条引用/评论。硬边界在 lib/quote.ts 的 resolveMaxQuotes 里夹。 */
+  maxQuotes: number;
   browserHome: string;
   showHiddenFiles: boolean;
   /** 点开一段对话时展开右侧栏，并打开已加载的文件树。 */
@@ -41,6 +45,7 @@ export const SIDEBAR_PREFS_DEFAULTS: SidebarPrefs = {
   browser: true,
   sidechat: true,
   terminalFontSize: 13,
+  maxQuotes: 8,
   browserHome: "",
   showHiddenFiles: true,
   defaultOpenFileTree: false,
@@ -77,6 +82,8 @@ function readPrefs(): SidebarPrefs {
       defaultOpenFileTree: parsed.defaultOpenFileTree === true,
       autoOpenTasks: parsed.autoOpenTasks === true,
       explorerMode: parsed.explorerMode === "merged" ? "merged" : SIDEBAR_PREFS_DEFAULTS.explorerMode,
+      // localStorage 能被手改，也可能来自旧版本。夹回合法区间再往下传。
+      maxQuotes: resolveMaxQuotes(parsed.maxQuotes),
     };
   } catch {
     return { ...SIDEBAR_PREFS_DEFAULTS };

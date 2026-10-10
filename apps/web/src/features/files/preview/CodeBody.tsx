@@ -23,7 +23,8 @@ function SourceLines({
   return (
     <div className="min-w-full px-3 py-3 font-mono text-[12.5px] leading-6">
       {lines.map((line, index) => (
-        <div key={index} className="flex min-w-full">
+        // 整行挂 data-line-number：选中代码里的文字时，选区端点往上找就能拿到行号。
+        <div key={index} className="flex min-w-full" data-line-number={index + 1}>
           <span className="sticky left-0 w-11 shrink-0 select-none bg-bg pr-3 text-right text-[11px] text-faint tabular-nums">
             {index + 1}
           </span>
@@ -46,7 +47,7 @@ function SourceLines({
   );
 }
 
-export function CodeBody({ path, content, wrap }: DocumentPreviewProps) {
+export function CodeBody({ root, path, content, wrap }: DocumentPreviewProps) {
   const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
   const [copied, setCopied] = useState(false);
   const text = content.kind === "text" ? content.text : "";
@@ -76,7 +77,13 @@ export function CodeBody({ path, content, wrap }: DocumentPreviewProps) {
   const lines = tokens ?? plainLines(text);
 
   return (
-    <div className="relative h-full" data-wrap={wrap}>
+    <div
+      className="relative h-full"
+      data-wrap={wrap}
+      data-quote-source="file"
+      data-file-path={path}
+      data-file-root={root}
+    >
       <button
         type="button"
         className="absolute right-2 top-2 z-10 flex h-7 items-center gap-1 rounded-md bg-bg/90 px-2 text-[12px] text-muted hover:bg-hover hover:text-ink"

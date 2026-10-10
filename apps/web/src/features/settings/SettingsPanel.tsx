@@ -14,6 +14,7 @@ import {
   ProviderEditor,
   type ProviderDraft,
 } from "@/features/settings/ProviderEditor";
+import { QuoteLimitField } from "@/features/settings/QuoteLimitSettings";
 import { SidebarCards } from "@/features/settings/SidebarCards";
 import { ToolPluginSettings } from "@/features/settings/ToolPluginSettings";
 import { WorkspacePicker } from "@/features/session/WorkspacePicker";
@@ -360,6 +361,17 @@ function GeneralPane({
                 更改
               </Button>
             </div>
+          </SettingRow>
+        </SettingGroup>
+      </PaneSection>
+
+      <PaneSection>
+        <SettingGroup label="对话">
+          <SettingRow
+            label="引用条数上限"
+            hint="在回复或文件预览里选中文字后，一次最多能挂多少条引用和评论"
+          >
+            <QuoteLimitField />
           </SettingRow>
         </SettingGroup>
       </PaneSection>
