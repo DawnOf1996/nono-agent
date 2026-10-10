@@ -1,14 +1,19 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, type ComponentProps } from "react";
 import type { Components } from "react-markdown";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 
 import { CodeFence } from "@/components/CodeFence";
 import { MarkdownLink } from "@/components/MarkdownLink";
 import { SvgFigure, svgBlockSource } from "@/components/SvgFigure";
 import { MermaidDiagram, mermaidBlockSource } from "@/features/files/preview/markdown/MermaidDiagram";
+import { AlertBlock } from "@/features/files/preview/markdown/AlertBlock";
 import { FrontmatterCard } from "@/features/files/preview/markdown/FrontmatterCard";
 import { splitFrontmatter, splitOpenFrontmatterStart } from "@/features/files/preview/markdown/frontmatter";
+import { KATEX_OPTIONS } from "@/lib/katex";
+import { isUnclosedMathBlock, splitMarkdownBlocks } from "@/lib/markdown-blocks";
 import {
   isUnclosedMermaidFence,
   isUnclosedSvgFence,
@@ -16,7 +21,12 @@ import {
   normalizeGluedMermaidFences,
 } from "@/lib/mermaid-fence";
 
-const remarkPlugins = [remarkGfm];
+const remarkPlugins = [remarkGfm, remarkMath];
+
+type MarkdownProps = ComponentProps<typeof Markdown>;
+
+/** 聊天侧不跑 sanitize，KaTeX 直接挂在管道末尾即可，没有预览那边的顺序约束。 */
+const rehypePluginsMath: MarkdownProps["rehypePlugins"] = [[rehypeKatex, KATEX_OPTIONS]];
 
 /**
  * 表格外面套一层横向滚动壳。
@@ -44,6 +54,10 @@ const linkComponents: Components = {
   // 文件路径开侧边栏文件查看器。保留 href 是为了「复制链接地址」和
   // Ctrl/Cmd+点击（用户明确要新开窗口）仍然可用。
   a: ({ href, children, title }) => <MarkdownLink href={href} title={title}>{children}</MarkdownLink>,
+  // `> [!NOTE]` 走 AlertBlock，不是提示块就退回普通 blockquote。
+  // 和 a 一样必须两套组件都挂：流式渲染会切到 linkComponents，漏了的话
+  // 流到一半的提示块会突然变回引用。
+  blockquote: ({ children }) => <AlertBlock>{children}</AlertBlock>,
 };
 
 const components: Components = {
@@ -57,81 +71,23 @@ const components: Components = {
   },
 };
 
-const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
-const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
-const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])\s/;
-const QUOTE = /^ {0,3}>/;
-const INDENTED = /^(?: {4,}|\t)/;
-
-function closesFence(line: string, fence: string): boolean {
-  const match = FENCE_CLOSE.exec(line);
-  return Boolean(match && match[1][0] === fence[0] && match[1].length >= fence.length);
-}
-
-function continuesPrevious(block: string, previous: string): boolean {
-  if (INDENTED.test(block)) return true;
-  if (LIST_ITEM.test(block) && LIST_ITEM.test(previous)) return true;
-  if (QUOTE.test(block) && QUOTE.test(previous)) return true;
-  return false;
-}
-
-/**
- * 按顶层块切分 markdown：围栏代码整块保留，空行分段，缩进/列表/引用的续段并回上一块。
- *
- * 流式追加时只有最后一块在变，前面的块字符串保持不变，配合 memo 就不用重新解析整篇。
- */
-export function splitMarkdownBlocks(text: string): string[] {
-  const blocks: string[] = [];
-  let buffer: string[] = [];
-  let fence: string | null = null;
-
-  const flush = () => {
-    if (!buffer.length) return;
-    const block = buffer.join("\n");
-    buffer = [];
-    const previous = blocks[blocks.length - 1];
-    if (previous !== undefined && continuesPrevious(block, previous)) {
-      blocks[blocks.length - 1] = `${previous}\n\n${block}`;
-      return;
-    }
-    blocks.push(block);
-  };
-
-  for (const line of text.split("\n")) {
-    if (fence) {
-      buffer.push(line);
-      if (closesFence(line, fence)) {
-        fence = null;
-        flush();
-      }
-      continue;
-    }
-    const opening = FENCE_OPEN.exec(line);
-    if (opening) {
-      flush();
-      buffer.push(line);
-      fence = opening[1];
-      continue;
-    }
-    if (!line.trim()) {
-      if (buffer.length) flush();
-      continue;
-    }
-    buffer.push(line);
-  }
-  flush();
-  return blocks;
-}
-
 const MarkdownChunk = memo(function MarkdownChunk({
   source,
   deferMermaid = false,
+  deferMath = false,
 }: {
   source: string;
   deferMermaid?: boolean;
+  deferMath?: boolean;
 }) {
   return (
-    <Markdown remarkPlugins={remarkPlugins} components={deferMermaid ? linkComponents : components}>
+    <Markdown
+      remarkPlugins={remarkPlugins}
+      // 流式途中还没写完的 $$ 块先不挂 KaTeX：半截公式渲染出来是一片红字，
+      // 跟着每个新 token 闪一次比晚点显示更难读。闭合了就正常挂上。
+      rehypePlugins={deferMath ? undefined : rehypePluginsMath}
+      components={deferMermaid ? linkComponents : components}
+    >
       {source}
     </Markdown>
   );
@@ -172,6 +128,7 @@ export const MarkdownText = memo(function MarkdownText({
             key={index}
             source={source}
             deferMermaid={isUnclosedMermaidFence(source) || isUnclosedSvgFence(source)}
+            deferMath={isUnclosedMathBlock(source)}
           />
         ))
       ) : (

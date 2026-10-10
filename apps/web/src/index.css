@@ -1,4 +1,7 @@
 @import "tailwindcss";
+/* KaTeX 自带的字体和排版规则。必须放 tailwindcss 之后：它的 preflight 会重置字体，
+   让 katex 的样式后加载才能压住。 */
+@import "katex/dist/katex.min.css";
 
 @theme {
   /* 纯系统字体栈，不加载任何 Web 字体。Windows 上拉丁落到 Segoe UI，中文逐字回退到微软雅黑。 */
@@ -57,6 +60,20 @@
   --color-modified: #b7791f;
   --color-rename: #3366cc;
   --color-ok: #22c55e;
+
+  /* GitHub Alert 的五种配色。ink 是图标和标题的颜色，soft 是块底色 —— 抄 GitHub
+     自己那套，看到仓库 README 里的 [!NOTE] 时不用重新认一遍。
+     soft 压得很淡是故意的：正文要压在它上面，染太重就看不清字了。 */
+  --color-alert-note: #0969da;
+  --color-alert-note-soft: #ddf4ff;
+  --color-alert-tip: #1a7f37;
+  --color-alert-tip-soft: #e2f7e9;
+  --color-alert-important: #8250df;
+  --color-alert-important-soft: #f1e9fd;
+  --color-alert-warning: #9a6700;
+  --color-alert-warning-soft: #fff8c5;
+  --color-alert-caution: #cf222e;
+  --color-alert-caution-soft: #ffebe9;
 
   /* 编辑器 / diff 里那些"底色提示"：行高亮、斑马纹、查找命中、行内改动。 */
   --color-sunken: #f6f7f9;
@@ -140,6 +157,19 @@
   --color-modified: #d9a441;
   --color-rename: #7aa7ff;
   --color-ok: #4ade80;
+
+  /* Alert 的深色版：饱和度压下来、亮度抬上去，和上面那批语义色一个路子。
+     soft 换成深色底上的暗染色，不是浅色的浅底 —— 那样在深色主题里会亮得刺眼。 */
+  --color-alert-note: #58a6ff;
+  --color-alert-note-soft: #121d2f;
+  --color-alert-tip: #3fb950;
+  --color-alert-tip-soft: #0f2a17;
+  --color-alert-important: #d2a8ff;
+  --color-alert-important-soft: #241a3d;
+  --color-alert-warning: #e3b341;
+  --color-alert-warning-soft: #2a2213;
+  --color-alert-caution: #f85149;
+  --color-alert-caution-soft: #2d1517;
 
   --color-sunken: #1a1d23;
   --color-zebra: #1d212a;
@@ -396,6 +426,69 @@ textarea {
   border-left: 2px solid var(--color-line-strong);
   padding-left: 0.85em;
   color: var(--color-muted);
+}
+
+/* GitHub Alert：> [!NOTE] 这类块引用渲染成的提示块（见 markdown/AlertBlock.tsx）。
+   左侧色条 + 一行带图标的标题，正文照常按 .prose-md 排版；
+   两种色的具体取值由下面的类型类名给，--alert-ink / --alert-soft 是本块内部的中转名。 */
+.markdown-alert {
+  --alert-ink: var(--color-alert-note);
+  --alert-soft: var(--color-alert-note-soft);
+  margin: 0.9em 0;
+  padding: 0.65em 0.9em;
+  border-left: 3px solid var(--alert-ink);
+  border-radius: 0 8px 8px 0;
+  background: var(--alert-soft);
+  /* 正文用正文色，不跟 blockquote 那样压成 muted：提示块是当正文读的。 */
+  color: var(--color-ink);
+}
+
+.markdown-alert-tip {
+  --alert-ink: var(--color-alert-tip);
+  --alert-soft: var(--color-alert-tip-soft);
+}
+
+.markdown-alert-important {
+  --alert-ink: var(--color-alert-important);
+  --alert-soft: var(--color-alert-important-soft);
+}
+
+.markdown-alert-warning {
+  --alert-ink: var(--color-alert-warning);
+  --alert-soft: var(--color-alert-warning-soft);
+}
+
+.markdown-alert-caution {
+  --alert-ink: var(--color-alert-caution);
+  --alert-soft: var(--color-alert-caution-soft);
+}
+
+/* 标题独占一行，图标跟着基线走。em 高由标题字号定，所以图标用 em 跟着缩放，
+   换主题字号时不用回来改这里。 */
+.markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  margin: 0 0 0.45em;
+  color: var(--alert-ink);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.markdown-alert-icon {
+  width: 1.15em;
+  height: 1.15em;
+  flex: none;
+}
+
+/* 只有标题没有正文时别在底部留一段空行。 */
+.markdown-alert-title:last-child {
+  margin-bottom: 0;
+}
+
+/* 容器有 padding，末块的 margin-bottom 不会被折进去，白留一块空当。 */
+.markdown-alert > :last-child {
+  margin-bottom: 0;
 }
 
 .prose-md hr {
