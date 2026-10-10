@@ -88,6 +88,10 @@ export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const overflowing = useOverflowing(bodyRef, expanded);
   const collapsedHeight = collapseHeight(terminal ? MONO_LINE_HEIGHT : PLAIN_LINE_HEIGHT);
+  // 渐隐只在真的裁掉了东西时画。收起状态下无条件铺这层 mask 的话，一行消息也要中招：
+  // 正文行高 22px，比 FADE_PX（36px）还矮，渐变的起点算出来是负数，整行字都会被
+  // 洗成半透明 —— 看上去像发灰，其实下面什么都没有可展开。
+  const faded = !expanded && overflowing;
 
   return (
     <div className="max-w-full overflow-hidden rounded-2xl bg-card">
@@ -98,12 +102,12 @@ export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
           ref={bodyRef}
           style={{
             maxHeight: expanded ? "none" : collapsedHeight,
-            ...(expanded
-              ? {}
-              : {
+            ...(faded
+              ? {
                   WebkitMaskImage: `linear-gradient(to bottom, #000 calc(100% - ${FADE_PX}px), transparent)`,
                   maskImage: `linear-gradient(to bottom, #000 calc(100% - ${FADE_PX}px), transparent)`,
-                }),
+                }
+              : {}),
           }}
           className={`overflow-hidden break-words whitespace-pre-wrap text-ink ${
             terminal ? MONO_BODY : PLAIN_BODY
