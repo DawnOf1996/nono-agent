@@ -10,19 +10,31 @@ from nono_agent.session.events import (
 )
 from nono_agent.session.redact import _GUARD, REDACTED
 
+# GitHub secret scanning 扫的是仓库里的字面量，不管它出现在源码哪一行。
+# 测试夹具里写完整的凭据形态，一样会被判成泄露：sk- 开头的被认成
+# DeepSeek / OpenAI key，AKIA / ASIA 开头的被认成 AWS access key id。
+#
+# 所以完整值只在运行时拼出来，源码里永远不存在连续的完整字面量。脱敏逻辑
+# 测的仍然是真正的完整形态 —— 下面每一处断言拿到的都是完整值。
+_DEEPSEEK_KEY = "sk-abcdefghij" + "klmnopqrstuvwxyz012345"
+_GITHUB_PAT = "ghp_ABCDEFGHIJKL" + "MNOPQRSTUVWXYZ0123456789"
+_GITHUB_PAT_SHORT = "ghp_ABCDEFGHIJKL" + "MNOPQRSTUVWXYZ012345"
+_AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7" + "EXAMPLE"
+_AWS_SESSION_KEY_ID = "ASIAIOSFODNN7" + "EXAMPLE"
+
 
 class TestRedactText:
     def test_masks_openai_style_key(self):
-        out = redact_text("export DEEPSEEK_API_KEY=sk-abcdefghijklmnopqrstuvwxyz012345")
+        out = redact_text(f"export DEEPSEEK_API_KEY={_DEEPSEEK_KEY}")
         assert "sk-abcdefghijklmnop" not in out
         assert REDACTED.format(kind="api_key") in out
 
     def test_masks_github_token(self):
-        out = redact_text("remote uses ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        out = redact_text(f"remote uses {_GITHUB_PAT}")
         assert "ghp_ABCDEFGH" not in out
 
     def test_masks_aws_access_key(self):
-        assert "AKIAIOSFODNN7EXAMPLE" not in redact_text("key AKIAIOSFODNN7EXAMPLE here")
+        assert _AWS_ACCESS_KEY_ID not in redact_text(f"key {_AWS_ACCESS_KEY_ID} here")
 
     def test_masks_jwt(self):
         token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQ"
@@ -59,15 +71,15 @@ class TestRedactGuard:
 
     # (说明, 必须被脱敏的样本)
     CREDENTIALS = [
-        ("openai 风格 key", "sk-abcdefghijklmnopqrstuvwxyz012345"),
-        ("github pat", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
+        ("openai 风格 key", _DEEPSEEK_KEY),
+        ("github pat", _GITHUB_PAT),
         ("github oauth", "gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
         ("github user", "ghu_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
         ("github server", "ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
         ("github refresh", "ghr_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
         ("fine-grained pat", "github_pat_" + "A" * 30),
-        ("aws access key", "AKIAIOSFODNN7EXAMPLE"),
-        ("aws session key", "ASIAIOSFODNN7EXAMPLE"),
+        ("aws access key", _AWS_ACCESS_KEY_ID),
+        ("aws session key", _AWS_SESSION_KEY_ID),
         ("slack", "xoxb-1234567890-abcdefghij"),
         ("google", "AIza" + "B" * 35),
         ("jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQ"),
@@ -129,7 +141,7 @@ class TestRedactValue:
 
     def test_walks_nested_structures(self):
         out = redact_value(
-            {"env": [{"name": "TOKEN", "value": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"}]}
+            {"env": [{"name": "TOKEN", "value": _GITHUB_PAT_SHORT}]}
         )
         assert "ghp_ABCDEFGH" not in str(out)
 
@@ -163,7 +175,7 @@ class TestRedactEvent:
         event = SessionEvent.make(
             2,
             EVENT_REQUEST_HEADER,
-            header={"system": "use token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"},
+            header={"system": f"use token {_GITHUB_PAT_SHORT}"},
             reason="initial",
         )
         assert "ghp_ABCDEFGH" not in str(redact_events([event])[0].data)

@@ -239,7 +239,10 @@ class TestSessionEventChannel:
     def test_payload_is_redacted(self, tmp_path, monkeypatch):
         from nono_agent.session.events import EVENT_TOOL_RESULT
 
-        secret = "sk-abcdefghijklmnopqrstuvwxyz012345"
+        # 拆成两段：完整字面量会让 GitHub secret scanning 判成 DeepSeek key 泄露，
+        # 运行时拼出来的值仍然是完整形态，脱敏测的还是它。见 test_session_redact.py
+        # 里同一套写法的说明。
+        secret = "sk-abcdefghij" + "klmnopqrstuvwxyz012345"
         writer = self._write_session(
             tmp_path,
             monkeypatch,
