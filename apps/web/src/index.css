@@ -495,6 +495,186 @@ textarea {
   font-family: var(--font-mono);
 }
 
+/* ---- frontmatter（YAML 头）卡片 ----
+   聊天和预览共用一套：字段名是标识符，走等宽；值回到正文字体。两列固定表头宽度，
+   值列 minmax(0,1fr) —— 少了这个，长描述（URL、路径）会把 key 列顶开。 */
+.md-frontmatter {
+  /* margin-top 自己写死 0：.prose-md > :first-child 也给 0，但卡片不该依赖父级规则 ——
+     聊天里它可能不是第一个子节点（比如被 reasoning 行挡着）。 */
+  margin: 0 0 1.1em;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-code) 60%, transparent);
+  padding: 0.45em 0.75em 0.6em;
+  font-size: 0.88em;
+}
+
+.md-frontmatter-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  min-width: 0;
+}
+
+.md-frontmatter-toggle {
+  display: inline-flex;
+  min-width: 0;
+  /* 不许收缩：标题里的中文是逐字可断的，一旦被压到 0 宽，"看原文" 会一个汉字一行
+     竖着排出来，还溢出卡片右缘。 */
+  flex: 0 0 auto;
+  cursor: pointer;
+  align-items: center;
+  gap: 0.35em;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.md-frontmatter-toggle:hover {
+  color: var(--color-ink);
+}
+
+.md-frontmatter-caret {
+  width: 0.85em;
+  height: 0.85em;
+  flex-shrink: 0;
+  transition: transform 140ms ease;
+}
+
+/* 展开时转 90°。不换图标：箭头变形比换字形稳，两张图都得留在资源里。 */
+.md-frontmatter-caret-open {
+  transform: rotate(90deg);
+}
+
+.md-frontmatter-label {
+  font-family: var(--font-mono);
+  color: var(--color-muted);
+}
+
+.md-frontmatter-count {
+  color: var(--color-faint);
+  font-size: 0.9em;
+}
+
+/* 摘要只在一行里截断：name · description 可能很长，让它撑开会把「看原文」挤出可视区。 */
+.md-frontmatter-summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-faint);
+}
+
+.md-frontmatter-source {
+  margin-left: auto;
+  /* 同上：宁可让中间的摘要先让位，也不能把这个按钮压成竖排。 */
+  flex: 0 0 auto;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  padding: 0.1em 0.4em;
+  font-size: 0.9em;
+  color: var(--color-faint);
+}
+
+.md-frontmatter-source:hover {
+  background: var(--color-hover);
+  color: var(--color-ink);
+}
+
+.md-frontmatter-fields {
+  margin: 0.5em 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+}
+
+.md-frontmatter-row {
+  display: grid;
+  grid-template-columns: minmax(4.5em, 9em) minmax(0, 1fr);
+  align-items: start;
+  gap: 0.6em;
+}
+
+.md-frontmatter dt {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--color-faint);
+  /* 字段名本身长（allowed-tools）时按 - 断，别把整行撑歪。 */
+  overflow-wrap: anywhere;
+}
+
+.md-frontmatter dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--color-ink);
+}
+
+/* 值保留换行：YAML 双引号标量里的 \n 是真的换行，压成一行会读不出原意。 */
+.md-frontmatter-value {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.md-frontmatter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3em;
+}
+
+.md-frontmatter-chip {
+  border: 1px solid var(--color-line);
+  border-radius: 5px;
+  background: var(--color-bg);
+  padding: 0 0.4em;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  color: var(--color-muted);
+}
+
+/* 没硬解出来的字段（嵌套 map、块标量）：原样贴着，跟「看原文」里看到的一致。 */
+.md-frontmatter-raw {
+  margin: 0;
+  overflow-x: auto;
+  border-left: 2px solid var(--color-line);
+  padding-left: 0.6em;
+  font-family: var(--font-mono);
+  /* 固定 12.5px，不跟会话字号缩放：跟 .prose-md pre 同一条理由，正文放到 22px 时
+     一块跟着变大的等宽文本会把版面撑散。 */
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre;
+  color: var(--color-muted);
+}
+
+.md-frontmatter-empty {
+  color: var(--color-faint);
+}
+
+/* 「看原文」那块代码块在卡片里，去掉外边距免得卡片底部多出一截空。 */
+.md-frontmatter .code-fence {
+  margin: 0.5em 0 0;
+}
+
+/* 聊天里的那一行：比预览轻一档。聊天中出现 YAML 头基本都是模型在贴文件全文，
+   用户要的是正文，元信息不该跟正文抢层级。 */
+.prose-md .md-frontmatter-compact {
+  background: none;
+  padding: 0 0.15em;
+}
+
+.md-frontmatter-empty-block {
+  color: var(--color-faint);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
 /* 文件预览是"读文档"，不是"看对话"，固定 14px：跟着会话字号走，README 会跟着忽大忽小。 */
 .file-preview .prose-md {
   font-size: 14px;

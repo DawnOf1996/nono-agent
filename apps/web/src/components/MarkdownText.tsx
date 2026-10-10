@@ -7,6 +7,8 @@ import { CodeFence } from "@/components/CodeFence";
 import { MarkdownLink } from "@/components/MarkdownLink";
 import { SvgFigure, svgBlockSource } from "@/components/SvgFigure";
 import { MermaidDiagram, mermaidBlockSource } from "@/features/files/preview/markdown/MermaidDiagram";
+import { FrontmatterCard } from "@/features/files/preview/markdown/FrontmatterCard";
+import { splitFrontmatter, splitOpenFrontmatterStart } from "@/features/files/preview/markdown/frontmatter";
 import {
   isUnclosedMermaidFence,
   isUnclosedSvgFence,
@@ -146,14 +148,24 @@ export const MarkdownText = memo(function MarkdownText({
   streaming?: boolean;
 }) {
   // react-markdown 不包外层元素，分块后仍是 .prose-md 的直接子节点，样式与整篇渲染一致。
+  //
+  // YAML 头先摘出去：模型贴一份 SKILL.md 时，首行 `---` 会变成 <hr>、结尾 `---` 会把
+  // 整块顶成假 <h2>，`allowed-tools:` 下面的 `- Read` 还会把后面所有字段吞成列表项。
+  // splitOpenFrontmatterStart 兜住流式的中途状态：结束分隔符还没到的那几十帧。
+  const meta = useMemo(() => {
+    const full = splitFrontmatter(text);
+    if (full.present) return { raw: full.raw, body: full.body };
+    return splitOpenFrontmatterStart(text);
+  }, [text]);
   const prepared = useMemo(
-    () => normalizeGluedHeadingTables(normalizeGluedMermaidFences(text)),
-    [text],
+    () => normalizeGluedHeadingTables(normalizeGluedMermaidFences(meta?.body ?? text)),
+    [meta, text],
   );
   const blocks = useMemo(() => (streaming ? splitMarkdownBlocks(prepared) : null), [streaming, prepared]);
 
   return (
     <div className={tone === "muted" ? "prose-md prose-md-muted" : "prose-md"}>
+      {meta ? <FrontmatterCard raw={meta.raw} variant="compact" /> : null}
       {blocks ? (
         blocks.map((source, index) => (
           <MarkdownChunk

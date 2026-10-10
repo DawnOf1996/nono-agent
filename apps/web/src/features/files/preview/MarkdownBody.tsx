@@ -13,6 +13,8 @@ import { previewImageSrc } from "@/features/files/preview/markdown/media";
 import { SvgFigure, svgBlockSource } from "@/components/SvgFigure";
 import { MermaidDiagram, mermaidBlockSource } from "@/features/files/preview/markdown/MermaidDiagram";
 import { segmentReadmeHtml } from "@/features/files/preview/markdown/segments";
+import { FrontmatterCard } from "@/features/files/preview/markdown/FrontmatterCard";
+import { splitFrontmatter } from "@/features/files/preview/markdown/frontmatter";
 import type { DocumentPreviewProps } from "@/features/files/preview/types";
 
 const schema = {
@@ -89,12 +91,16 @@ const MarkdownChunk = memo(function MarkdownChunk({ root, path, text }: { root: 
 });
 
 export const MarkdownBody = memo(function MarkdownBody({ root, path, content }: DocumentPreviewProps) {
-  const segments = useMemo(() => (content.kind === "text" ? segmentReadmeHtml(content.text) : []), [content]);
+  // 顺序有讲究：先摘 frontmatter 再分段。反过来的话，YAML 块标量里写的 HTML
+  // （`description: |` 后面跟着 <details>）会被 segments 当成真的标签拆出来。
+  const frontmatter = useMemo(() => (content.kind === "text" ? splitFrontmatter(content.text) : null), [content]);
+  const segments = useMemo(() => (frontmatter ? segmentReadmeHtml(frontmatter.body) : []), [frontmatter]);
   if (content.kind !== "text") return null;
   return (
     <div className="file-preview relative h-full overflow-auto px-4 py-4" data-link-file={path}>
       <MdToc />
       <div className="prose-md">
+        {frontmatter?.present ? <FrontmatterCard raw={frontmatter.raw} variant="card" /> : null}
         {segments.map((segment, index) => {
           if (segment.kind === "details") {
             return (

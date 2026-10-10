@@ -19,7 +19,9 @@ export function MdToc() {
       const found: TocEntry[] = [];
       for (const el of container.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")) {
         const text = (el.textContent ?? "").trim();
-        if (!text || el.closest(".md-toc")) continue;
+        // frontmatter 卡片目前只用 dl，但排除留在这儿：它哪天加了标题，
+        // 或者将来支持 `title:` 之类渲染成 heading，目录都不该冒出一条"元信息"。
+        if (!text || el.closest(".md-toc, [data-md-frontmatter]")) continue;
         found.push({ level: Number(el.tagName.charAt(1)), text, el });
       }
       const next = found.map((entry) => `${entry.level}:${entry.text}`).join("\n");
