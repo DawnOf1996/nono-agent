@@ -4,6 +4,11 @@
   "private": true,
   "description": "NoNo desktop shell",
   "author": "NoNo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DawnOf1996/nono-agent.git"
+  },
+  "homepage": "https://github.com/DawnOf1996/nono-agent",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",

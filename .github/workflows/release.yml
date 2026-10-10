@@ -1,24 +1,42 @@
-# 打 Windows 安装包并发布成 GitHub Release。
+# 打 Windows 安装包。两条路，同一套构建：
 #
-# 为什么不并进 ci.yml：CI 挂在每个 push 和 PR 上，而这条只该在打 tag 时跑一次，
-# 而且要十几分钟（PyInstaller 冻 sidecar 约 5~10 分钟，electron-builder 打 NSIS
-# 约 3~5 分钟）。并进去等于让每次 PR 都白烧这个时间。
+#   合并进 main / 提 PR  → 只打包，产物作为 Actions artifact 存着，不发 Release。
+#                          用途是「这次合并还能不能打出能用的安装包」，不影响任何用户。
+#   打 tag v*            → 打包 + 发成 GitHub Release，装机用户的「检查更新」靠它。
+#
+# 为什么不并进 ci.yml：CI 挂在每个 push 和 PR 上，而打包要十几分钟（PyInstaller 冻
+# sidecar 约 5~10 分钟，electron-builder 打 NSIS 约 3~5 分钟）。
+#
+# 为什么「合并」和「发版」要分开：自动更新是拿本地版本号和 latest.yml 里的版本比，
+# 谁大才提示。每一次合并都发一条 Release，等于每次合并都给所有已安装的用户弹一次
+# 更新，版本号也会一天涨二十个（semver 也就没意义了）。发版是一个决定，不是一次合并。
 #
 # 发版动作:
-#   git tag v0.3.0
-#   git push origin v0.3.0
+#   git tag v0.3.1
+#   git push origin v0.3.1
 # tag 就是版本号，会被写进 apps/desktop/package.json 后再打包，装机后
 # window.nonoDesktop.version 和自动更新比较用的都是它。
 #
 # 版本号一旦切到 tag 方案就别退回时间戳方案。你现在发出去的本地包是
 # 0.2.2026101022 这种格式，以后发 0.3.0 能正常提示更新（0.3.0 > 0.2.2026101022）；
 # 但反过来发 0.2.5 会被老用户判成「不需要更新」而静默跳过 —— 这种坑不会报错。
-name: Release
+name: Build & Release
 
 on:
   push:
+    # 合并进 main 就自动打包（只出产物，不发 Release）。
+    branches:
+      - "main"
+    # 打 tag 才发 Release。tag 优先于 branch 判断：打 tag 时 github.ref 是 refs/tags/*。
     tags:
       - "v*"
+  # PR 上也打一遍，早点发现「代码合并前桌面端已经打不出来了」。嫌慢可以删掉这段，
+  # 删掉后首次发现构建坏会推迟到合并之后。
+  pull_request:
+    branches:
+      - "main"
+  # 手动重跑，不受上面任何触发条件限制。
+  workflow_dispatch:
 
 # 发 Release 要往仓库里写。默认的只读权限不够，electron-builder 会在最后一步失败。
 permissions:
@@ -72,13 +90,22 @@ jobs:
         working-directory: apps
         run: pnpm install --frozen-lockfile
 
+      # 合并进 main / PR：只打包。版本号走 pack-desktop 的时间戳方案（x.y.yyyyMMddHH），
+      # 反正不会发出去，没有比较的对象。不给 -Publish，也就不需要 GH_TOKEN。
+      - name: 打包（不发布）
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        shell: pwsh
+        run: .\scripts\pack-desktop.cmd
+
+      # 打 tag：打包 + 发 Release。ref_name 就是 tag 名（v0.3.1），
+      # pack-desktop 会剥掉 v 前缀写进 package.json。
       - name: 打包并发布 Release
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         env:
           # electron-updater 读 GH_TOKEN，electron-builder 的 github provider 也认它。
           # GITHUB_TOKEN 是仓库自动带的令牌，不需要另外配 secret。
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
-        # ref_name 就是 tag 名（v0.3.0），pack-desktop 会剥掉 v 前缀写进 package.json。
         run: .\scripts\pack-desktop.cmd -Version "${{ github.ref_name }}" -Publish
 
       # 自动更新只认 latest.yml。它没生成或没传上去，客户端就永远查不到新版，
@@ -100,9 +127,23 @@ jobs:
           }
           Get-ChildItem $out -File | Select-Object Name, Length | Format-Table -AutoSize
 
+      # 只打包的那些跑次，把安装包留成 Actions artifact，方便直接下载试装。
+      # 这是「合并后能拿到包」这件事的落点，不是发版 —— 发版仍然只认 tag。
+      - name: 上传安装包供下载
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoNo-setup-${{ github.run_number }}
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+          retention-days: 14
+
       # 上一条只证明了「生成出来了」，这一条才证明「真的传上去了」——
       # --publish 有可能静默跳过（比如令牌权限不够）。用 gh CLI 直接问 GitHub。
       - name: 确认 Release 资产已上传
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
