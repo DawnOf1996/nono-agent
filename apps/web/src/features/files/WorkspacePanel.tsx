@@ -17,6 +17,7 @@ import { SideChatPane } from "@/features/files/SideChatPane";
 import { collectTabIds } from "@/features/files/split";
 import { getSidebarPrefs, subscribeSidebarPrefs } from "@/features/settings/sidebar-prefs";
 import { TerminalPane } from "@/features/files/TerminalPane";
+import { hasWindowControls } from "@/lib/desktop";
 import { normalizeWorkspace, workspaceLabel } from "@/lib/workspace";
 import { startDragSession } from "@/lib/drag-session";
 import { cn } from "@/lib/utils";
@@ -266,7 +267,14 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
 
   return (
     <aside className="flex h-full min-h-0 w-full min-w-0 flex-col border-l border-line bg-bg">
-      <header className="flex h-12 shrink-0 items-center border-b border-line pl-2 pr-1">
+      <header
+        className={cn(
+          "flex h-12 shrink-0 items-center border-b border-line pl-2 pr-1",
+          // 这一栏渲染时永远是窗口最右侧，Windows 的三个系统窗口按钮正压在这个
+          // 角上：让出它们的位置，否则最右边那个标签的关闭按钮永远点不到。
+          hasWindowControls() && "titlebar-controls-gap",
+        )}
+      >
         <div
           ref={tablistRef}
           role="tablist"

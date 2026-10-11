@@ -149,6 +149,16 @@ function appBackground() {
   return nativeTheme.shouldUseDarkColors ? "#16181d" : "#ffffff";
 }
 
+// 标题栏高度。页面里顶部那一排（Sidebar 的表头、ChatPane 与 WorkspacePanel 的
+// 页头）都是 h-12，overlay 的窗口按钮按这个高度落位，三者才在同一条基线上。
+const TITLEBAR_HEIGHT = 48;
+
+// 窗口按钮的颜色是写死的，不跟 nativeTheme 走：深色主题下按钮会继续用深色图标，
+// 在深色页头上几乎看不见。和 appTheme() 取同一个系统口径。
+function overlaySymbolColor() {
+  return nativeTheme.shouldUseDarkColors ? "#e6e8ec" : "#3c4048";
+}
+
 function createWindow() {
   const icon = resolveAppIcon();
   const win = new BrowserWindow({
@@ -157,7 +167,34 @@ function createWindow() {
     minWidth: 960,
     minHeight: 640,
     backgroundColor: appBackground(),
-    autoHideMenuBar: true,
+    // 这里刻意不写 autoHideMenuBar。那个选项的语义就是「按 Alt 才把菜单栏
+    // 闪出来」，属于半吊子：用户不会去记这个约定，正式包更不该留一条按 Alt
+    // 就能唤出的系统菜单。菜单在 whenReady 里用 setApplicationMenu(null)
+    // 彻底不装，没有菜单栏，就没有东西可闪。
+    // 原生标题栏（图标 + 产品名）让给页面自己画：内容顶到窗口最上沿。
+    // 右上角三个窗口按钮仍是系统的，以 overlay 形式浮在网页上 —— 所以阴影、
+    // resize 边框、Aero 贴靠最大化、鼠标拖到屏幕上半屏分屏全都还在。
+    // 换成 frame:false 换来的是三键自由，代价是上面这些全丢，不划算。
+    //
+    // 只在 Windows / macOS 上让出标题栏：Linux 没有 window controls overlay，
+    // 'hidden' 会把标题栏连同关闭键一起吃掉，用户就再也关不掉窗口了。
+    ...(process.platform === "win32"
+      ? {
+          titleBarStyle: "hidden",
+          // 透明覆盖层：页面自己的页头底色透上来，明暗主题切换时不会有一块
+          // 写死的色和 --color-sidebar 打架。
+          titleBarOverlay: {
+            color: "#00000000",
+            symbolColor: overlaySymbolColor(),
+            height: TITLEBAR_HEIGHT,
+          },
+        }
+      : {}),
+    // macOS 收起标题栏后红绿灯会落到左上角、正好压住 Sidebar 的 logo，挪一下。
+    // 坐标是照默认间距估的，真机上看着不对就直接调这两个数。
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hidden", trafficLightPosition: { x: 14, y: 15 } }
+      : {}),
     ...(icon ? { icon } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -175,6 +212,21 @@ function createWindow() {
     event.preventDefault();
     win.hide();
   });
+  // 跟随系统主题重刷窗口按钮。三个键一起给：setTitleBarOverlay 是局部更新，
+  // 但只给一个键时不同版本的合并行为不一致，稳一点全给。
+  if (process.platform === "win32") {
+    const syncOverlay = () => {
+      if (win.isDestroyed()) return;
+      win.setTitleBarOverlay?.({
+        color: "#00000000",
+        symbolColor: overlaySymbolColor(),
+        height: TITLEBAR_HEIGHT,
+      });
+    };
+    nativeTheme.on("updated", syncOverlay);
+    // 窗口关掉后把监听摘掉：main.js 是单进程常驻的，挂着就是纯泄漏。
+    win.on("closed", () => nativeTheme.removeListener("updated", syncOverlay));
+  }
   return win;
 }
 
@@ -294,6 +346,21 @@ app.on("web-contents-created", (_event, contents) => {
 });
 
 if (gotLock) app.whenReady().then(async () => {
+  // 顶部那条「应用 / 编辑」原生菜单栏：Windows / Linux 上一律不装，Alt 键
+  // 按不出任何东西（不是 autoHideMenuBar 那种「按了才闪出来」的半吊子）。
+  // 页面里已经有工作区、插件、设置这些入口，再挂一条原生菜单只是重复。
+  // macOS 的菜单本来就在屏幕顶端的系统菜单栏里、不占窗口，但 Cmd+Q、复制
+  // 粘贴这些系统快捷键要留着，所以那边换成一份精简模板。
+  Menu.setApplicationMenu(
+    process.platform === "darwin"
+      ? Menu.buildFromTemplate([
+          { role: "appMenu" },
+          { role: "editMenu" },
+          { role: "windowMenu" },
+        ])
+      : null,
+  );
+
   ipcMain.handle("select-workspace", async () => {
     const result = await dialog.showOpenDialog({
       title: "选择工作空间",

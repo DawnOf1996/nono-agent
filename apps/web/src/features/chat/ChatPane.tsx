@@ -4,8 +4,10 @@ import { Composer } from "@/features/chat/Composer";
 import { MessageList } from "@/features/chat/MessageList";
 import { TodoDock } from "@/features/chat/TodoDock";
 import { Trajectory } from "@/features/chat/Trajectory";
+import { hasWindowControls } from "@/lib/desktop";
 import { sessionTitle } from "@/lib/format";
 import { sameWorkspace, workspaceLabel } from "@/lib/workspace";
+import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chat";
 
 export function ChatPane({
@@ -34,7 +36,15 @@ export function ChatPane({
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
+      <header
+        className={cn(
+          "flex h-12 shrink-0 items-center gap-3 border-b border-line px-4",
+          // 文件栏关着的时候，这一栏就是窗口最右侧，Windows 的三个系统窗口按钮
+          // 会浮在页面上，得给它让出位置；文件栏开着时最右侧是 WorkspacePanel，
+          // 让位由那边负责，这里不能加 —— 否则中间这栏会莫名空出一块。
+          !rightOpen && hasWindowControls() && "titlebar-controls-gap",
+        )}
+      >
         <div
           className="min-w-0 flex-1 truncate text-[14px]"
           title={workspaceName ? `${workspaceName} / ${title}` : title}

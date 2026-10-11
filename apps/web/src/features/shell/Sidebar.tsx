@@ -1168,7 +1168,7 @@ export function Sidebar({
   if (!expanded) {
     return (
       <aside className="sidebar flex h-full w-full flex-col items-center border-r border-line bg-sidebar">
-        <div className="flex h-12 w-full shrink-0 items-center justify-center border-b border-line">
+        <div className="titlebar flex h-12 w-full shrink-0 items-center justify-center border-b border-line">
           <button
             type="button"
             className="rounded-[10px] hover:opacity-80"
@@ -1199,7 +1199,7 @@ export function Sidebar({
 
   return (
     <aside className="sidebar flex h-full w-full min-w-0 flex-col border-r border-line bg-sidebar">
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
+      <div className="titlebar flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
         <img src="/logo.png" alt="" draggable={false} className="size-8 shrink-0 rounded-[10px]" />
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <div className="truncate text-sm font-medium">NoNo Agent</div>

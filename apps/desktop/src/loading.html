@@ -53,6 +53,10 @@
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
           "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
         -webkit-font-smoothing: antialiased;
+        /* 标题栏让给页面之后，窗口只有标了拖拽区的部分能拖动。这张加载页要一直
+           待到 sidecar 就绪（首次启动可能好几秒），整页标成拖拽区，免得这段时间
+           用户拽不动窗口，以为程序卡死了。页面上没有可点元素，不用 no-drag。 */
+        -webkit-app-region: drag;
       }
 
       .wrap {
