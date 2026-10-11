@@ -137,7 +137,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\pack-desktop.ps1
 # 提交到github
 git push github dev-ai
 # 构建 tag 推送 自动打包
-git tag vx.y.z
-git push github vx.y.z
+git tag v0.3.x
+git push github v0.3.x
 ```
 
