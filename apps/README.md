@@ -130,3 +130,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\pack-desktop.ps1
 ```
 
 换过 sidecar / 前端后，已安装的旧版不会自动更新，需要再跑一遍脚本并用新的 `NoNo.exe` 或 setup 覆盖安装。
+
+## 自动打包
+
+```bash
+# 提交到github
+git push github dev-ai
+# 构建 tag 推送 自动打包
+git tag vx.y.z
+git push github vx.y.z
+```
+
