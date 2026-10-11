@@ -992,3 +992,27 @@ textarea {
     animation: none;
   }
 }
+
+/* toast 从下方 8px 浮上来。位移刻意压得比聊天消息那条小：toast 是突然冒出来
+   的，位移太大人会盯着它看，反而显得吵闹。 */
+@keyframes nono-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.nono-toast {
+  animation: nono-toast-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nono-toast {
+    animation: none;
+  }
+}
+

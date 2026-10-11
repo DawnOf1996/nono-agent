@@ -1,5 +1,5 @@
 import { Bot, Boxes, Cable, Monitor, Moon, Puzzle, Settings2, SlidersHorizontal, Sun, X } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import type { AppInfo, SettingsTab } from "@nono/protocol";
 
 import { openCatalogConfig } from "@/api/client";
@@ -33,6 +33,7 @@ import {
   THEME_MODES,
   type ThemeMode,
 } from "@/lib/theme";
+import { registerToastAnchor, toast } from "@/lib/toast";
 import {
   applyCheckResult,
   canCheckForUpdates,
@@ -96,6 +97,18 @@ export function SettingsPanel() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [settingsOpen, setSettingsOpen]);
+
+  // 把自己登记成 toast 的落点，提示就贴在这个面板底部而不是整个窗口底部。
+  //
+  // 这个 effect 必须写在下面那行 if (!settingsOpen) return null **之前** ——
+  // hooks 不能条件调用，写在早退后面会直接违反 Hooks 规则。依赖只挂 settingsOpen：
+  // 面板是整个挂载/卸载的，开着的时候节点不会换，没必要每次都重新登记。
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    return registerToastAnchor(panel);
+  }, [settingsOpen]);
 
   if (!settingsOpen) return null;
 
@@ -172,7 +185,10 @@ export function SettingsPanel() {
       onClick={() => setSettingsOpen(false)}
     >
       <div
-        className="flex h-[min(760px,90vh)] w-full max-w-[920px] overflow-hidden rounded-[28px] border border-line bg-bg shadow-xl"
+        ref={panelRef}
+        // relative 是 toast 的 absolute 定位基准。少了它 toast 会去找更外层的
+        // 定位祖先，最后落到整窗底部去 —— 正好是这个效果要避免的。
+        className="relative flex h-[min(760px,90vh)] w-full max-w-[920px] overflow-hidden rounded-[28px] border border-line bg-bg shadow-xl"
         onClick={(event) => event.stopPropagation()}
       >
         <nav className="flex w-[212px] shrink-0 flex-col border-r border-line bg-sidebar">
@@ -334,6 +350,9 @@ function PaneSection({ children }: { children: ReactNode }) {
  */
 function useUpdater() {
   const [state, setState] = useState<UpdateState>(INITIAL_UPDATE_STATE);
+  // 这次检查是不是用户自己点的。只有这种才值得弹 toast：启动时主进程也会静默查
+  // 一次并同样走到 latest，那会儿没人等着听结果，开局就飘一句「已是最新」纯属噪音。
+  const userChecked = useRef(false);
 
   useEffect(
     () => subscribeUpdateEvents((event) => setState((prev) => reduceUpdateEvent(prev, event))),
@@ -342,9 +361,26 @@ function useUpdater() {
 
   const supported = canCheckForUpdates();
 
+  // 「已是最新」在那一行里只表现为按钮从「检查更新」变成「重新检查」，太轻了，
+  // 用户很容易以为没点上。所以用户主动查的时候补一个 toast。
+  //
+  // 放 useEffect 而不是塞进上面的 setState 里：state updater 属于纯计算，React 在
+  // StrictMode 下会调两次，在里面弹 toast 会弹两次。
+  useEffect(() => {
+    if (!userChecked.current) return;
+    // 还在查就别急，也别把标记清了 —— 结果还没到。
+    if (state.kind === "checking" || state.kind === "idle") return;
+    // 无论落到哪个终态都消费掉这次标记，否则下次不相干的 latest 会误报。
+    userChecked.current = false;
+    if (state.kind === "latest") {
+      toast(state.version ? `已是最新版本 ${state.version}` : "已是最新版本");
+    }
+  }, [state]);
+
   async function check() {
     // 先乐观切到「检查中」，不等 IPC 往返 —— 点了就得立刻有反应。
     setState({ kind: "checking" });
+    userChecked.current = true;
     const result = await checkForUpdate();
     // 回执不能无条件落地：事件一定比它先到，落地就会把「有新版本」盖回「检查中」，
     // 而检查已经结束不会再有事件纠正。细节见 applyCheckResult 的注释。

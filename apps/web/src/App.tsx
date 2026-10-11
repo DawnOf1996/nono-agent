@@ -6,6 +6,7 @@ import { NewTaskDialog } from "@/features/session/NewTaskDialog";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
 import { Workbench } from "@/features/shell/Workbench";
 import { useChatStore } from "@/store/chat";
+import { Toaster } from "@/components/ui/toast";
 import { httpUrl } from "@/lib/url";
 import { useGlobalLinkRouter } from "@/lib/use-link-router";
 
@@ -61,6 +62,8 @@ export function App() {
       <PermissionDialog />
       <NewTaskDialog />
       <SettingsPanel />
+      {/* toast 宿主放最后：它是全局层，得盖在所有面板和对话框之上。 */}
+      <Toaster />
     </div>
   );
 }
