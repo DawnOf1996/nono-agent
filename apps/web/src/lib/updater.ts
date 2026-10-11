@@ -71,8 +71,35 @@ export function subscribeUpdateEvents(handler: (event: NonoUpdateEvent) => void)
 }
 
 /**
+ * 把 IPC 回执落到状态机上。
+ *
+ * 这里必须比看上去多一道判断，因为主进程的事件和回执有一个**固定**的先后：
+ * electron-updater 的 checkForUpdates() 是先 emit(update-available /
+ * update-not-available) 再 resolve，所以 sendUpdateEvent 一定早于
+ * ipcMain.handle 的 return 到达渲染进程。等回执回来的时候，事件已经把状态定成
+ * available / latest / error 了，此时再无条件 setState(result) 就等于把正确结论
+ * 抹成 checking —— 而检查早就结束，不会再有新事件来纠正它。
+ * 表现就是按钮永远停在「检查中…」，正好是这个功能上线后唯一会出现的现象。
+ *
+ * 所以回执只在它比事件多知道那两种情况下才被采信：这个环境查不了（开发态），
+ * 以及调用本身失败。其余一律听事件流的。
+ */
+export function applyCheckResult(prev: UpdateState, result: UpdateState): UpdateState {
+  // ok:true 的回执只有 {kind:"checking"} 这一个值，没有信息量，而且正是它会把
+  // 事件给出的结论覆盖掉。
+  if (result.kind !== "unsupported" && result.kind !== "error") return prev;
+  // 已经不在 checking 了，说明事件先一步定了结论（available / latest / error）。
+  if (prev.kind !== "checking") return prev;
+  return result;
+}
+
+/**
  * 手动触发一次检查。autoDownload 是关着的，所以这里最多把状态推到
  * `available`，不会开始下载。
+ *
+ * 返回值只是「这次调用本身」的回执，不是最终状态 —— 最终状态由事件流决定，
+ * 调用方要落地它得先过 applyCheckResult。直接 setState(await checkForUpdate())
+ * 会把「查到了新版」盖回「检查中」。
  */
 export async function checkForUpdate(): Promise<UpdateState> {
   const bridge = typeof window !== "undefined" ? window.nonoDesktop?.checkForUpdate : undefined;

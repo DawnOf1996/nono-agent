@@ -34,6 +34,7 @@ import {
   type ThemeMode,
 } from "@/lib/theme";
 import {
+  applyCheckResult,
   canCheckForUpdates,
   checkForUpdate,
   downloadUpdate,
@@ -342,7 +343,12 @@ function useUpdater() {
   const supported = canCheckForUpdates();
 
   async function check() {
-    setState(await checkForUpdate());
+    // 先乐观切到「检查中」，不等 IPC 往返 —— 点了就得立刻有反应。
+    setState({ kind: "checking" });
+    const result = await checkForUpdate();
+    // 回执不能无条件落地：事件一定比它先到，落地就会把「有新版本」盖回「检查中」，
+    // 而检查已经结束不会再有事件纠正。细节见 applyCheckResult 的注释。
+    setState((prev) => applyCheckResult(prev, result));
   }
 
   async function download() {
