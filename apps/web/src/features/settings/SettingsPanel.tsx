@@ -191,11 +191,14 @@ export function SettingsPanel() {
         className="relative flex h-[min(760px,90vh)] w-full max-w-[920px] overflow-hidden rounded-[28px] border border-line bg-bg shadow-xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <nav className="flex w-[212px] shrink-0 flex-col border-r border-line bg-sidebar">
-          <div className="flex h-14 shrink-0 items-center gap-2 border-b border-line px-4 text-sm font-medium">
-            <Settings2 className="size-4 text-muted" />
-            设置
-          </div>
+        {/* 底色跟右侧面板一致（bg-bg 由外层面板给，这里不再叠一层 bg-sidebar），
+            三条边线全部去掉。侧栏和内容区靠内容本身就能分开，再压一层线只会把
+            面板切碎。选中项仍有 bg-active 加左侧竖条，不会因为去线而失去位置感。 */}
+          <nav className="flex w-[212px] shrink-0 flex-col">
+            <div className="flex h-14 shrink-0 items-center gap-2 px-4 text-sm font-medium">
+              <Settings2 className="size-4 text-muted" />
+              设置
+            </div>
           <ul className="flex-1 space-y-0.5 overflow-auto p-2">
             {TABS.map((item) => {
               const active = tab === item.id;
@@ -225,7 +228,7 @@ export function SettingsPanel() {
               );
             })}
           </ul>
-          <div className="shrink-0 border-t border-line px-4 py-3 text-[11px] text-faint">
+          <div className="shrink-0 px-4 py-3 text-[11px] text-faint">
             {appVersionLabel()}
           </div>
         </nav>
@@ -325,10 +328,34 @@ function SettingGroup({ label, children }: { label: string; children: ReactNode 
 }
 
 /** 一行设置：左边是名称和说明，右边是控件。 */
-function SettingRow({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+function SettingRow({
+  label,
+  hint,
+  align = "center",
+  children,
+}: {
+  label: string;
+  hint?: string;
+  /**
+   * 右侧控件占多行时用 "start"：让标签跟右侧**第一行**对齐，而不是跟整块居中。
+   *
+   * 默认的 "center" 是给单行控件准备的 —— 两列一样高时居中才好看。一旦右边长出
+   * 第二行（比如更新状态说明），居中就会把标签夹在两行中间，看上去像是飘了起来。
+   */
+  align?: "center" | "start";
+  children: ReactNode;
+}) {
   return (
-    <div className="flex items-center justify-between gap-6 px-4 py-3">
-      <div className="shrink-0">
+    <div
+      className={cn(
+        "flex justify-between gap-6 px-4 py-3",
+        align === "center" ? "items-center" : "items-start",
+      )}
+    >
+      {/* start 模式下把标签这块撑到至少和 sm 按钮一样高（h-8），文字在里面居中。
+          这样对齐不依赖文字本身的行高，换字号或改字体也不会再错位。
+          min-h-8 而不是 h-8：带 hint 的行还能往下长。 */}
+      <div className={cn("shrink-0", align === "start" && "flex min-h-8 flex-col justify-center")}>
         <div className="text-[13px] text-ink">{label}</div>
         {hint ? <div className="mt-0.5 text-[11px] text-muted">{hint}</div> : null}
       </div>
@@ -508,7 +535,9 @@ function GeneralPane({
 
       <PaneSection>
         <SettingGroup label="关于">
-          <SettingRow label="当前版本">
+          {/* align="start"：状态说明冒出来时右边会变成两行，标签得跟「版本号 +
+              按钮」那一行对齐，跟整块居中会看着像飘上去了。 */}
+          <SettingRow label="当前版本" align="start">
             <div className="flex flex-col items-end gap-1">
               <div className="flex items-center justify-end gap-3">
                 <span className="text-[13px] text-muted">{appVersionLabel()}</span>

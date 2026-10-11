@@ -45,7 +45,9 @@ export function SidebarCards() {
         {CARDS.map((card) => (
           <div
             key={card.id}
-            className={`rounded-2xl border px-3 py-3 ${prefs[card.id] ? "border-ink/20 bg-sidebar" : "border-line"}`}
+            // 开与关的差别只留在边框上：底色跟右侧面板一致（继承外层的 bg-bg），
+            // 否则一排开关卡里有的灰有的白，看着像两种状态而不是同一个列表。
+            className={`rounded-2xl border px-3 py-3 ${prefs[card.id] ? "border-ink/20" : "border-line"}`}
           >
             <div className="flex items-center justify-between gap-2">
               <p className="min-w-0 text-[13px] font-medium">{card.title}</p>
@@ -78,7 +80,8 @@ export function SidebarCards() {
         {PREVIEWERS.map((card) => (
           <div
             key={card.id}
-            className={`rounded-2xl border px-3 py-3 ${prefs.previewers[card.id] ? "border-ink/20 bg-sidebar" : "border-line"}`}
+            // 同上：只靠边框分启用与否，底色跟面板一致。
+            className={`rounded-2xl border px-3 py-3 ${prefs.previewers[card.id] ? "border-ink/20" : "border-line"}`}
           >
             <div className="flex items-center justify-between gap-2">
               <p className="min-w-0 text-[13px] font-medium">{card.title}</p>
