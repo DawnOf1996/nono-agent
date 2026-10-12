@@ -84,7 +84,7 @@ stage 重新估算消息部分后需加回（`AutoCompactStage._reestimate` / Sn
 见 `resolve_context_window()`）。
 
 **CLI/文件配置链路**（`apps/cli/nono_app_cli/config.py::build_engine_config`）已接入该字段：
-`~/.nono-agent/config.json` 或 `--config` 文件中的 `provider.model_context`（或顶层
+`~/.nono-agent/config.yaml` 或 `--config` 文件中的 `provider.model_context`（或顶层
 `model_context`），窗口大小只经 YAML 目录配置：`llm_provider.providers.<id>.models[].context_window` （→ `ProviderConfig.model_context`），**没有** `NONO_MODEL_CONTEXT` 这样的环境变量。
 注意模型配置走的是 `config.json` 链路；`.nono-agent/settings.json` 属于 Settings 体系
 （权限等），与模型上下文无关。
@@ -215,7 +215,7 @@ gauge 指标 `nono_agent.context.tokens`（总占用）与 `nono_agent.messages.
 | `PipelineContext.max_tokens` / `is_retry` 未接线 | ⏳ 未处理 | 仍为预留字段（本次整改已新增 `context_window` / `overhead_tokens` 两个实际生效字段） |
 | Stage 1/2/3 构造参数未从 `EngineConfig` 透传 | ⏳ 未处理 | 引擎仍注册默认实例（可注入自定义管线绕过） |
 
-**验证**：全量测试 `1016 passed`（`pytest tests/`），新增
+**验证**：全量测试 `pytest tests/` 全部通过（当前 1055 条），新增
 `tests/test_context_usage.py`（配置解析优先级 / 无前缀匹配 / 分项加总 / overhead 记账），
 扩展 `tests/test_pipeline.py`（配置窗口驱动阈值）；冒烟脚本验证配置解析
 （200000 → 32000 → 8000）、引擎分析与 `/context` 输出。

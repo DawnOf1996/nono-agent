@@ -26,7 +26,7 @@ uv sync --extra dev     # 安装运行时依赖 + pytest/ruff/mypy
 
 ### 2.1 作为库（推荐用于集成）
 
-唯一公开 API 是 `QueryEngine.submit_message()`，返回 `AsyncGenerator[SDKMessage]`：
+对话的唯一入口是 `QueryEngine.submit_message()`，返回 `AsyncGenerator[SDKMessage]`：
 
 ```python
 import asyncio

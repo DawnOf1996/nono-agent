@@ -75,7 +75,7 @@ CI 只查 `nono_agent/`，产品层不查。
 
 ## 3. 测试
 
-当前 1016 条、75 个 `test_*.py` 模块（另有 `conftest.py` / `helpers.py` / `__init__.py`），扁平放在 `tests/`（不建子包）。
+当前 1055 条、77 个 `test_*.py` 模块（另有 `conftest.py` / `helpers.py` / `__init__.py`），扁平放在 `tests/`（不建子包）。
 
 ### 3.1 命名与位置
 

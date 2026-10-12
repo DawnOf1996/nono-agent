@@ -7,6 +7,13 @@ title: Nono Agent —— 核心设计理念与系统架构
 > **文档角色：** 描述目标架构与已落地设计。实现进度、缺口与打磨项见 [ROADMAP.md](./../roadmap/index.md)。  
 > **当前版本：** `0.1.0` —— 可扩展的 Agent **运行时骨架**，不是能力齐备的 Agent 产品。
 
+!!! tip "这一页是规格书，不是教程"
+    本文是**参考手册**，适合已经知道自己在查什么的时候来。
+    如果你想先搞懂"整体架构什么样、每个模块为什么存在、为什么这么设计"，
+    请从 [学习路径](../learn/index.md) 开始——尤其
+    [03 · 整体架构](../learn/03-architecture-overview.md)（本页的通俗版）
+    和 [06 · 设计取舍](../learn/06-design-decisions.md)（每条设计背后的权衡）。
+
 ## 1. 项目概述
 
 Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 TypeScript QueryEngine 架构。它将经过验证的 Agent 设计理念（扣留-恢复机制、多层压缩管线、状态转移逻辑）重构为 Python 实现，并在架构上支持 **CLI 终端** 与 **线上服务端 SDK** 双场景。
@@ -29,7 +36,7 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 | MCP | 可用需打磨 | stdio tools 桥接已落地；resources 只到 client 的 List/Read，尚未桥接进模型上下文；auth/SSE 见 Roadmap §2.4 |
 | 子 Agent 三件套 | 可用需打磨 | AgentTool + Definition + run；§2.8 |
 | 权限模式 / Rule / denial / Hooks / Slash | 可用需打磨 | §2.6–§2.7 |
-| 会话持久化（`TranscriptWriter`） | 事件溯源 | 落盘只有 `SessionEvent`；默认本地 JSONL，另有 SQLite；请求前一致性门禁默认开启；DB/Redis 等后端见 Roadmap |
+| 会话持久化（`TranscriptWriter`） | 事件溯源 | 落盘只有 `SessionEvent`；默认本地文件（新会话为 zstd 压缩的 `.jsonl.zst`），另有 SQLite；请求前一致性门禁默认开启；DB/Redis 等后端见 Roadmap |
 | CLI / Server（`apps/`） | 可用需打磨 | Server 目前仅 SSE（WebSocket 为规划能力）；含鉴权/TTL/AskUser 回调与会话事件流通道 |
 | 可观测性 | 可用 | TokenTracker + structlog + Metrics（内存实现，事件流自动投影为指标）；脱敏导出与回放已具备 |
 
@@ -85,7 +92,12 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 工具协议采用安全默认值：
 - `is_concurrent_safe = False` —— 默认不并发安全
 - `has_write_side_effects = True` —— 默认假设有写副作用
-- 权限检查器通过依赖注入，CLI 交互式确认，Server/桌面按会话挂起询问（未接 checker 时才落到默认的「拒绝所有写操作，仅放行会话内自建的 `job_kill`」）
+- 权限检查器通过依赖注入：CLI 注入交互式确认，Server/桌面按会话挂起询问
+- **注意默认行为是 fail-open，不是 fail-closed**：`ToolUseContext` 未设置 `permission_checker`
+  时**默认放行全部**（`tools/context.py:119` 的 `# 无检查器时默认允许`）。
+  真正的"拒绝一切写操作、仅放行会话内自建的 `job_kill`"是 **Server 模式**主动注入
+  `deny_all_permission_checker` 的结果，属于产品层的选择，而不是引擎的默认值。
+  也就是说，库用法若不自己注入检查器，工具是**直接执行**的。
 
 ### 2.5 协议驱动的可插拔架构
 
@@ -202,7 +214,7 @@ core ↛ apps · prompt ↛ tool 执行实现
 - **新建：** 扩展面各包（`prompt/rules/skills/plugins/commands/settings/permissions/mcp/agents/memory/checkpoint`）已全部落地  
 
 项目配置目录（非 Python 包）：`.nono-agent/{settings,rules,agents,skills,plugins,hooks.json,mcp.json}/`。
-用户运行时目录：`~/.nono-agent/{config.json,sessions/,memory/,settings.json,rules/,skills/,plugins/,agents/}`。
+用户运行时目录：`~/.nono-agent/{config.yaml,sessions/,memory/,settings.json,rules/,skills/,plugins/,agents/}`。
 
 ### 3.2 架构总览图
 
@@ -451,7 +463,7 @@ TS 版使用三个独立数组（`mutableMessages`, `messages`, `messagesForQuer
 | 层 | 组件 | 职责 |
 |----|------|------|
 | 运行时 | `MessageStore` | 进程内当前上下文窗口；`snapshot_for_request()`（深拷贝）/ `gc_before_boundary()` |
-| 持久化 | `TranscriptWriter` | append-only 事件流；默认 `LocalFileTranscriptWriter`（JSONL，每行一个 `SessionEvent`） |
+| 持久化 | `TranscriptWriter` | append-only 事件流；默认 `LocalFileTranscriptWriter`，新会话落 `<sid>.jsonl.zst`（zstd 压缩的 JSONL），旧 `<sid>.jsonl` 在首次追加时自动迁移 |
 
 持久化通过 Protocol 注入，后续可替换为 **PostgreSQL / Redis / 对象存储** 等实现，引擎与适配器无需改循环逻辑。扩展规划见 [ROADMAP.md §2.9](./../roadmap/index.md)。
 
@@ -523,7 +535,7 @@ QueryEngine.__init__(
     stop_hook_executor: StopHookExecutor,    # 可选：Stop hook 执行器
     post_sampling_chain: PostSamplingChain,  # 可选：采样后钩子链
     recovery_chain: RecoveryChain,           # 可选：恢复链
-    transcript_writer: TranscriptWriter,     # 可选：会话事件流（默认本地 JSONL）
+    transcript_writer: TranscriptWriter,     # 可选：会话事件流（默认本地文件，.jsonl.zst）
     permission_checker: PermissionChecker,   # 可选：权限检查器（CLI/Server 注入）
     permission_policy: PermissionPolicy,     # 可选：权限模式策略
     denial_tracker: DenialTracker,           # 可选：拒绝追踪（→ SDKResult）

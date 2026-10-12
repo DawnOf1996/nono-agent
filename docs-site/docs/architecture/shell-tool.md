@@ -25,14 +25,14 @@ title: Shell 工具详细设计
 | C5 | executor 不做超时；abort 时对 pending task 调 `task.cancel()` | `executor.py:113-115`、`159-283` | 超时语义归工具自理；晋升后进程脱离 task |
 | C6 | `CREATE_NO_WINDOW` 全仓唯一出处 | `utils/process.py::hidden_kwargs`（shell 侧经 `shell/proc.py::spawn_kwargs` 叠加 `CREATE_NEW_PROCESS_GROUP`） | 新增 spawn 路径必须继续复用 `hidden_kwargs()` |
 | C7 | `nono_agent/` 内 platform 分支现分布在 `utils/process.py`、`shell/proc.py`、`shell/dialect.py`、`mcp/runtimes.py` 四个文件里，惯例是下沉到 `utils/` 单点函数 | `utils/process.py:17`、`mcp/runtimes.py:542,547,668` | 方言分流应做成 `utils/` 或 `shell/` 单点，**不要散进 bash.py** |
-| C8 | 测试文件（当前 75 个 `test_*.py` + 3 个支撑模块）**扁平**放 `tests/`，无子包 | `tests/`、`pyproject.toml:59-61` | 新测试文件命名 `test_shell_*.py`，不建 `tests/test_shell/` |
+| C8 | 测试文件（当前 77 个 `test_*.py` + 3 个支撑模块）**扁平**放 `tests/`，无子包 | `tests/`、`pyproject.toml:59-61` | 新测试文件命名 `test_shell_*.py`，不建 `tests/test_shell/` |
 | C9 | `conftest.py` 4 个 autouse 夹具已把 `DEFAULT_SESSION_DIR` 指向 tmp | `tests/conftest.py:12,27,36,46` | spill 放会话目录 → **自动获得测试隔离** |
 | C10 | `create_builtin_tools(config: EngineConfig \| None = None)` 仍可零参调用；生产调用点 2 个 | `apps/cli/nono_app_cli/repl.py:65`、`apps/server/.../session_manager.py:49` | 加配置须保持零参可调用 |
 | C11 | server 模式 `deny_all_permission_checker` 恒拒，仅对 `_SESSION_SCOPED_TOOLS = {"job_kill"}` 放行 | `apps/server/.../session_manager.py:28-46` | 新增写副作用工具会被直接拒（见 §5.5） |
 | C12 | `active_session_dir()` 是进程级全局，由 `use_session_dir()` 切换 | `session/transcript.py:74-82` | spill 路径走 `active_session_dir()` 而非自建目录 |
 | C13 | 测试风格是**真实子进程**，不 mock asyncio | `tests/test_builtin_tools.py:416-450` | 新测试用真实 `python -c`，不要 mock 事件循环 |
-| C14 | `AgentTool.bind_base_config()` 是既有的 config→tool 下发先例 | `agents/agent_tool.py:62-65` ← `engine.py:1437` | 配置注入沿用同款 `bind_*` 钩子，不新造机制 |
-| C15 | `EngineConfig` 是 frozen pydantic BaseModel | `core/config.py:130-217`（`frozen=True` at `:217`） | 新配置项必须是 pydantic 字段，随 `model_copy` 走 |
+| C14 | `AgentTool.bind_base_config()` 是既有的 config→tool 下发先例 | `agents/agent_tool.py:62-65` ← `engine.py:1475` | 配置注入沿用同款 `bind_*` 钩子，不新造机制 |
+| C15 | `EngineConfig` 是 frozen pydantic BaseModel | `core/config.py:145`（`frozen=True` at `:232`） | 新配置项必须是 pydantic 字段，随 `model_copy` 走 |
 
 ---
 
@@ -111,7 +111,7 @@ POSIX 侧仍用 `sh -c`，管道/重定向由 sh 提供，行为不变。
 
 - 复用唯一既有产物约定（`session/transcript.py:74-76`），不新造 artifacts 目录
 - 自动继承 C9 的测试隔离
-- 权限对齐会话文件：`0o600` / 目录 `0o700`（`transcript.py:64,67`）
+- 权限对齐会话文件：`0o600` / 目录 `0o700`（`transcript.py:65,68`）
 - 生命周期：随会话删除/迁移（`nono_agent.datadir.migrate_data_dir`）一并处理
 
 ### D4 — 配置下发方式
@@ -205,11 +205,13 @@ POSIX_PREAMBLE = "export PYTHONIOENCODING=utf-8; "
 
 Windows PowerShell 5.1 实测，不设 `PYTHONIOENCODING`：
 
+（下表右列的乱码是**实测输出**，刻意保留，用于对照——不是本文件损坏。）
+
 | 场景 | 前置 | 不前置 |
 |---|---|---|
-| PowerShell 自身 `Write-Output "中文测试"` | `中文测试` ✅ | `���Ĳ���` ❌ |
+| PowerShell 自身 `Write-Output "中文测试"` | `中文测试` ✅ | 乱码 ❌ |
 | PowerShell **错误消息** `Get-Item <不存在>` | `找不到路径...` ✅ | 乱码 ❌ |
-| 子进程 `python -c "print('中文')"` | `����` ❌ | `����` ❌ |
+| 子进程 `python -c "print('中文')"` | 乱码 ❌ | 乱码 ❌ |
 
 **结论**：前置声明的价值集中在 **PowerShell 自身输出与错误消息** —— 而这恰恰是模型
 最需要读的内容（错误信息全中文）。子进程编码仍由子进程决定，`_common.decode_text`
@@ -550,7 +552,12 @@ class BashTool(ToolBase):
 
 ### 4.7 P0 实施顺序（含一处顺序修正）
 
-现状 `bash.py:137` 先 spawn、`:153` 才 `open_job`。改用 `create_subprocess_exec` 后
+> **时点说明：** 本节（连同 §4 整节）记录的是**重构前的现状与实施计划**。
+> §11 声明 P0+P1 已实施完成——因此下面描述的"现状"**已不是现状**，保留它是为了讲清
+> "为什么要这么改"。当前行为请以 §11 与实际代码为准（`JobRegistry.start()` 允许
+> `process=None`，正是"先注册再 spawn"的实现）。
+
+重构前 `bash.py:137` 先 spawn、`:153` 才 `open_job`。改用 `create_subprocess_exec` 后
 若仍先 spawn，极短命的命令可能在 `open_job` 前就结束 → UI 看不到。
 **新顺序：先 `open_job`（拿 id）→ 再 spawn → 失败时 `finish_job(status="failed")`。**
 
@@ -566,9 +573,9 @@ def create_builtin_tools(config: EngineConfig | None = None) -> list[ToolBase]:
 ```
 
 三个调用点：
-- `builtin/__init__.py:47`（自身导出）—— 无需改
+- `builtin/__init__.py:49`（自身导出）—— 无需改
 - `cli/repl.py:64-66` —— 改为 `create_builtin_tools(config)`（该处已有 config）
-- `server/session_manager.py:37-42` —— 改为 `create_builtin_tools(config)`，
+- `server/session_manager.py:46-49`（`build_session_tool_registry`）—— 改为 `create_builtin_tools(config)`，
   签名加 `config: EngineConfig | None = None` 并从 `default_config` 取
 
 零参可调用性保留 → 现有测试 `test_builtin_tools.py:31` 不受影响。
@@ -786,7 +793,7 @@ class ToolUseContext:
 ⚠️ `with_extra`（`context.py:171-188`）是**手工逐字段复制**，必须同步加两行，
 否则 P1 的一切在子代理里失效（`agents/runner.py:86-118` 会走 with_extra 路径）。
 
-engine 构造处 `core/engine.py:474-487` 注入。
+engine 构造处 `core/engine.py:523-524`（`shell=self._shell` / `shell_jobs=self._shell_jobs`）注入。
 
 ---
 

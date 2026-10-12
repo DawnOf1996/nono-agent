@@ -10,6 +10,19 @@ title: 会话事件目录 —— 时机、顺序与载荷
 
 磁盘上每一行都是同一个信封，差别只在 `type` 和 `data`：
 
+!!! warning "20 类事件 ≠ 20 类参与上下文重建"
+    只有 **4 类**事件真正喂给 `derive_messages()` 重建模型上下文：
+    `user/message`、`assistant/message`、`tool/result`、`compact/boundary`。
+    其余（`assistant/chunk`、`usage`、`api/retry`、`permission/*`、`ui/tool-result` 等）
+    是观测/审计资产或 UI 数据，**不进入消息数组**。
+    把 20 类都当"模型上下文"读，会大幅高估模型实际看到的内容。
+
+!!! warning "`step/*` 的 `turn` 与 `turn/*` 不同源"
+    `turn/start`/`turn/end` 用引擎的 `submit_message` 回合号；
+    `step/*` 用循环自己的 `LoopState.turn_count`（每次转移自增）。
+    同一次提交里，`step/end` 可能已经写到 `turn=3`，而同一次 `turn/end` 仍是 `turn=1`。
+    **按 `turn` 聚合 `step/*` 会得到错误的回合数。**
+
 ```json
 {
   "seq": 1,
@@ -411,7 +424,10 @@ sequenceDiagram
 | `pipeline`                            | 预处理管线 `compact_boundary_created` |
 | `manual`                              | `/compact`；另有 `removed`          |
 | `clear`                               | `/clear`；`kept` 为空               |
-| `reactive_compact` / `collapse_drain` | RecoveryChain 替换窗口               |
+| `reactive_compact`                    | RecoveryChain 反应式压缩后替换窗口     |
+| `collapse_drain`                      | RecoveryChain 上下文折叠排水后替换窗口   |
+| `escalate_max_tokens`                 | 升级 `max_tokens` 重试（未替换窗口）      |
+| `recovery_prompt`                     | 注入恢复提示（未替换窗口）              |
 
 
 发射者：循环的 `SessionEventSink`（管线 / 恢复）+ 引擎的 `compact()` / `clear_session()`。

@@ -10,7 +10,8 @@ title: 快速开始
 
 ## 1. 作为库（集成用）
 
-唯一公开 API 是 `QueryEngine.submit_message()`，返回 `AsyncGenerator[SDKMessage]`。
+对话的唯一入口是 `QueryEngine.submit_message()`，返回 `AsyncGenerator[SDKMessage]`。
+（会话治理另有 `resume_session()` / `fork_session()` / `compact()` / `clear_session()` / `abort()` 等方法。）
 
 ```python
 import asyncio
