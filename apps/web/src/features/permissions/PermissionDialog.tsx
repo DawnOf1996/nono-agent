@@ -1,11 +1,9 @@
-import { Button } from "@/components/ui/button";
-import { useChatStore } from "@/store/chat";
+import { useEffect, useState } from "react";
 
-// 非模态：只盖住对话区，且不吃点击。挂起等授权时仍能切到别的会话。
-const SHELL =
-  "pointer-events-none fixed inset-y-0 left-[260px] right-0 z-20 flex items-end justify-center p-6";
-const CARD =
-  "pointer-events-auto w-full max-w-lg rounded-2xl border border-line bg-bg p-5 shadow-[0_16px_48px_var(--shadow-color-strong)]";
+import { Button } from "@/components/ui/button";
+import { AskUserCard } from "@/features/permissions/AskUserCard";
+import { CARD, SHELL } from "@/features/permissions/layout";
+import { useChatStore } from "@/store/chat";
 
 export function PermissionDialog() {
   const permissions = useChatStore((state) => state.permissions);
@@ -18,26 +16,40 @@ export function PermissionDialog() {
     (item) => !item.session_id || item.session_id === sessionId,
   );
 
-  if (ask?.questions?.length) {
-    const question = ask.questions[0];
-    const prompt = question.question || question.header || "需要你选一项";
+  // 一次只问一道：逐题推进，最后一题答完才把 answers 一起回灌。
+  const [index, setIndex] = useState(0);
+  const [answers, setAnswers] = useState<Record<string, unknown>>({});
+  const questions = ask?.questions ?? [];
+  const current = questions[index];
+
+  // 新的一次提问（新的 ask 信号）从第一题重来；ask 置空后这次重置是空操作。
+  useEffect(() => {
+    setIndex(0);
+    setAnswers({});
+  }, [ask]);
+
+  if (current) {
     return (
-      <div className={SHELL}>
-        <div className={CARD}>
-          <div className="text-xs text-faint">提问</div>
-          <p className="mt-2 text-sm leading-6">{prompt}</p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            {(question.options ?? []).map((option) => (
-              <Button key={option.label} size="sm" onClick={() => void resolveAsk({ [prompt]: option.label })}>
-                {option.label}
-              </Button>
-            ))}
-            <Button size="sm" variant="ghost" onClick={() => void resolveAsk({})}>
-              跳过
-            </Button>
-          </div>
-        </div>
-      </div>
+      <AskUserCard
+        key={index}
+        question={current}
+        onAnswer={(next) => {
+          const merged = { ...answers, ...next };
+          if (index + 1 < questions.length) {
+            setAnswers(merged);
+            setIndex(index + 1);
+          } else {
+            void resolveAsk(merged);
+          }
+        }}
+        onSkip={() => {
+          if (index + 1 < questions.length) {
+            setIndex(index + 1);
+          } else {
+            void resolveAsk(answers);
+          }
+        }}
+      />
     );
   }
 
