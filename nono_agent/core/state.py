@@ -1,6 +1,6 @@
 """Agentic Loop 状态机类型定义。
 
-定义了循环“为什么继续”(TransitionReason, 7种) 和“为什么结束”(TerminalReason, 10种)，
+定义了循环“为什么继续”(TransitionReason, 7种) 和“为什么结束”(TerminalReason, 11种)，
 以及 LoopState —— 不可变的跨迭代状态，每次 continue 时构造新实例。
 
 设计亮点：
@@ -47,7 +47,7 @@ class TransitionReason(Enum):
 
 
 class TerminalReason(Enum):
-    """循环终止的原因 —— 10 种可能的终止场景。"""
+    """循环终止的原因 —— 11 种可能的终止场景。"""
 
     COMPLETED = auto()             # 正常完成 (stop_reason="end_turn")
     ABORTED_STREAMING = auto()     # 流式传输期间被用户取消
@@ -95,7 +95,8 @@ class LoopState:
 
     关键设计：
     - frozen=True 保证不可变性，每次状态转移必须构造新实例
-    - 这解决了 TS 版的常见 bug: 漏写某个字段的更新
+    - 于是所有状态转移收敛为 loop.py 里可 grep 的若干构造点，便于审计
+    - 注意边界：frozen 防的是「就地改」，不防「构造时漏传字段」（漏传会取默认值）
     - 每个字段都有明确的转移规则（在 loop.py 的 _apply_recovery 和主循环中）
     """
 

@@ -3,7 +3,8 @@
 四种会话模式（docs-site/docs/roadmap/index.md §2.6）：
 
 - ``default``      写/执行需确认（ask），读自动允许
-- ``accept_edits`` 工作区内编辑自动允许；其它写仍需确认
+- ``accept_edits`` 与 ``default`` 当前行为一致（写仍需确认）；"工作区内编辑自动允许"
+  由 rules 层表达，见 ``_mode_default`` 的说明
 - ``plan``         禁止任何写副作用（只读）
 - ``bypass``       显式危险模式，全部允许（deny 规则仍生效）
 
