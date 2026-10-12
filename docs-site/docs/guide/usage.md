@@ -167,7 +167,7 @@ curl -N http://localhost:8000/session/<session_id>/events
 
 - **鉴权**：设置 `api_key` 后，除 `/health` 外需 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
 - **会话 TTL**：`session_ttl`（秒）空闲超时后台清理。
-- **AskUser SSE**：流中收到 `ask_user` 事件后，用 `POST /session/<id>/answer` 回填 `{"answers": {...}}`。
+- **AskUser SSE**：流中收到 `ask_user` 事件后，用 `POST /session/<id>/answer` 回填 `{"answers": {...}}`。键用题干，单选给字符串、多选给数组；**值可以是用户自己写的自由文本**（CLI 与 Web 卡片都提供自定义输入框），不一定命中 `options` 里的某个 label。
 - **事件流通道**：`GET /session/<id>/events` 跟随会话事件（`after_seq` 断点续传、`follow=false` 只取快照）。
 
 ---
