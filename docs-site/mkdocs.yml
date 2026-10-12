@@ -123,6 +123,14 @@ extra_javascript:
 
 nav:
   - 首页: index.md
+  - 学习 Agent 开发:
+      - 学习路径总览: learn/index.md
+      - 01 · Agent 到底是个什么程序: learn/01-what-is-an-agent.md
+      - 02 · 一次对话的完整生命周期: learn/02-request-lifecycle.md
+      - 03 · 整体架构: learn/03-architecture-overview.md
+      - 04 · 模块地图: learn/04-module-map.md
+      - 05 · 技术选型: learn/05-tech-choices.md
+      - 06 · 设计取舍: learn/06-design-decisions.md
   - 快速开始:
       - 快速开始: getting-started/quickstart.md
       - 安装: getting-started/installation.md

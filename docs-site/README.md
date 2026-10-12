@@ -109,14 +109,25 @@ docs-site/
 ├── mkdocs.yml             # 站点配置：导航、主题、Markdown 扩展
 ├── nono-agent.code-workspace   # VS Code 工作区
 └── docs/
-    ├── index.md           # 首页
+    ├── index.md           # 首页（学习者入口）
+    ├── learn/             # 学习路径：六篇主线（心智模型→生命周期→架构→模块→选型→取舍）
     ├── getting-started/   # 快速开始、安装、配置与密钥
     ├── guide/             # 使用手册
-    ├── architecture/      # 架构设计
+    ├── architecture/      # 架构设计（参考手册，事实密度高）
     ├── development/       # 开发指南
     ├── roadmap/           # 路线图
     └── research/          # 研究笔记与历史方案
 ```
+
+## 两类文档的区别
+
+- **`learn/`** 是**教程**：面向想学 Agent 开发的人，按顺序读，回答"为什么"。
+  事实密度低、解释多，适合第一次接触这个项目。
+- **`architecture/`、`guide/`** 是**参考手册**：面向已经知道要查什么的人，
+  罗列完整事实与代码位置，事实密度高，适合日常查阅。
+
+写新内容时先判断它属于哪一类，放错地方会让两类读者都难受。
+在 `architecture/` 里可以放一个指向 `learn/` 的提示，把读者引导到教程；反过来亦然。
 
 ## 写文档的约定
 

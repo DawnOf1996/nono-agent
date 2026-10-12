@@ -7,6 +7,13 @@ title: 开发环境与目录结构
 本页面向要往 Nono Agent 里加东西的人。装完环境先看这里，再看
 [新增内置工具](add-builtin-tool.md) / [新增工具插件](add-tool-plugin.md) / [新增 Provider 适配器](add-provider.md)。
 
+!!! tip "第一次来这个项目？"
+    建议先读一遍 [学习路径](../learn/index.md)。尤其
+    [01 · Agent 到底是个什么程序](../learn/01-what-is-an-agent.md) 和
+    [06 · 设计取舍](../learn/06-design-decisions.md)——
+    搞懂"为什么不能直接改消息数组""为什么默认都要问权限"，
+    你在改代码时就不会问出那些已经有人回答过的问题。
+
 ---
 
 ## 1. 环境
@@ -19,7 +26,7 @@ uv sync --extra dev
 
 | 命令 | 作用 |
 |---|---|
-| `uv run pytest` | 跑全量测试（当前 1016 条） |
+| `uv run pytest` | 跑全量测试（当前 1055 条） |
 | `uv run pytest tests/test_tools.py -v` | 跑单文件 |
 | `uv run pytest -k "compact and not shell"` | 按表达式筛 |
 | `uv run ruff check .` | lint |
@@ -42,7 +49,7 @@ uv sync --extra dev
 nono-agent/
 ├── nono_agent/          # 引擎：23 个子系统，零产品依赖
 ├── apps/                # 产品层：cli / server / web / desktop / packages
-├── tests/               # 1016 条测试，75 个 test_*.py 模块，扁平放
+├── tests/               # 1055 条测试，77 个 test_*.py 模块，扁平放
 ├── examples/            # 库用法示例
 ├── scripts/             # 打包与运维脚本（pack-desktop 等）
 ├── session-viewer/      # 会话日志查看器（独立包）
