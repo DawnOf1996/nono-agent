@@ -51,6 +51,36 @@ def make_cli_permission_checker(console: Any) -> PermissionChecker:
     return checker
 
 
+def parse_choice(raw: str, options: list[dict[str, Any]], multi: bool) -> Any:
+    """把一行终端输入解析成答案。
+
+    纯数字命中选项编号就取对应 label；其余非空文本一律当**用户自己填的答案**原样保留。
+    模型给的选项是猜测，用户想说的常常不在里面 —— 直接丢弃等于替用户做了决定。
+    多选时按逗号切分，编号和自由文本混着写也可以（"1,3 另外补一句"）。
+    """
+    labels = [str(opt.get("label", "")) for opt in options]
+
+    if not multi:
+        token = raw.strip()
+        if token.isdigit() and 1 <= int(token) <= len(labels):
+            return labels[int(token) - 1]
+        return token
+
+    chosen: list[str] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        label = (
+            labels[int(token) - 1]
+            if token.isdigit() and 1 <= int(token) <= len(labels)
+            else token
+        )
+        if label not in chosen:
+            chosen.append(label)
+    return chosen
+
+
 def make_cli_ask_user(console: Any) -> Any:
     """创建终端交互式 AskUserQuestion 回调 —— 渲染问题并读取答案。"""
 
@@ -69,24 +99,14 @@ def make_cli_ask_user(console: Any) -> Any:
                     desc = opt.get("description", "")
                     suffix = f" [dim]- {desc}[/dim]" if desc else ""
                     console.print(f"  {i}. {opt.get('label', '?')}{suffix}")
-                prompt = (
-                    "[yellow]  Select numbers (comma-separated):[/yellow] "
-                    if multi
-                    else "[yellow]  Select a number:[/yellow] "
-                )
-                raw = console.input(prompt).strip()
                 if multi:
-                    chosen = [
-                        options[int(n) - 1].get("label", "")
-                        for n in raw.split(",")
-                        if n.strip().isdigit() and 1 <= int(n) <= len(options)
-                    ]
-                else:
-                    chosen = (
-                        options[int(raw) - 1].get("label", "")
-                        if raw.isdigit() and 1 <= int(raw) <= len(options)
-                        else raw
+                    console.print(
+                        "  [dim]Type numbers (comma-separated), or your own text.[/dim]"
                     )
+                else:
+                    console.print("  [dim]Type a number, or your own answer.[/dim]")
+                raw = console.input("[yellow]  Answer:[/yellow] ").strip()
+                chosen = parse_choice(raw, options, multi)
             else:
                 chosen = console.input("[yellow]  Your answer:[/yellow] ").strip()
 
