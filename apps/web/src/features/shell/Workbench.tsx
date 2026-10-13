@@ -6,7 +6,7 @@ import { usePanelStore } from "@/features/files/panel-store";
 import { WorkspacePanel } from "@/features/files/WorkspacePanel";
 import { BOTTOM_MIN, columnWidths, loadLayoutPreference, MENU_RAIL_WIDTH, saveLayoutPreference } from "@/features/shell/layout";
 import { Sidebar } from "@/features/shell/Sidebar";
-import { startDragSession } from "@/lib/drag-session";
+import { startDragSession, endDragSession } from "@/lib/drag-session";
 
 export function Workbench() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -19,7 +19,6 @@ export function Workbench() {
   const [bottomHeight, setBottomHeight] = useState(initial.current.bottomHeight);
   const [viewport, setViewport] = useState(() => window.innerWidth);
   const [resizing, setResizing] = useState<"left" | "right" | null>(null);
-  const stopDrag = useRef<(() => void) | null>(null);
 
   const { left, right } = columnWidths(viewport, leftPreferred, rightPreferred, leftOpen, rightOpen);
   const menuOpen = leftOpen && left > 0;
@@ -36,7 +35,10 @@ export function Workbench() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  useEffect(() => () => stopDrag.current?.(), []);
+  // 卸载时兜底收掉还开着的拖拽会话。用模块里那一个"当前会话"，而不是自己存一份
+  // 收尾函数：会话可能不是这个组件起的（底部工作台、文件树也在用），自己存的那份
+  // 只记得住最后一次，指针和光标会留在屏幕上。
+  useEffect(() => () => endDragSession(), []);
 
   const revealRequest = usePanelStore((state) => state.revealRequest);
   const bottomRequest = usePanelStore((state) => state.bottomRequest);
@@ -56,9 +58,8 @@ export function Workbench() {
   }, [sidePath]);
 
   function beginResize(side: "left" | "right", event: ReactPointerEvent<HTMLDivElement>) {
-    setResizing(side);
     // 拖动中不能被内嵌的网页抢走指针事件：浏览器面板一开，鼠标划进去分隔条就不动了。
-    const end = startDragSession(event, {
+    startDragSession(event, {
       cursor: "col-resize",
       onMove: (ev) => {
         const box = containerRef.current?.getBoundingClientRect();
@@ -73,12 +74,15 @@ export function Workbench() {
         const next = columnWidths(width, leftPreferred, Math.max(0, box.right - ev.clientX), leftOpen, true);
         setRightPreferred(next.right);
       },
+      // 分隔条上那条加黑的线属于「这次拖拽」，所以由会话来报结束：松手、指针取消、
+      // 窗口失焦，以及下一次拖拽顶掉上一次，三条路径都会撤。
+      // 以前这个 setResizing(null) 写在自己包出来的收尾函数里，而松手那条路径压根
+      // 没人调它 —— 拖完一次，那条线就一直黑着，要等组件卸载才消得掉。
+      onEnd: () => setResizing(null),
     });
-    // 分隔条的高亮跟着会话走，会话怎么结束它就怎么撤。
-    stopDrag.current = () => {
-      end();
-      setResizing(null);
-    };
+    // 排在起会话之后：startDragSession 会先收掉上一次没收干净的会话，那边的 onEnd
+    // 顺手就把 resizing 抹成 null 了，先置位会被抹掉。
+    setResizing(side);
   }
 
   return (
@@ -126,14 +130,15 @@ export function Workbench() {
                 const startY = event.clientY;
                 const startHeight = bottomHeight;
                 const limit = Math.max(BOTTOM_MIN, window.innerHeight - 280);
-                const end = startDragSession(event, {
+                // 这条分隔条没有"拖动中"的高亮要还原，收尾交给 drag-session 自己，
+                // 卸载时的兜底走 endDragSession()。
+                startDragSession(event, {
                   cursor: "row-resize",
                   onMove: (ev) => {
                     const next = Math.min(limit, Math.max(BOTTOM_MIN, startHeight + (startY - ev.clientY)));
                     setBottomHeight(next);
                   },
                 });
-                stopDrag.current = end;
               }}
             >
               <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-transparent group-hover:bg-ink/30" />

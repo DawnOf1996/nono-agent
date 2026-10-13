@@ -20,6 +20,16 @@ const DRAG_ATTR = "data-drag-session";
 type DragSession = {
   /** 拖动中每一帧的指针位置。 */
   onMove: (event: PointerEvent) => void;
+  /**
+   * 会话收尾时调一次，且只调一次。
+   *
+   * 「收尾」涵盖所有结束路径：松手、指针取消、窗口失焦，以及下一次拖拽开始时把
+   * 上一个会话顶掉。调用方要还原的拖动态（分隔条上那条加黑的线之类）必须挂在这
+   * 上面，不能指望自己存下来的那个收尾函数 —— 那条函数绝大多数时候根本没人调，
+   * 松手是 drag-session 自己收的。曾经就把状态还原写在那样的包装函数里，于是拖完
+   * 一次那条线就一直黑着，要等组件卸载才消得掉。
+   */
+  onEnd?: () => void;
   /** 拖动期间的光标。指针一旦离开分隔条那几像素就靠它续上。 */
   cursor?: string;
   /** 拖动期间禁掉正文选区，默认开：按住横着拖会顺路划一片字。 */
@@ -39,7 +49,7 @@ export function endDragSession(): void {
  * 收尾函数可以直接当 effect 的清理用；不接也没关系，指针抬起时自己会收。
  */
 export function startDragSession(event: ReactPointerEvent<HTMLElement>, session: DragSession): () => void {
-  const { onMove, cursor, blockSelect = true } = session;
+  const { onMove, onEnd, cursor, blockSelect = true } = session;
   // 不拦默认行为的话，按下会顺手在分隔条背后的正文里起一段选区。
   event.preventDefault();
   // 同一时间只该有一个在拖：上一个没收干净的先收掉。
@@ -77,6 +87,8 @@ export function startDragSession(event: ReactPointerEvent<HTMLElement>, session:
     document.body.style.cursor = previousCursor;
     document.body.style.userSelect = previousSelect;
     current = null;
+    // 排在最后：调用方常在 onEnd 里 setState，那依赖的是上面刚恢复干净的环境。
+    onEnd?.();
   }
 
   function move(ev: PointerEvent) {
