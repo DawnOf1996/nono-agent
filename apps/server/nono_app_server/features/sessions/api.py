@@ -35,6 +35,7 @@ from nono_app_server.features.sessions.service import (
     _close_engine,
     _enrich,
     _fork_boundary,
+    _fork_title,
     _note_interrupted,
     _purge_session_files,
 )
@@ -179,15 +180,17 @@ async def fork_app_session(
         )
         await fork_transcript(writer, destination, boundary, new_engine_id)
     prefix = [event for event in events if event.seq <= boundary]
-    title = (source["title"] or "").strip()
+    # 编号和插入之间不能有 await：否则两次并发叉分会数到同一个号。
+    title, fork_root = _fork_title(store, source)
     row = store.create_session(
         workspace_id=source["workspace_id"],
         engine_session_id=new_engine_id,
-        title=f"{title} 副本" if title else "新会话",
+        title=title,
         model=source["model"],
         permission_mode=source["permission_mode"],
         turn_count=last_turn_number(prefix),
         cwd=source["cwd"],
+        fork_root=fork_root,
     )
     return _enrich(row, manager)
 
@@ -221,9 +224,13 @@ async def promote_side_session(
     current = store.get_session(session_id)
     if current is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    # 编号得在摘掉侧边标记之前算：侧边对话不占号，提升成顶层时才拿到家族里的号。
+    title = _fork_title(store, current)[0] if current["fork_root"] else None
     row = store.set_side_of(session_id, None)
     if row is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    if title is not None:
+        row = store.update_session(session_id, title=title) or row
     return _enrich(row, manager)
 
 

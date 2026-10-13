@@ -52,6 +52,8 @@ export type SessionListItem = {
   turn_count: number;
   /** 已归档的会话默认不出现在列表里。 */
   archived?: boolean;
+  /** 叉分来源的谱系根会话 id；原会话没有这个字段。 */
+  fork_root?: string | null;
   created_at: number;
   updated_at: number;
 };

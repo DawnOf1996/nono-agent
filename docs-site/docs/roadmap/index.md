@@ -866,6 +866,7 @@ prompt        ↛  tools 执行实现    ✗（可引用 tool schema 列表，�
 | 2026-08-27 | session：事件目录全量实装（**当时 16 类，现已扩到 20 类**）+ 请求前一致性门禁 —— 循环经 `SessionEventSink` 上报 `step/*`/`api/retry`/`store.replace()`，`snapshot_for_request()` 改深拷贝，`session_invariant` 默认 `strict`；新增读取侧脱敏、不调模型回放、Metrics 事件投影、`GET /session/{id}/events` SSE 通道、会话文件 `0600` 权限 |
 | 2026-09-02 | Provider 协议瘦身为三类，一律走对应 SDK：`openai_chat_completions` / `openai_responses` / `anthropic_messages`；移除 httpx 兼容层与旧 adapter 别名 |
 | 2026-09-10 | Provider：`log_api_requests` 开关（CLI `--log-api-requests` / `NONO_LOG_API_REQUESTS`）在 SDK 发 HTTP 前 dump 协议级 `params`；脱敏敏感键；不写入会话事件流 |
+| 2026-10-13 | 叉分标题改编号：叉分会话写成「序号 - 家族名」（`1 - 原会话`、`2 - 原会话`），原会话不带序号，一眼分得出原文和叉分；新增 `sessions.fork_root` 记谱系根（套娃叉分接着排号），侧边对话不占号、提升成顶层时才拿号 |
 
 
 ## 附录

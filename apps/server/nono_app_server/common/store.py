@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     turn_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     side_of TEXT,
+    fork_root TEXT,
     cwd TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
@@ -48,6 +49,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace
     ON sessions(workspace_id, updated_at DESC);
+
+-- idx_sessions_fork_root 不在这里建：老库走 CREATE TABLE IF NOT EXISTS 是空操作，
+-- 那时 fork_root 列还不存在，索引会直接建失败。它跟着 ALTER 走 _migrate()。
 """
 
 UNGROUPED_PATH_KEY = "__nono_ungrouped__"
@@ -64,6 +68,7 @@ SELECT
     s.turn_count,
     s.archived,
     s.side_of,
+    s.fork_root,
     s.created_at,
     s.updated_at,
     COALESCE(NULLIF(s.cwd, ''), w.path) AS cwd
@@ -129,6 +134,12 @@ class AppStore:
                 WHERE cwd = ''
                 """
             )
+        if "fork_root" not in columns:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN fork_root TEXT")
+        # 列补齐了才轮到索引：新库 SCHEMA 里就有这列，老库刚 ALTER 出来。
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_fork_root ON sessions(fork_root)"
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -176,6 +187,7 @@ class AppStore:
             "turn_count": int(row["turn_count"]),
             "archived": bool(row["archived"]) if "archived" in row.keys() else False,
             "side_of": row["side_of"] if "side_of" in row.keys() else None,
+            "fork_root": row["fork_root"] if "fork_root" in row.keys() else None,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -305,6 +317,21 @@ class AppStore:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._session_dict(row) for row in rows]
 
+    def list_forks(self, fork_root: str) -> list[dict[str, Any]]:
+        """同一谱系下的叉分会话，按创建先后排。
+
+        侧边对话不在其中：它自己叫「侧边对话」，摘掉侧边标记被提升时才算进家族。
+        已归档的算在内 —— 归档不该让后来的叉分重新用掉旧编号。
+        """
+        sql = (
+            _SESSION_SELECT
+            + " WHERE s.fork_root = ? AND (s.side_of IS NULL OR s.side_of = '')"
+            + " ORDER BY s.created_at ASC"
+        )
+        with self._tx() as conn:
+            rows = conn.execute(sql, (fork_root,)).fetchall()
+        return [self._session_dict(row) for row in rows]
+
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self._tx() as conn:
             row = conn.execute(
@@ -331,6 +358,7 @@ class AppStore:
         permission_mode: str = "default",
         turn_count: int = 0,
         cwd: str | None = None,
+        fork_root: str | None = None,
         session_id: str | None = None,
         created_at: float | None = None,
         updated_at: float | None = None,
@@ -353,8 +381,9 @@ class AppStore:
                 """
                 INSERT INTO sessions (
                     id, engine_session_id, workspace_id, title, model,
-                    permission_mode, turn_count, cwd, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    permission_mode, turn_count, cwd, fork_root,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     product_id,
@@ -365,6 +394,7 @@ class AppStore:
                     permission_mode,
                     turn_count,
                     session_cwd,
+                    fork_root or None,
                     stamp_created,
                     stamp_updated,
                 ),

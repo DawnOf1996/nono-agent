@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,91 @@ class TestAppStore:
         assert promoted is not None
         assert promoted["side_of"] in {None, ""}
         assert side["id"] in [item["id"] for item in store.list_sessions()]
+
+    def test_list_forks_keeps_archived_and_skips_side_sessions(self, tmp_path: Path):
+        store = AppStore(tmp_path / "app.db")
+        workspace = store.upsert_workspace(str(tmp_path))
+        root = store.create_session(
+            workspace_id=workspace["id"], engine_session_id="root", title="原会话"
+        )
+        archived = store.create_session(
+            workspace_id=workspace["id"],
+            engine_session_id="fork-1",
+            title="1 - 原会话",
+            fork_root=root["id"],
+        )
+        side = store.create_session(
+            workspace_id=workspace["id"],
+            engine_session_id="side-1",
+            title="侧边对话",
+            fork_root=root["id"],
+        )
+        store.set_side_of(side["id"], root["id"])
+        # 归档只是收起，不是删掉：编号不能被回收，否则列表里会突然冒出两个「1 - 」
+        assert store.update_session(archived["id"], archived=True) is not None
+        forks = store.list_forks(root["id"])
+        assert [item["id"] for item in forks] == [archived["id"]]
+        assert forks[0]["archived"] is True
+        assert store.list_forks("nobody") == []
+
+    def test_open_legacy_db_gains_fork_root_column(self, tmp_path: Path):
+        """老库没有 fork_root 列，照样要能打开。
+
+        建表语句是 CREATE TABLE IF NOT EXISTS：表已存在就是空操作，列得靠
+        ALTER 补，而建在这列上的索引必须排在 ALTER 之后，否则开库直接炸。
+        """
+        db_path = tmp_path / "app.db"
+        legacy = sqlite3.connect(str(db_path))
+        legacy.executescript(
+            """
+            CREATE TABLE workspaces (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                path_key TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                engine_session_id TEXT NOT NULL UNIQUE,
+                workspace_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                permission_mode TEXT NOT NULL DEFAULT 'default',
+                turn_count INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                side_of TEXT,
+                cwd TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            );
+            """
+        )
+        legacy.commit()
+        legacy.close()
+
+        store = AppStore(db_path)
+        workspace = store.upsert_workspace(str(tmp_path))
+        root = store.create_session(
+            workspace_id=workspace["id"], engine_session_id="e1", title="原会话"
+        )
+        assert root["fork_root"] is None
+        forked = store.create_session(
+            workspace_id=workspace["id"],
+            engine_session_id="e2",
+            title="1 - 原会话",
+            fork_root=root["id"],
+        )
+        assert [item["id"] for item in store.list_forks(root["id"])] == [forked["id"]]
+        indexes = {
+            row[0]
+            for row in sqlite3.connect(str(db_path))
+            .execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+            .fetchall()
+        }
+        assert "idx_sessions_fork_root" in indexes
 
     def test_delete_workspace_moves_sessions_to_ungrouped(self, tmp_path: Path):
         store = AppStore(tmp_path / "app.db")
@@ -232,7 +318,7 @@ class TestProductMappingApi:
             assert client.get("/app/sessions?archived=only").json()["sessions"] == []
             assert client.get("/app/sessions?archived=nope").status_code == 400
 
-    def test_fork_session_adds_copy(self, tmp_path: Path):
+    def test_fork_session_numbers_copies(self, tmp_path: Path):
         with _client(tmp_path) as client:
             workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
             row = client.post(
@@ -243,9 +329,58 @@ class TestProductMappingApi:
             copy = forked.json()
             assert copy["id"] != row["id"]
             assert copy["engine_session_id"] != row["engine_session_id"]
-            assert copy["title"] == "原会话 副本"
+            # 原会话不带序号，叉分从 1 起 —— 有序号的就是叉分出来的
+            assert copy["title"] == "1 - 原会话"
+            assert copy["fork_root"] == row["id"]
+            again = client.post(f"/app/sessions/{row['id']}/fork").json()
+            assert again["title"] == "2 - 原会话"
             listed = client.get("/app/sessions").json()["sessions"]
-            assert {item["id"] for item in listed} == {row["id"], copy["id"]}
+            assert {item["id"] for item in listed} == {row["id"], copy["id"], again["id"]}
+            assert {item["title"] for item in listed} == {"原会话", "1 - 原会话", "2 - 原会话"}
+
+    def test_fork_of_fork_stays_in_the_same_family(self, tmp_path: Path):
+        with _client(tmp_path) as client:
+            workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
+            row = client.post(
+                "/app/sessions", json={"workspace_id": workspace["id"], "title": "原会话"}
+            ).json()
+            first = client.post(f"/app/sessions/{row['id']}/fork").json()
+            forked = client.post(f"/app/sessions/{first['id']}/fork").json()
+            # 套娃叉分认同一个根：接着排号，不把前缀叠成「2 - 1 - 原会话」
+            assert forked["title"] == "2 - 原会话"
+            assert forked["fork_root"] == row["id"]
+
+    def test_fork_of_legacy_copy_restores_the_family_name(self, tmp_path: Path):
+        with _client(tmp_path) as client:
+            workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
+            row = client.post(
+                "/app/sessions", json={"workspace_id": workspace["id"], "title": "原会话 副本"}
+            ).json()
+            forked = client.post(f"/app/sessions/{row['id']}/fork").json()
+            assert forked["title"] == "1 - 原会话"
+
+    def test_fork_of_untitled_session_still_gets_a_number(self, tmp_path: Path):
+        with _client(tmp_path) as client:
+            workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
+            row = client.post("/app/sessions", json={"workspace_id": workspace["id"]}).json()
+            forked = client.post(f"/app/sessions/{row['id']}/fork").json()
+            assert forked["title"] == "1 - 新会话"
+
+    def test_side_session_takes_no_number_until_promoted(self, tmp_path: Path):
+        with _client(tmp_path) as client:
+            workspace = client.post("/app/workspaces", json={"path": str(tmp_path)}).json()
+            row = client.post(
+                "/app/sessions", json={"workspace_id": workspace["id"], "title": "原会话"}
+            ).json()
+            side = client.post(f"/app/sessions/{row['id']}/side").json()
+            assert side["title"] == "侧边对话"
+            assert side["fork_root"] == row["id"]
+            # 侧边对话不进列表，不该把可见叉分的号往后顶
+            visible = client.post(f"/app/sessions/{row['id']}/fork").json()
+            assert visible["title"] == "1 - 原会话"
+            promoted = client.post(f"/app/sessions/{side['id']}/promote").json()
+            assert promoted["title"] == "2 - 原会话"
+            assert promoted["fork_root"] == row["id"]
 
     def test_fork_session_at_boundary_seq(self, tmp_path: Path):
         import asyncio

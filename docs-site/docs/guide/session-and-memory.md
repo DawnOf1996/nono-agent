@@ -94,6 +94,10 @@ await fork_transcript(source_writer, target_writer, boundary_seq=120, new_sessio
 按 `seq` 剪一刀复制，`parent_session` 记谱系。不想手搓 writer 就用引擎方法
 `await engine.fork_session(boundary_seq, new_session_id)`（`core/engine.py:1207`）。
 
+产品层的会话标题另有一层编号：叉分会话写成「序号 - 家族名」（`1 - 原会话`、`2 - 原会话`），
+原会话永远不带序号，靠它一眼分出原文和叉分。家族归属记在 `sessions.fork_root`（指向最初的会话），
+所以套娃叉分接着排号而不是叠前缀；侧边对话不进列表、不占号，被提升成顶层会话时才拿到家族里的号。
+
 ---
 
 ## 2. 记忆系统
