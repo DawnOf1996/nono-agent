@@ -208,9 +208,18 @@ export function FilePreview({
   const showEditor = editorOpened && loadedText !== null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-bg">
-      <div className="flex items-center gap-1 border-b border-line px-3 py-1.5">
-        <span className="min-w-0 flex-1 truncate text-[12px] text-faint" title={path}>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
+      {/* 工具条这一行全是 shrink-0 的按钮（自动换行、编辑、关闭…）。预览区被拖窄到
+          比工具条本身还短时，它们会顺着 flex 行往右溢出，直接画到旁边的文件树上 ——
+          看着像"图标悬浮在上层"。所以这一行自己兜住宽度：横向可滚动，窄了就滚动，
+          控件一个都不丢。竖向滚轮顺手转成横向，和上面那排标签条一个做法。 */}
+      <div
+        className="scrollbar-none flex items-center gap-1 overflow-x-auto border-b border-line px-3 py-1.5"
+        onWheel={(event) => {
+          if (event.deltaY !== 0) event.currentTarget.scrollLeft += event.deltaY;
+        }}
+      >
+        <span className="min-w-24 flex-1 truncate text-[12px] text-faint" title={path}>
           {dirty ? <span className="mr-1 inline-block size-1.5 rounded-full bg-ink align-middle" /> : null}
           {relativeTo(root, path)}
         </span>
