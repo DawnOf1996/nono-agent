@@ -24,10 +24,15 @@ type NonoDesktop = {
   /** 占位块位置变了就推一次。只在停靠期间有效。 */
   moveDevtools?: (bounds: { x: number; y: number; width: number; height: number }) => Promise<{ ok: boolean }>;
   /**
-   * 拖分隔条期间让 DevTools 视图不再抢鼠标，否则鼠标一进面板区拖拽就断了。
-   * 拖完记得传 false 恢复。
+   * 拖分隔条期间传 dragging=true 隐藏 DevTools 视图，松手传 false 并带上新 bounds 恢复。
+   *
+   * 为什么不走 setIgnoreMouseEvents：那个方法只在 BrowserWindow / BaseWindow 上，
+   * View 基类（WebContentsView 的父类）没有，原生视图显示着就会吃掉鼠标。
    */
-  passThroughDevtools?: (ignore: boolean) => Promise<{ ok: boolean }>;
+  dragDevtools?: (
+    dragging: boolean,
+    bounds?: { x: number; y: number; width: number; height: number },
+  ) => Promise<{ ok: boolean }>;
   detachDevtools?: () => Promise<{ ok: boolean }>;
   /** 访客页请求新窗口（target=_blank）时回调地址，返回取消订阅函数。 */
   onNewTab?: (handler: (url: string) => void) => () => void;

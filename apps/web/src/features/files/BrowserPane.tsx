@@ -359,28 +359,32 @@ export function BrowserPane({ tabId, url }: { tabId: string; url: string }) {
    *
    * 麻烦在于拖拽途中鼠标会经过**两片会抢鼠标的地方**：
    *   左边页面的 <webview> 是独立浏览上下文，鼠标进去 DOM 就收不到 pointermove；
-   *   右边 DevTools 是主进程的原生视图（WebContentsView），更狠，光标一进去整个
-   *   渲染进程就收不到任何指针事件。
-   * 两边都得让开，否则表现为"拖到一半宽度卡住不动"：
+   *   右边 DevTools 是主进程的原生视图（WebContentsView），光标一进去，整个渲染
+   *   进程连 pointerup 都收不到 —— 拖拽会卡在中途，鼠标也放不回来。
+   * 两边都得让开：
    *   左边 —— 给页面容器加 pointer-events:none，一条 CSS 搞定；
-   *   右边 —— 走 IPC 让主进程给那个视图 setIgnoreMouseEvents(true)。
-   * 拖完两边都要恢复，否则鼠标就再也点不到页面和 DevTools 了。
+   *   右边 —— 拖拽期间让主进程把那个视图 setVisible(false)。注意不能指望
+   *     setIgnoreMouseEvents：那个方法只在 BrowserWindow/BaseWindow 上，View 基类
+   *     没有，WebContentsView 继承的正是 View。
+   * 松手时把最终 bounds 一起交给主进程，先摆位置再显示，避免按旧宽度闪一帧。
    */
   function startSplitDrag(event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const split = splitRef.current;
     if (!split) return;
+    const host = devToolsHostRef.current;
     const startX = event.clientX;
     const startWidth = devToolsWidth;
     const limit = () => split.getBoundingClientRect().width;
-    const passThrough = typeof window === "undefined" ? undefined : window.nonoDesktop?.passThroughDevtools;
+    const setDragging =
+      typeof window === "undefined" ? undefined : window.nonoDesktop?.dragDevtools;
 
     setSplitDragging(true);
     // 光标样式是逐元素解析的，鼠标一离开分隔条就会变回箭头。全局锁一次，
     // 拖到哪儿都是 col-resize，拖完再撤。
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
-    void passThrough?.(true);
+    void setDragging?.(true);
 
     const move = (moveEvent: PointerEvent) => {
       // 面板在右边，往左拖才是变宽。
@@ -393,7 +397,15 @@ export function BrowserPane({ tabId, url }: { tabId: string; url: string }) {
       setSplitDragging(false);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
-      void passThrough?.(false);
+      // React 的 setState 是异步的，这一帧的 host 尺寸还是拖之前的。直接量当前
+      // 的几何位置报过去 —— 占位块此刻已经跟着新宽度重排过了，量得准。
+      const box = host?.getBoundingClientRect();
+      void setDragging?.(
+        false,
+        box && box.width >= 1 && box.height >= 1
+          ? { x: box.left, y: box.top, width: box.width, height: box.height }
+          : undefined,
+      );
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);

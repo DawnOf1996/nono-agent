@@ -20,8 +20,8 @@ contextBridge.exposeInMainWorld("nonoDesktop", {
   // 报告占位块的位置（attach 时带一次，之后随布局变化持续推）。
   attachDevtools: (targetId, bounds) => ipcRenderer.invoke("browser:devtools-attach", targetId, bounds),
   moveDevtools: (bounds) => ipcRenderer.invoke("browser:devtools-bounds", bounds),
-  /** 拖分隔条时传 true，让 DevTools 视图把鼠标透给底下的页面，拖拽才不会被截断。 */
-  passThroughDevtools: (ignore) => ipcRenderer.invoke("browser:devtools-mouse", ignore),
+  /** 拖分隔条时传 dragging=true 隐藏 DevTools 视图，松手时带新 bounds 传 false 恢复。 */
+  dragDevtools: (dragging, bounds) => ipcRenderer.invoke("browser:devtools-drag", { dragging, bounds }),
   detachDevtools: () => ipcRenderer.invoke("browser:devtools-detach"),
   // 订阅「访客页想开新窗口」的地址，返回取消订阅函数。
   onNewTab: (handler) => {

@@ -510,19 +510,29 @@ if (gotLock) app.whenReady().then(async () => {
     return { ok: true };
   });
 
-  // 拖分隔条期间，让 DevTools 视图别抢鼠标。
+  // 拖分隔条期间把 DevTools 视图收起来。
   //
-  // WebContentsView 是原生视图，鼠标一进它的地盘，事件就被它吃掉，我们渲染进程里的
-  // pointermove 直接断掉 —— 表现就是"拖到一半宽度不动了"。setIgnoreMouseEvents(true)
-  // 让它把鼠标事件透给底下的网页，拖拽才能连贯地跑完。
-  // 页面那边的 <webview> 用 CSS pointer-events:none 处理，不必走 IPC。
-  ipcMain.handle("browser:devtools-mouse", async (_event, ignore) => {
+  // 为什么是"藏起来"而不是"让它穿透鼠标"：setIgnoreMouseEvents 只存在于
+  // BrowserWindow / BaseWindow 上（见 electron.d.ts 里那两处声明），View 基类
+  // 压根没这个方法，WebContentsView 继承的也是 View。所以原生视图一旦显示着，
+  // 鼠标进它的地盘就被它吃掉，渲染进程里的 pointermove / pointerup 一起断掉。
+  // 可用的手段只剩 setVisible(false)。
+  //
+  // 松手时把新 bounds 和恢复显示放在同一次调用里：先摆位置再显示，否则会出现
+  // 一帧"按旧宽度闪一下再跳过去"。
+  ipcMain.handle("browser:devtools-drag", async (_event, payload) => {
     if (!devToolsView) return { ok: false };
+    const dragging = payload?.dragging === true;
     try {
-      devToolsView.webContents.setIgnoreMouseEvents(ignore === true);
+      if (dragging) {
+        devToolsView.setVisible(false);
+        return { ok: true };
+      }
+      if (payload?.bounds) devToolsView.setBounds(toDevToolsBounds(payload.bounds));
+      devToolsView.setVisible(true);
       return { ok: true };
     } catch (error) {
-      console.error("[devtools] 设置鼠标穿透失败", error);
+      console.error("[devtools] 拖拽状态切换失败", error);
       return { ok: false };
     }
   });
