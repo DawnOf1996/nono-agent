@@ -1168,7 +1168,7 @@ export function Sidebar({
   if (!expanded) {
     return (
       <aside className="sidebar flex h-full w-full flex-col items-center border-r border-line bg-sidebar">
-        <div className="titlebar flex h-12 w-full shrink-0 items-center justify-center border-b border-line">
+        <div className="titlebar flex h-10 w-full shrink-0 items-center justify-center">
           <button
             type="button"
             className="rounded-[10px] hover:opacity-80"
@@ -1187,7 +1187,7 @@ export function Sidebar({
             <FolderPlus className="size-4" />
           </RailButton>
         </div>
-        <div className="mt-auto flex w-full justify-center border-t border-line p-1.5">
+        <div className="mt-auto flex w-full justify-center p-1.5">
           <RailButton title="设置" onClick={() => setSettingsOpen(true)}>
             <Settings className="size-4" />
           </RailButton>
@@ -1199,7 +1199,7 @@ export function Sidebar({
 
   return (
     <aside className="sidebar flex h-full w-full min-w-0 flex-col border-r border-line bg-sidebar">
-      <div className="titlebar flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
+      <div className="titlebar flex h-10 shrink-0 items-center gap-2 px-4">
         <img src="/logo.png" alt="" draggable={false} className="size-8 shrink-0 rounded-[10px]" />
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <div className="truncate text-sm font-medium">NoNo Agent</div>
@@ -1344,7 +1344,10 @@ export function Sidebar({
         ) : null}
       </div>
 
-      <div className="border-t border-line p-2">
+      {/* 底部设置区不画横线：菜单是一整块底色的连续区域，上下再各切一刀，
+          会把它劈成"表头 / 列表 / 页脚"三段，看着像三块拼起来的。
+          只保留右侧那条竖线（aside 的 border-r）标出菜单的边界。 */}
+      <div className="p-2">
         <Button
           variant="ghost"
           className="h-9 w-full justify-start gap-2 text-muted"

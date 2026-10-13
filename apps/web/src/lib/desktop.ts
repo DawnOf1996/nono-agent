@@ -9,14 +9,15 @@ export function isDesktop() {
 }
 
 /**
- * 右上角有没有系统窗口按钮（最小化 / 最大化 / 关闭）压在页面上。
+ * 页面最上面那一条是不是「窗口头部」本身。
  *
- * Electron 用 titleBarStyle:'hidden' 把原生标题栏让给了页面，Windows 上那三个
- * 按钮以 overlay 形式浮在网页右上角，各 46px 合计 138px。布局在窗口最右侧的那一
- * 栏必须给它让出这段，否则自己的按钮会被压在系统按钮底下，点不到也看不到。
+ * Windows / macOS 上主窗口用了 titleBarStyle:'hidden'，原生标题栏让给了页面自绘：
+ * 应用外壳顶上多渲染一条空的拖拽带（App.tsx 的 .titlebar-drag），高度与
+ * desktop/src/main.js 的 TITLEBAR_HEIGHT 对齐。
  *
- * macOS 的红绿灯在左上角（跟着 Sidebar 那侧），Linux 压根没有 overlay，都不用让位。
+ * Linux 没走 titleBarStyle:'hidden'，原生标题栏在网页上方，页面顶行只是普通内容；
+ * 纯 web 更没有窗口这一说。两种情况都不能凭空多渲染一条空边。
  */
-export function hasWindowControls() {
-  return isDesktop() && window.nonoDesktop?.platform === "win32";
+export function hasSelfDrawnTitlebar() {
+  return isDesktop() && window.nonoDesktop?.platform !== "linux";
 }

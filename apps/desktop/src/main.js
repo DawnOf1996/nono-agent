@@ -164,9 +164,16 @@ function appBackground() {
   return isDarkTheme() ? "#16181d" : "#ffffff";
 }
 
-// 标题栏高度。页面里顶部那一排（Sidebar 的表头、ChatPane 与 WorkspacePanel 的
-// 页头）都是 h-12，overlay 的窗口按钮按这个高度落位，三者才在同一条基线上。
-const TITLEBAR_HEIGHT = 48;
+// 窗口头部的高度：页面最顶上那一整条空带，只负责一件事 —— 让用户抓着窗口走。
+// 页面侧对应 App.tsx 里那条 h-9 的 .titlebar-drag，两边必须一致，改一个
+// 就要改另一个（见 web/src/index.css 的同名段落）。
+//
+// 这一条不是原来那行 h-12 的页头。原来让页头自己当标题栏，两个毛病：内容挤在
+// 窗口最上沿，看着像"只有正文、没有头部"；而 Windows 的窗口按钮以 overlay 浮
+// 在右上角，压在页头上又得专门给它让出 138px。把头部腾成一条空的，这两件事
+// 一起消失 —— 按钮浮在空处，下面三块页头（Sidebar 表头、对话页头、文件页头，
+// 都是 h-10）规规矩矩待在下面。
+const TITLEBAR_HEIGHT = 36;
 
 // 窗口按钮的颜色是写死的，不跟页面的 CSS 走 —— 它们是原生控件。深色下要换成浅色
 // 图标（#e6e8ec 就是应用深色主题的 --color-ink），否则压在深色头带上几乎看不见；

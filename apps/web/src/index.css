@@ -1017,11 +1017,29 @@ textarea {
 }
 
 /* ---- 桌面端自绘标题栏 ----
-   Electron 用 titleBarStyle:'hidden' 把原生标题栏让给了页面，窗口顶部 48px 就是
-   Sidebar 的表头（高度由 desktop/src/main.js 的 TITLEBAR_HEIGHT 定，两边必须一致）。
-   这块要标成拖拽区，用户才能拖着窗口走；里面所有能点的元素都要标 no-drag 拿回
-   自己的鼠标事件，否则按钮会变成"拖窗口"而不是被点击。
+   Electron 用 titleBarStyle:'hidden' 把原生标题栏让给了页面，窗口顶部就分成两段：
+
+   .titlebar-drag —— 顶上那一整条空带（h-9 = 36px，和 desktop/src/main.js 的
+   TITLEBAR_HEIGHT 必须一致），唯一的职责就是让用户抓着窗口走。上面刻意不放任何
+   内容：Windows 那三个系统窗口按钮以 overlay 形式正好浮在它的右上角，空着才不
+   打架。底色跟左侧菜单栏一致（bg-sidebar → --color-sidebar，见 App.tsx），
+   头部与菜单拼成同一个 L 形色块，视觉上才是一体的。
+   鼠标划上去给一点底色，是"这条能拖"的提示 —— 不然一条纯空白在顶上，
+   用户跟当初一样不知道该抓哪儿。
+
+   .titlebar —— 它下面那行 h-10 的页头（Sidebar 表头、对话页头、文件页头），
+   内容上是正经表头，但顺带也能拖，纯属手大时的保险。里面能点的元素用 no-drag
+   白名单拿回自己的鼠标事件，否则点按钮会变成拖窗口，而不是被点击。
+
    纯 web（浏览器里直接打开）不解析这两个属性，等于没写，不用为它做分支。 */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+
+.titlebar-drag:hover {
+  background: var(--color-hover);
+}
+
 .titlebar {
   -webkit-app-region: drag;
 }
@@ -1031,13 +1049,12 @@ textarea {
 .titlebar input,
 .titlebar textarea,
 .titlebar select,
-.titlebar [role="button"] {
+.titlebar label,
+.titlebar [role="button"],
+/* 文件栏页头那排标签要单独拎出来：可点单元是 div[role=tab] 而不是 button（选中、
+   双击重命名、中键关闭、HTML5 拖拽排序都挂在它上面），标签条本身还要把竖向滚轮
+   转成横向滚动。两条都 no-drag，否则点标签会变成拖窗口，标签之间也没法再排序。 */
+.titlebar [role="tablist"],
+.titlebar [role="tab"] {
   -webkit-app-region: no-drag;
-}
-
-/* Windows 桌面端右上角那三个系统窗口按钮以 overlay 形式浮在网页上，各 46px。
-   压在谁头上，谁就得让出这段右边距，否则底下的按钮永远点不到。宽度按 DIP 算，
-   不随系统缩放变化，写死一个值就是对的。 */
-.titlebar-controls-gap {
-  padding-right: 138px;
 }

@@ -17,7 +17,6 @@ import { SideChatPane } from "@/features/files/SideChatPane";
 import { collectTabIds } from "@/features/files/split";
 import { getSidebarPrefs, subscribeSidebarPrefs } from "@/features/settings/sidebar-prefs";
 import { TerminalPane } from "@/features/files/TerminalPane";
-import { hasWindowControls } from "@/lib/desktop";
 import { normalizeWorkspace, workspaceLabel } from "@/lib/workspace";
 import { startDragSession } from "@/lib/drag-session";
 import { cn } from "@/lib/utils";
@@ -41,7 +40,7 @@ function TreeResize({
       role="separator"
       aria-orientation="vertical"
       aria-label={label}
-      className="w-px shrink-0 cursor-col-resize bg-line hover:bg-ink/30"
+      className="group relative w-px shrink-0 cursor-col-resize"
       onPointerDown={(event) => {
         const startX = event.clientX;
         const start = width;
@@ -51,7 +50,15 @@ function TreeResize({
           onMove: (ev) => onWidth(Math.min(480, Math.max(160, start + sign * (ev.clientX - startX)))),
         });
       }}
-    />
+    >
+      {/* 命中区往两侧各扩 6px：线还是 1px，但 1px 靠鼠标点太难点中，手一抖就落到
+          隔壁去了 —— 预览区被拖窄、线紧贴着两边内容时尤其难瞄。absolute 不占布局
+          宽度，两块面板的位置一点不动，和 Workbench 里那两条列分隔条同一个做法。
+          这块透明区域照样收 pointerdown，事件冒泡到上面的 div，拖拽照常起手。
+          悬停只把中间那 1px 加深，视觉上和以前一致。 */}
+      <span className="absolute -left-1.5 inset-y-0 w-3" />
+      <span className="absolute inset-y-0 left-0 w-px bg-line group-hover:bg-ink/30" />
+    </div>
   );
 }
 
@@ -268,12 +275,10 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   return (
     <aside className="flex h-full min-h-0 w-full min-w-0 flex-col border-l border-line bg-bg">
       <header
-        className={cn(
-          "flex h-12 shrink-0 items-center border-b border-line pl-2 pr-1",
-          // 这一栏渲染时永远是窗口最右侧，Windows 的三个系统窗口按钮正压在这个
-          // 角上：让出它们的位置，否则最右边那个标签的关闭按钮永远点不到。
-          hasWindowControls() && "titlebar-controls-gap",
-        )}
+        // 桌面端这一栏同样是自绘标题栏的一段（.titlebar，见 index.css），也能抓着
+        // 挪窗口。标签和「+ / 收起」这些可点单元由 no-drag 白名单挡下来。
+        // Windows 的窗口按钮已经在顶上那条空头部里了，这一行不必再给它让位。
+        className="titlebar flex h-10 shrink-0 items-center border-b border-line pl-2 pr-1"
       >
         <div
           ref={tablistRef}
