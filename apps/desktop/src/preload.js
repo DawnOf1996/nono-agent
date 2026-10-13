@@ -13,6 +13,16 @@ contextBridge.exposeInMainWorld("nonoDesktop", {
   selectWorkspace: () => ipcRenderer.invoke("select-workspace"),
   openPath: (target) => ipcRenderer.invoke("open-path", target),
   openExternal: (target) => ipcRenderer.invoke("open-external", target),
+  // 截内部浏览器当前可见区域，回 base64 PNG。像素只在主进程手里拿得到，
+  // 纯 web 下没有这个桥。
+  captureWebview: (webContentsId) => ipcRenderer.invoke("browser:capture-viewport", webContentsId),
+  // DevTools 停靠在面板里。主进程建一个 WebContentsView 承载前端，渲染进程只负责
+  // 报告占位块的位置（attach 时带一次，之后随布局变化持续推）。
+  attachDevtools: (targetId, bounds) => ipcRenderer.invoke("browser:devtools-attach", targetId, bounds),
+  moveDevtools: (bounds) => ipcRenderer.invoke("browser:devtools-bounds", bounds),
+  /** 拖分隔条时传 true，让 DevTools 视图把鼠标透给底下的页面，拖拽才不会被截断。 */
+  passThroughDevtools: (ignore) => ipcRenderer.invoke("browser:devtools-mouse", ignore),
+  detachDevtools: () => ipcRenderer.invoke("browser:devtools-detach"),
   // 订阅「访客页想开新窗口」的地址，返回取消订阅函数。
   onNewTab: (handler) => {
     const listener = (_event, url) => handler(url);

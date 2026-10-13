@@ -1,24 +1,29 @@
 /** 写入用户消息正文的引用标记。模型能读到原文，界面再把它画成卡片。
  *
- * 标记按来源分三种：模型回复里选的是 `quoted-from-assistant-message`，终端里选的是
- * `quoted-from-terminal`，文件预览里选的是 `quoted-from-file`。模型只看到字面文本，
+ * 标记按来源分四种：模型回复里选的是 `quoted-from-assistant-message`，终端里选的是
+ * `quoted-from-terminal`，文件预览里选的是 `quoted-from-file`，内部浏览器里拾取的是
+ * `quoted-from-browser`。模型只看到字面文本，
  * 但"这段是从哪抄来的"这件事值得写进去，否则一段报错栈和一段模型自己的话在它眼里没有区别。
  *
- * 引用可以带一句评论，用 `<user-comment>` 包在块内。三种来源都支持，没有评论时整个子标签
+ * 引用可以带一句评论，用 `<user-comment>` 包在块内。四种来源都支持，没有评论时整个子标签
  * 不出现，退化成历史上的纯引用格式——旧会话里的消息照样解析得出来。
  *
  * 文件引用多两个属性：`path` 是相对工作区的路径（正斜杠，模型直接就能拿去 Read），
  * `lines` 是 `13` 或 `13-18`。行号只是给人看的提示，选区文本才是权威内容——文件被改过
  * 之后行号会漂，所以模型应该以原文为准。
  *
+ * 浏览器引用来自内部浏览器的元素拾取：正文是「页面地址 + 选择器 + 元素 HTML」这类描述，
+ * 模型读不到那个访客页，只能靠这段文字定位。
+ *
  * 历史会话里只有前两种，解析要都认。
  */
-export type QuoteSource = "assistant" | "terminal" | "file";
+export type QuoteSource = "assistant" | "terminal" | "file" | "browser";
 
 const TAGS: Record<QuoteSource, { open: string; close: string }> = {
   assistant: { open: "<quoted-from-assistant-message>", close: "</quoted-from-assistant-message>" },
   terminal: { open: "<quoted-from-terminal>", close: "</quoted-from-terminal>" },
   file: { open: "<quoted-from-file>", close: "</quoted-from-file>" },
+  browser: { open: "<quoted-from-browser>", close: "</quoted-from-browser>" },
 };
 
 /** 属性值里的引号得转义，否则 `path="a"b"` 会把标记结构撑坏。 */
@@ -54,7 +59,7 @@ export function parseLines(value: string | null | undefined): { start: number; e
  * 属性限定成 `name="value"` 的成对形式：原文里裸奔的 `>` 不至于把开标签截断。
  */
 const BLOCK_SOURCE =
-  /<quoted-from-(assistant-message|terminal|file)((?:\s+[a-z]+="[^"]*")*)\s*>\n?([\s\S]*?)\n?<\/quoted-from-\1>/g;
+  /<quoted-from-(assistant-message|terminal|file|browser)((?:\s+[a-z]+="[^"]*")*)\s*>\n?([\s\S]*?)\n?<\/quoted-from-\1>/g;
 
 /** 块内的评论子标签。组 1 是评论正文。 */
 const COMMENT_SOURCE = /<user-comment>\n?([\s\S]*?)\n?<\/user-comment>/g;
@@ -103,6 +108,7 @@ export type QuotedMessage = {
 function sourceOf(name: string): QuoteSource {
   if (name === "terminal") return "terminal";
   if (name === "file") return "file";
+  if (name === "browser") return "browser";
   return "assistant";
 }
 

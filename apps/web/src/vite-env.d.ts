@@ -8,6 +8,27 @@ type NonoDesktop = {
   openPath?: (target: string) => Promise<{ ok: boolean; error?: string }>;
   /** 交给系统默认浏览器打开。iframe 装不下禁止嵌入的站点时用。 */
   openExternal?: (target: string) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * 截内部浏览器当前可见区域，回 base64 PNG。id 来自 <webview>.getWebContentsId()。
+   * 只有走 <webview> 的桌面版有这个桥，纯 web 下是 undefined。
+   */
+  captureWebview?: (webContentsId: number) => Promise<{ ok: boolean; data?: string; error?: string }>;
+  /**
+   * 把 DevTools 前端停到主进程的一个原生视图上，位置对齐 bounds（DOM 坐标）。
+   * 宿主不能用 webview —— 那样前端拿不到调试后端连接，只剩下一个空面板。
+   */
+  attachDevtools?: (
+    targetId: number,
+    bounds: { x: number; y: number; width: number; height: number },
+  ) => Promise<{ ok: boolean; url?: string; error?: string }>;
+  /** 占位块位置变了就推一次。只在停靠期间有效。 */
+  moveDevtools?: (bounds: { x: number; y: number; width: number; height: number }) => Promise<{ ok: boolean }>;
+  /**
+   * 拖分隔条期间让 DevTools 视图不再抢鼠标，否则鼠标一进面板区拖拽就断了。
+   * 拖完记得传 false 恢复。
+   */
+  passThroughDevtools?: (ignore: boolean) => Promise<{ ok: boolean }>;
+  detachDevtools?: () => Promise<{ ok: boolean }>;
   /** 访客页请求新窗口（target=_blank）时回调地址，返回取消订阅函数。 */
   onNewTab?: (handler: (url: string) => void) => () => void;
   readClipboardText?: () => Promise<string>;

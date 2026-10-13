@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, clipboard, dialog, ipcMain, nativeImage, nativeTheme, shell } = require("electron");
+const { app, BrowserWindow, Menu, Tray, WebContentsView, clipboard, dialog, ipcMain, nativeImage, nativeTheme, shell, webContents } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -11,6 +11,11 @@ let sidecar = null;
 let mainWindow = null;
 let tray = null;
 let quitting = false;
+
+// 停靠在内部浏览器面板里的 DevTools 宿主视图。一次只有一个。
+let devToolsView = null;
+let devToolsWindow = null;
+let devToolsTargetId = null;
 
 function isPackaged() {
   return app.isPackaged || process.env.NONO_DESKTOP_PACKAGED === "1";
@@ -423,6 +428,188 @@ if (gotLock) app.whenReady().then(async () => {
     await shell.openExternal(url.toString());
     return { ok: true };
   });
+  // 截内部浏览器的视口截图。渲染进程碰不到 guest 的像素，只能由主进程截。
+  //
+  // 只截当前可见区域：整页长图得走 debugger 的 Page.captureScreenshot +
+  // captureBeyondViewport，而用户开着 DevTools 时 debugger 已经被占住，会直接抛
+  // "Another debugger is already attached"；长页面还会一次性拉进内存。
+  //
+  // webContentsId 是渲染进程从 <webview>.getWebContentsId() 拿的，可以随便递进来，
+  // 所以必须确认目标是 webview 类型的 guest —— 否则渲染进程能指到主窗口自己，
+  // 把整个应用界面截走。
+  ipcMain.handle("browser:capture-viewport", async (_event, id) => {
+    const target = typeof id === "number" ? webContents.fromId(id) : null;
+    if (!target || target.isDestroyed()) return { ok: false, error: "页面还没加载好" };
+    if (target.getType() !== "webview") return { ok: false, error: "只能截内部浏览器里的页面" };
+    try {
+      const png = (await target.capturePage()).toPNG();
+      if (!png.length) return { ok: false, error: "这一页没有截到内容" };
+      return { ok: true, data: png.toString("base64") };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "截图失败" };
+    }
+  });
+
+  // 把 DevTools 停到内部浏览器面板里，而不是另开一个原生窗口。
+  //
+  // 绕过的坑：Electron 对 tag 形式的 contents 默认 mode:'detach'，直接 openDevTools()
+  // 一定会甩一个独立窗口出来。文档给的出路是 setDevToolsWebContents() —— 把 DevTools
+  // 前端的宿主 WebContents 换成我们指定的那个。
+  //
+  // 但**宿主不能用 <webview>**：试过，前端能加载（面板外壳完整渲染），却拿不到调试
+  // 后端连接 —— 加载出来的地址是 devtools://.../devtools_app.html?remoteBase=https://
+  // chrome-devtools-frontend.appspot.com，没有 ws= 参数，于是它去连公网那个 remoteBase，
+  // 结果就是"标签页齐全、一条数据没有"。sandbox、partition、src 都调过了，均无效。
+  //
+  // 所以宿主改成主进程里的 WebContentsView：它是主窗口的原生顶层视图，不存在 guest
+  // 会话那一层，前端和被调试页的连接都在主进程里完成。渲染进程那边只留一个空 div
+  // 占位，把位置报过来给 setBounds。
+  ipcMain.handle("browser:devtools-attach", async (event, targetId, bounds) => {
+    const target = typeof targetId === "number" ? webContents.fromId(targetId) : null;
+    if (!target || target.isDestroyed()) return { ok: false, error: "页面还没准备好" };
+    if (target.getType() !== "webview") return { ok: false, error: "只能停靠内部浏览器里的页面" };
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { ok: false, error: "找不到窗口" };
+
+    // 重复点按钮时先收掉上一个，别叠出两层视图。
+    detachDevTools();
+
+    const view = new WebContentsView({
+      webPreferences: {
+        // 分区跟页面 webview 对齐（那边是 persist:nono-browser）。
+        partition: "persist:nono-browser",
+        // DevTools 前端要连调试后端，沙箱渲染进程给不了这个特权。
+        sandbox: false,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    devToolsView = view;
+    devToolsWindow = win;
+    devToolsTargetId = targetId;
+    win.contentView.addChildView(view);
+    view.setBounds(toDevToolsBounds(bounds));
+
+    try {
+      target.setDevToolsWebContents(view.webContents);
+      target.openDevTools();
+    } catch (error) {
+      console.error("[devtools] 停靠失败", error);
+      detachDevTools();
+      return { ok: false, error: error instanceof Error ? error.message : "DevTools 打不开" };
+    }
+    // 前端加载失败**不抛异常**：留在初始页也算"成功"。不等一个结果的话，空白面板
+    // 和正常面板长得一模一样，排查时连个错都拿不到。
+    return waitForDevTools(view.webContents);
+  });
+
+  // 占位块的位置变了（窗口缩放、分隔条拖宽、面板区滚动）就推一次。
+  ipcMain.handle("browser:devtools-bounds", async (_event, bounds) => {
+    if (!devToolsView) return { ok: false };
+    devToolsView.setBounds(toDevToolsBounds(bounds));
+    return { ok: true };
+  });
+
+  // 拖分隔条期间，让 DevTools 视图别抢鼠标。
+  //
+  // WebContentsView 是原生视图，鼠标一进它的地盘，事件就被它吃掉，我们渲染进程里的
+  // pointermove 直接断掉 —— 表现就是"拖到一半宽度不动了"。setIgnoreMouseEvents(true)
+  // 让它把鼠标事件透给底下的网页，拖拽才能连贯地跑完。
+  // 页面那边的 <webview> 用 CSS pointer-events:none 处理，不必走 IPC。
+  ipcMain.handle("browser:devtools-mouse", async (_event, ignore) => {
+    if (!devToolsView) return { ok: false };
+    try {
+      devToolsView.webContents.setIgnoreMouseEvents(ignore === true);
+      return { ok: true };
+    } catch (error) {
+      console.error("[devtools] 设置鼠标穿透失败", error);
+      return { ok: false };
+    }
+  });
+
+  ipcMain.handle("browser:devtools-detach", async () => {
+    detachDevTools();
+    return { ok: true };
+  });
+
+  // DevTools 前端加载成什么样了，等一下再说。
+  //
+  // 判据只有一条：加载完之后地址不能还停在初始页。devtools:// 能解析就会把那个
+  // webContents 导航走；解析不了（协议没注册、会话不对）则原地不动 —— 而这两种
+  // 情况**都不抛异常**，只能靠看地址分辨。
+  function waitForDevTools(contents, timeoutMs = 5000) {
+    return new Promise((resolve) => {
+      const finish = (payload) => {
+        clearTimeout(timer);
+        contents.removeListener("did-fail-load", onFail);
+        resolve(payload);
+      };
+      const onFail = (_event, errorCode, errorDescription, url) => {
+        console.error("[devtools] 前端加载失败", errorCode, errorDescription, url);
+        finish({ ok: false, error: `DevTools 前端加载失败：${errorDescription || errorCode}` });
+      };
+      const timer = setTimeout(() => {
+        const url = contents.getURL();
+        if (url && !url.startsWith("about:")) {
+          finish({ ok: true, url });
+          return;
+        }
+        // 还停在初始页 = 压根没被导航过去。多半是 devtools:// 在这个会话里没注册
+        // —— 给 webview 设 partition 会多出一个独立的 BrowserContext，协议不在那儿。
+        console.error("[devtools] 前端未加载，当前地址", JSON.stringify(url));
+        finish({ ok: false, error: "DevTools 前端没有加载起来" });
+      }, timeoutMs);
+      contents.on("did-fail-load", onFail);
+    });
+  }
+
+  // 收掉停靠视图。closeDevTools() **不会**销毁我们给的宿主 WebContents，所以
+  // 顺序是：先断开 DevTools，再从窗口摘掉视图，最后销毁它自己的 webContents。
+  // 三步都做了才算真回收，不然每开一次就漏一个渲染进程。
+  function detachDevTools() {
+    const view = devToolsView;
+    const win = devToolsWindow;
+    const id = devToolsTargetId;
+    devToolsView = null;
+    devToolsWindow = null;
+    devToolsTargetId = null;
+    if (!view) return;
+
+    if (id != null) {
+      const target = webContents.fromId(id);
+      if (target && !target.isDestroyed()) {
+        try {
+          target.closeDevTools();
+        } catch (error) {
+          console.error("[devtools] 关闭失败", error);
+        }
+      }
+    }
+    if (win && !win.isDestroyed()) {
+      try {
+        win.contentView.removeChildView(view);
+      } catch (error) {
+        console.error("[devtools] 摘除视图失败", error);
+      }
+    }
+    try {
+      view.webContents.close();
+    } catch {
+      // 已经没了就算了。
+    }
+  }
+
+  // 渲染进程报上来的是 DOMRect，转成 setBounds 要的整数，且不能出现负尺寸 ——
+  // 占位块在布局过渡中完全可能量到 0 甚至负数，原样传下去会抛。
+  function toDevToolsBounds(rect) {
+    const num = (value) => (Number.isFinite(value) ? Math.round(value) : 0);
+    return {
+      x: num(rect?.x),
+      y: num(rect?.y),
+      width: Math.max(0, num(rect?.width)),
+      height: Math.max(0, num(rect?.height)),
+    };
+  }
   // 渲染进程的 navigator.clipboard 在 Electron 里要过权限请求，而本进程没设权限处理器，
   // 默认会被拒。终端右键菜单的粘贴/复制走主进程，一次 IPC 解决。
   ipcMain.handle("read-clipboard-text", async () => clipboard.readText());

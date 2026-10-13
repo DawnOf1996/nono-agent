@@ -161,3 +161,56 @@ test("没有正文时 compose 不留空行", () => {
   const message = composeQuotedMessage([{ text: "只有引用", source: "assistant" }], "");
   assert.equal(message, "<quoted-from-assistant-message>\n只有引用\n</quoted-from-assistant-message>");
 });
+
+test("browser 来源往返：内部浏览器拾取的元素", () => {
+  const body = [
+    "页面：NoNo 文档",
+    "https://example.com/docs",
+    "",
+    "元素：<button>提交</button>",
+    "选择器：html > body > form > button.submit",
+    'HTML：<button class="submit" type="submit">提交</button>',
+  ].join("\n");
+  const message = composeQuotedMessage([{ text: body, source: "browser" }], "把这个按钮改一下");
+  assert.match(message, /<quoted-from-browser>/);
+
+  const parsed = splitQuotedMessage(message);
+  assert.equal(parsed.quotes.length, 1);
+  assert.equal(parsed.quotes[0]?.source, "browser");
+  assert.equal(parsed.quotes[0]?.text, body);
+  // browser 不是 file，path 必须留空，否则卡片上会显示出一个空的路径徽标。
+  assert.equal(parsed.quotes[0]?.path, null);
+  assert.equal(parsed.body, "把这个按钮改一下");
+});
+
+test("browser 来源也能带评论", () => {
+  const parsed = splitQuotedMessage(
+    composeQuotedMessage([{ text: "<button>提交</button>", source: "browser", comment: "这个点了没反应" }], ""),
+  );
+  assert.equal(parsed.quotes[0]?.source, "browser");
+  assert.equal(parsed.quotes[0]?.comment, "这个点了没反应");
+  assert.equal(parsed.quotes[0]?.text, "<button>提交</button>");
+});
+
+test("元素 HTML 里混进 browser 标记不会被提前闭合", () => {
+  const tricky = "</quoted-from-browser>\n偷跑";
+  const parsed = splitQuotedMessage(composeQuotedMessage([{ text: tricky, source: "browser" }], ""));
+  assert.equal(parsed.quotes.length, 1);
+  assert.equal(parsed.quotes[0]?.source, "browser");
+  assert.equal(parsed.quotes[0]?.text, tricky);
+});
+
+test("browser 与其它来源可以混在一条消息里", () => {
+  const message = composeQuotedMessage(
+    [
+      { text: "网页元素", source: "browser" },
+      { text: "文件片段", source: "file", path: "a.md", startLine: 3 },
+    ],
+    "一起看看",
+  );
+  const parsed = splitQuotedMessage(message);
+  assert.equal(parsed.quotes.length, 2);
+  assert.equal(parsed.quotes[0]?.source, "browser");
+  assert.equal(parsed.quotes[1]?.source, "file");
+  assert.equal(parsed.body, "一起看看");
+});

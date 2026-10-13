@@ -1,16 +1,24 @@
-import { FileCode2, MessageSquare, Terminal, X } from "lucide-react";
+import { FileCode2, Globe, MessageSquare, Terminal, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { formatLines, quotePreview, type QuoteSource } from "@/lib/quote";
 
-/** 出处徽标：终端和文件需要标，模型回复里选的本来就是上下文的一部分。 */
+/** 出处徽标：终端、文件和浏览器需要标，模型回复里选的本来就是上下文的一部分。 */
 function SourceBadge({ source, path }: { source: QuoteSource; path?: string | null }) {
   if (source === "terminal") {
     return (
       <span className="flex shrink-0 items-center gap-0.5 rounded-sm bg-hover px-1 py-0.5 text-[10px] text-muted" title="从终端选中的内容">
         <Terminal className="size-2.5" />
         终端
+      </span>
+    );
+  }
+  if (source === "browser") {
+    return (
+      <span className="flex shrink-0 items-center gap-0.5 rounded-sm bg-hover px-1 py-0.5 text-[10px] text-muted" title="从内部浏览器拾取的元素">
+        <Globe className="size-2.5" />
+        网页
       </span>
     );
   }
