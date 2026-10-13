@@ -1,5 +1,5 @@
 import { Check, Copy, MessageSquarePlus, Reply, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 
 import { useChatStore } from "@/store/chat";
@@ -12,6 +12,9 @@ type Anchor = {
   left: number;
   above: boolean;
 };
+
+/** 选区末端的一段几何，气泡贴着它摆位。 */
+type Rect = { top: number; bottom: number; right: number };
 
 /**
  * 选区落在哪一类宿主里。
@@ -56,7 +59,21 @@ function hostOf(node: Node, root: HTMLElement): Host | null {
   return null;
 }
 
-type Found = { anchor: Anchor; host: Host; startLine: number | null; endLine: number | null };
+/**
+ * 一次选区的完整判定结果。
+ *
+ * rect 得留着：气泡是按**实测**盒子尺寸摆的（理由见 BAR_FALLBACK），
+ * 而气泡尺寸本身会变 —— 折叠态三个按钮约 232px，点开评论是 w-72（288px），
+ * 「复制」变成「已复制」又宽几个字。尺寸一变就要拿 rect 重新摆一次；
+ * 只留算好的 anchor 就没依据了，只能继续用估值，而估值偏小正是溢出的来源。
+ */
+type Found = {
+  anchor: Anchor;
+  host: Host;
+  startLine: number | null;
+  endLine: number | null;
+  rect: Rect;
+};
 
 /**
  * 外部选区源。
@@ -76,7 +93,7 @@ export type ExternalSelection = {
   path: string;
 };
 
-function locate(root: HTMLElement): Found | null {
+function locate(root: HTMLElement, size: { width: number; height: number }): Found | null {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
   const range = selection.getRangeAt(0);
@@ -107,20 +124,12 @@ function locate(root: HTMLElement): Found | null {
   const rootRect = root.getBoundingClientRect();
   if (rect.bottom < rootRect.top + 4 || rect.top > rootRect.bottom - 4) return null;
 
-  const barWidth = 220;
-  const barHeight = 40;
-  const margin = 8;
-  let left = rect.right;
-  left = Math.max(rootRect.left + margin + barWidth, left);
-  left = Math.min(window.innerWidth - margin, left);
-  const above = rect.top - barHeight - 6 >= rootRect.top + margin;
-  const top = above ? rect.top - 6 : rect.bottom + 6;
-
   return {
-    anchor: { text, top, left, above },
+    anchor: { text, ...placeAnchor(root, rect, size) },
     host: startHost,
     startLine: lineOf(range.startContainer),
     endLine: lineOf(range.endContainer),
+    rect,
   };
 }
 
@@ -130,19 +139,34 @@ function lineLabel(start: number | null, end: number | null): string | null {
   return end !== null && end !== start ? `${start}-${end}` : String(start);
 }
 
-/** 气泡挂在选区哪儿。rect 是视口坐标。 */
+/** 气泡和容器边界之间留的白。 */
+const BAR_MARGIN = 8;
+
+/**
+ * 气泡挂上去之前的兜底尺寸，量到真值后就换成实测的。
+ *
+ * 这里宁可估大也不能估小：left 是按「root 左缘 + margin + 宽度」钳的，宽度一小，
+ * left 就钳得太靠右，气泡整体往左伸出去的部分就越过 root 左缘 —— 选区在左边时
+ * 尤其明显，288px 的评论框会整块压到左侧菜单栏上。
+ */
+const BAR_FALLBACK = { width: 240, height: 48 };
+
+/**
+ * 气泡挂在选区哪儿。rect 是视口坐标，size 必须是气泡的实测盒子尺寸。
+ *
+ * 右边缘对齐 left、整体往左伸（对应 JSX 里的 translateX(-100%)），所以钳位按
+ * 「往左伸出去 width」算，不是按「往右还剩多少空间」算。
+ */
 function placeAnchor(
   root: HTMLElement,
-  rect: { top: number; bottom: number; right: number },
+  rect: Rect,
+  size: { width: number; height: number },
 ): { top: number; left: number; above: boolean } {
   const rootRect = root.getBoundingClientRect();
-  const barWidth = 220;
-  const barHeight = 40;
-  const margin = 8;
   let left = rect.right;
-  left = Math.max(rootRect.left + margin + barWidth, left);
-  left = Math.min(window.innerWidth - margin, left);
-  const above = rect.top - barHeight - 6 >= rootRect.top + margin;
+  left = Math.max(rootRect.left + BAR_MARGIN + size.width, left);
+  left = Math.min(window.innerWidth - BAR_MARGIN, left);
+  const above = rect.top - size.height - 6 >= rootRect.top + BAR_MARGIN;
   return { top: above ? rect.top - 6 : rect.bottom + 6, left, above };
 }
 
@@ -161,6 +185,9 @@ export function SelectionQuote({
   const [copied, setCopied] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
+  // 气泡的实测尺寸。用 ref 而不是 state：装事件监听的那个 effect 一旦因 state 变化
+  // 而重跑，清理函数会 setFound(null)，刚弹出来的气泡会被自己关掉。
+  const sizeRef = useRef(BAR_FALLBACK);
 
   const anchor = found?.anchor ?? null;
   const host = found?.host ?? null;
@@ -194,20 +221,29 @@ export function SelectionQuote({
       if (external) {
         const picked = external.read();
         if (!picked) return null;
-        const position = placeAnchor(root, picked.rect);
+        const position = placeAnchor(root, picked.rect, sizeRef.current);
         return {
           anchor: { text: picked.text, ...position },
           host: { kind: "file", el: root, root: external.root, path: external.path },
           startLine: picked.startLine,
           endLine: picked.endLine,
+          rect: picked.rect,
         };
       }
-      return locate(root);
+      return locate(root, sizeRef.current);
     };
 
     const place = () => {
       timer = 0;
-      setFound(read());
+      const next = read();
+      setFound(next);
+      // 新选区就是新的一次引用。上一轮点开「评论」却没写内容时 commenting 仍是 true，
+      // 不在这里清掉的话新气泡会直接以评论框的形态冒出来，而不是三按钮的工具条。
+      // 只在真选到东西时清：点空白处收工走的是 onSelectionChange，那条路不该顺手丢草稿。
+      if (next !== null) {
+        setCommenting(false);
+        setDraft("");
+      }
     };
     const schedule = () => {
       if (timer) return;
@@ -239,7 +275,7 @@ export function SelectionQuote({
       // 回收会把正在用的气泡整个销毁。
       if (selecting || barRef.current?.contains(document.activeElement)) return;
       if (external) return;
-      setFound((current) => (current && !locate(root) ? null : current));
+      setFound((current) => (current && !locate(root, sizeRef.current) ? null : current));
     };
 
     const onScroll = () => {
@@ -280,6 +316,35 @@ export function SelectionQuote({
       setFound(null);
     };
   }, [containerRef, external?.root, external?.path]);
+
+  /**
+   * 量到真尺寸后重新摆一次位。
+   *
+   * 气泡尺寸不是常量：折叠态三个按钮约 232×34，点开评论变成 w-72（288×150），
+   * 「复制」变「已复制」又宽几个字。摆位用的 width 一旦偏小，left 就钳得太靠右，
+   * 往左伸出去的部分就越过 root 左缘 —— 选区在左半边时，评论框会压到左侧菜单栏上。
+   *
+   * commenting / copied 进依赖：它们正是改尺寸的那两个开关。写回走 setFound，
+   * 不会触发上面装监听的 effect，所以不会把正在用的气泡自己关掉；改完再量一次，
+   * 尺寸没变就直接收手，不会来回抖。
+   */
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const width = bar.offsetWidth;
+    const height = bar.offsetHeight;
+    const known = sizeRef.current;
+    if (width === 0 || (known.width === width && known.height === height)) return;
+    sizeRef.current = { width, height };
+    setFound((current) => {
+      const root = containerRef.current;
+      if (current === null || root === null) return current;
+      return {
+        ...current,
+        anchor: { text: current.anchor.text, ...placeAnchor(root, current.rect, sizeRef.current) },
+      };
+    });
+  }, [found, commenting, copied, containerRef]);
 
   useEffect(() => {
     setCopied(false);
@@ -330,7 +395,12 @@ export function SelectionQuote({
       ref={barRef}
       role="toolbar"
       aria-label="选中文字"
-      className="fixed z-40 flex flex-col rounded-xl border border-line bg-bg p-1 shadow-[0_8px_24px_var(--shadow-color)]"
+      // w-max 不能去掉：工具条是 fixed + translateX(-100%)，右边缘对齐 anchor.left、整体往左伸。
+      // 而 width:auto 的 fixed 元素走 shrink-to-fit，浏览器量的是「left 到视口右边」那段可用宽度，
+      // 和它实际占据的方向正好相反。选区一靠右，这段宽度就窄于工具条的自然宽度，工具条被压扁，
+      // 三个按钮里的中文被挤成逐字竖排（placeAnchor 里 barWidth=220 只是摆位用的估值，
+      // 它管的是别越出 root 左缘，压根没参与宽度计算）。显式 max-content 才能锁住盒子宽度。
+      className="fixed z-40 flex w-max flex-col rounded-xl border border-line bg-bg p-1 shadow-[0_8px_24px_var(--shadow-color)]"
       style={{
         top: anchor.top,
         left: anchor.left,
@@ -405,7 +475,7 @@ export function SelectionQuote({
         <div className="flex items-center gap-0.5">
           <button
             type="button"
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-[13px] text-ink hover:bg-hover"
+            className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-[13px] text-ink hover:bg-hover"
             onClick={() => {
               void navigator.clipboard.writeText(anchor.text).then(
                 () => setCopied(true),
@@ -418,7 +488,7 @@ export function SelectionQuote({
           </button>
           <button
             type="button"
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-[13px] text-ink hover:bg-hover"
+            className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-[13px] text-ink hover:bg-hover"
             title={isFile ? "针对这段写评论，并一起添加到对话" : "针对这段写评论"}
             onClick={() => setCommenting(true)}
           >
@@ -427,7 +497,7 @@ export function SelectionQuote({
           </button>
           <button
             type="button"
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-[13px] text-ink hover:bg-hover"
+            className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-[13px] text-ink hover:bg-hover"
             title={isFile ? "引用这段（不带评论）" : "引用这段"}
             onClick={() => submit()}
           >
