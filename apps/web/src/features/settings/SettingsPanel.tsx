@@ -1,4 +1,4 @@
-import { Bot, Boxes, Cable, Monitor, Moon, Puzzle, Settings2, SlidersHorizontal, Sun, X } from "lucide-react";
+import { Bot, Boxes, Cable, FileText, Monitor, Moon, Puzzle, Settings2, SlidersHorizontal, Sun, X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import type { AppInfo, SettingsTab } from "@nono/protocol";
 
@@ -188,17 +188,33 @@ export function SettingsPanel() {
         ref={panelRef}
         // relative 是 toast 的 absolute 定位基准。少了它 toast 会去找更外层的
         // 定位祖先，最后落到整窗底部去 —— 正好是这个效果要避免的。
-        className="relative flex h-[min(760px,90vh)] w-full max-w-[920px] overflow-hidden rounded-[28px] border border-line bg-bg shadow-xl"
+        //
+        // 尺寸跟着主窗体走：宽高都以视口为基准按比例给，不锁死 px 宽高。
+        // 主窗体拉宽拉高弹框跟着长；收到桌面端最小尺寸（960×640）时 92vw / 90vh
+        // 也还留得住内容区。上限只在超大窗口上收口，免得在 4K 上糊满整屏。
+        // 宽度写成 max-w 而不是 w-[…]：外层遮罩有 p-6，直接用 vw 会比可用宽度多出
+        // 一点点，窄窗口下弹框会顶到遮罩边缘外被切掉。
+        //
+        // @container：盒子内部（导航宽度、页头、设置行的两列）一律按**弹框自身**
+        // 的宽度走容器查询，而不是按视口。弹框宽度是 min(1280px, 92vw)，本来就跟
+        // 视口脱钩了（超大窗口下视口继续变宽、弹框卡在 1280 不动），继续拿视口断点
+        // 驱动内部布局会在 4K 上算错。少了这一句下面所有 @max-lg: 都不会生效。
+        className="relative flex h-[min(880px,90vh)] w-full max-w-[min(1280px,92vw)] overflow-hidden rounded-[28px] border border-line bg-bg shadow-xl @container"
         onClick={(event) => event.stopPropagation()}
       >
         {/* 底色跟右侧面板一致（bg-bg 由外层面板给，这里不再叠一层 bg-sidebar），
             三条边线全部去掉。侧栏和内容区靠内容本身就能分开，再压一层线只会把
             面板切碎。选中项仍有 bg-active 加左侧竖条，不会因为去线而失去位置感。 */}
-          <nav className="flex w-[212px] shrink-0 flex-col">
-            <div className="flex h-14 shrink-0 items-center gap-2 px-4 text-sm font-medium">
-              <Settings2 className="size-4 text-muted" />
-              设置
-            </div>
+
+        {/* 导航列跟着弹框宽度走：clamp 下限保底（标签不会挤成两行），上限仍是
+            212px（宽面板下不希望它无限长），中间用百分比跟着弹框呼吸。
+            之前写死 w-[212px]，弹框被窗口拉窄时导航还占着 212px，内容区被压到
+            只剩一百来像素，整页看着就像塌了 —— 这正是「里面全变形了」的主因。 */}
+        <nav className="flex w-[clamp(150px,24%,212px)] shrink-0 flex-col">
+          <div className="flex h-14 shrink-0 items-center gap-2 px-4 text-sm font-medium">
+            <Settings2 className="size-4 text-muted" />
+            设置
+          </div>
           <ul className="flex-1 space-y-0.5 overflow-auto p-2">
             {TABS.map((item) => {
               const active = tab === item.id;
@@ -208,7 +224,9 @@ export function SettingsPanel() {
                     type="button"
                     aria-current={active ? "page" : undefined}
                     className={cn(
-                      "flex h-9 w-full items-center gap-2.5 rounded-lg px-3 text-sm transition-colors",
+                      // truncate + min-w-0：导航列收窄后长标签（「Agent 预设」）会被
+                      // 压到换行，那行高度一涨整个列表就错位。这里宁可截断也不换行。
+                      "flex h-9 w-full min-w-0 items-center gap-2.5 truncate rounded-lg px-3 text-sm transition-colors",
                       active ? "bg-active font-medium text-ink" : "text-muted hover:bg-hover hover:text-ink",
                     )}
                     onClick={() => {
@@ -234,14 +252,30 @@ export function SettingsPanel() {
         </nav>
 
         <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-6">
+          {/* 页头左右分区。窄容器下（@max-lg：弹框自身被窗口压到 <512px）把左右内边距
+              收一档，并让「打开配置文件」只留图标 —— 之前它是个带文字的 shrink-0
+              按钮，在窄弹框里把标题挤到只剩两三个字（「通..」）。图标按钮省下约 70px，
+              标题才放得下。
+              注意变体必须写 @max-lg: 而不是 max-lg:。少一个 @ 的话 Tailwind 会当成
+              **视口** 断点（v4 的 max-lg 是「视口 ≤ 1024px」），而弹框宽度是
+              min(1280px, 92vw)，两者根本不是一回事，规则会在错误的宽度上触发。*/}
+          <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-6 @max-lg:px-4">
             <div className="min-w-0">
               <h2 className="truncate text-[15px] font-medium text-ink">{headerTitle}</h2>
-              {headerDesc ? <p className="truncate text-xs text-muted">{headerDesc}</p> : null}
+              {headerDesc ? <p className="truncate text-xs text-muted @max-lg:hidden">{headerDesc}</p> : null}
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <Button variant="outline" size="sm" className="rounded-full" onClick={() => void openConfig()}>
-                打开配置文件
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full @max-lg:size-8 @max-lg:px-0"
+                aria-label="打开配置文件"
+                title="打开配置文件"
+                onClick={() => void openConfig()}
+              >
+                {/* 文字跟着按钮一起收：窄容器下只留图标，宽容器下照旧显示文字。 */}
+                <FileText className="size-3.5 @max-lg:size-4" />
+                <span className="@max-lg:hidden">打开配置文件</span>
               </Button>
               <Button variant="ghost" size="icon" aria-label="关闭设置" onClick={() => setSettingsOpen(false)}>
                 <X className="size-4" />
@@ -252,7 +286,11 @@ export function SettingsPanel() {
             <p className="shrink-0 border-b border-line px-6 py-2 text-xs text-danger">{configError}</p>
           ) : null}
 
-          <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
+          {/* overflow-y-auto 而不是 overflow-auto：设置面板里的东西应该都在宽度内自适应，
+              不该出现横向滚动条。真有溢出的元素（超长路径、超宽表格）应当在自己的
+              那一行里 truncate，而不是把整个面板撑出横滚。左右内边距也随弹框收放，
+              窄窗口下 px-6（两侧 48px）在 200 多宽的内容区里占比过重。*/}
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-5 @max-lg:px-4">
           {tab === "models" && modelView === "list" ? (
             <ProviderList
               providers={providers}
@@ -348,18 +386,32 @@ function SettingRow({
   return (
     <div
       className={cn(
-        "flex justify-between gap-6 px-4 py-3",
-        align === "center" ? "items-center" : "items-start",
+        // 宽容器：左标签 / 右控件 两列并排。
+        // 窄容器（@max-lg）：整体改成上下堆叠。两列硬挤在这个宽度下必然出问题 ——
+        // 中文 hint（「模型、密钥、会话、记忆和插件都在这里。更换会把全部内容搬过去」
+        // 有 30 多字）没法像英文那样在词间断行，只能一字一行地竖排，右侧控件被
+        // 压成一个字宽，就是用户截图里那个「数据目录」竖着下来的样子。
+        // 堆叠之后标签整行在上、控件整行在下，两边都能拿到完整宽度。
+        "flex flex-col items-start gap-2 px-4 py-3 @lg:flex-row @lg:items-center @lg:justify-between @lg:gap-6",
+        align === "center" ? "@lg:items-center" : "@lg:items-start",
       )}
     >
       {/* start 模式下把标签这块撑到至少和 sm 按钮一样高（h-8），文字在里面居中。
           这样对齐不依赖文字本身的行高，换字号或改字体也不会再错位。
-          min-h-8 而不是 h-8：带 hint 的行还能往下长。 */}
-      <div className={cn("shrink-0", align === "start" && "flex min-h-8 flex-col justify-center")}>
+          min-h-8 而不是 h-8：带 hint 的行还能往下长。
+          窄容器下不再需要 flex-1 —— 已经是独占一整行了。*/}
+      <div
+        className={cn(
+          "min-w-0",
+          align === "start" && "@lg:flex @lg:min-h-8 @lg:flex-col @lg:justify-center",
+        )}
+      >
         <div className="text-[13px] text-ink">{label}</div>
         {hint ? <div className="mt-0.5 text-[11px] text-muted">{hint}</div> : null}
       </div>
-      <div className="min-w-0 text-right">{children}</div>
+      {/* 控件列。窄容器（堆叠）下整行铺开并左对齐 —— 右对齐在这个宽度上没有意义，
+          还会让「更改」这类按钮紧贴右边、看着像被顶出去了。*/}
+      <div className="w-full min-w-0 @lg:w-auto @lg:text-right">{children}</div>
     </div>
   );
 }
@@ -486,8 +538,10 @@ function GeneralPane({
     }
   })();
 
+  // 660px 只是宽面板下的「别让正文拉太长」上限，不该在窄容器里反过来变成限制 ——
+  // w-full 保证它先填满可用宽度。
   return (
-    <div className="max-w-[660px]">
+    <div className="w-full max-w-[660px]">
       <AppearanceSettings />
 
       <PaneSection>
@@ -496,11 +550,13 @@ function GeneralPane({
             label="数据目录"
             hint="模型、密钥、会话、记忆和插件都在这里。更换会把全部内容搬过去"
           >
-            <div className="flex items-center gap-3">
-              {/* 路径换行会让这一行在 660px 里能塞下更多字符，但纯路径折成两三行
-                  时「哪一坨是目录名」很难读。这里单行截断 + title 挂全串。 */}
+            <div className="flex w-full min-w-0 items-center gap-3">
+              {/* 路径换行会让这一行能塞下更多字符，但纯路径折成两三行时「哪一坨是目录名」
+                  很难读。这里单行截断 + title 挂全串。
+                  min-w-0 / flex-1 不能少：flex 子项默认 min-width:auto，而路径里没有
+                  空格，不给 min-w-0 的话 truncate 根本不生效，整行会被路径顶出容器。*/}
               <span
-                className="truncate font-mono text-[12px] text-muted"
+                className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted"
                 title={dataDir || "~/.nono-agent"}
               >
                 {dataDir || "~/.nono-agent"}
@@ -634,13 +690,18 @@ function AppearanceSettings() {
         ))}
       </div>
 
-      {/* 主题卡片和字号之间也走一条线：同一分组里换了一个维度，得让人一眼看出来。 */}
-      <div className="mt-5 flex items-center justify-between gap-6 border-t border-line pt-5">
-        <div className="shrink-0">
+      {/* 主题卡片和字号之间也走一条线：同一分组里换了一个维度，得让人一眼看出来。
+          窄容器下改成上下堆叠 —— 滑块按整行宽度铺开，比硬挤 300px 更好按。
+          这里用容器断点而不是视口断点：判断「挤不挤得下」的其实是内容区宽度，
+          它受导航列宽影响，跟视口宽度不是一回事。*/}
+      <div className="mt-5 flex flex-col items-start gap-4 border-t border-line pt-5 @xl:flex-row @xl:items-center @xl:justify-between @xl:gap-6">
+        <div className="min-w-0">
           <div className="text-[13px] text-ink">字号大小</div>
           <div className="mt-0.5 text-[11px] text-muted">仅影响会话内容的字号</div>
         </div>
-        <div className="w-[300px] shrink-0">
+        {/* 之前是 w-[300px] shrink-0：内容区一旦窄于 300px 就整个溢出，右侧被切掉。
+            换成 w-full + max-w-[300px]：宽时还是 300px（上限不变），窄时跟着容器收。*/}
+        <div className="w-full max-w-[300px] shrink-0 @xl:w-[300px]">
           <div className="relative">
             {/* 刻度：每个可选字号一根短线。两端各让开半个拇指宽，免得压在圆点上。 */}
             <div
