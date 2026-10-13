@@ -134,29 +134,62 @@ function resolveAppIcon() {
   return candidates.find((candidate) => candidate && fs.existsSync(candidate));
 }
 
+// 应用里选中的主题模式（light / dark / system）。null 表示还没收到网页的报信，
+// 一切跟着系统走。
+//
+// 窗口按钮的符号色、窗口底色都是原生控件，只认 nativeTheme，而应用里的主题存在
+// 网页自己的 localStorage 里，主进程读不到。以前两边各看各的：用户在应用里手动
+// 选了深色、系统还是浅色时，右上角那三个按钮继续用深色图标，压在深色头带上几乎
+// 看不见。网页启动和每次切换都会把模式报过来（lib/theme.ts 的 apply()）。
+let appThemeMode = null;
+
+/** 当前该按哪套配色渲染窗口。显式选择优先，没收到报信才看系统。 */
+function isDarkTheme() {
+  if (appThemeMode) return appThemeMode === "dark";
+  return nativeTheme.shouldUseDarkColors;
+}
+
 // 加载页与应用本体必须同主题，否则 loadURL 那一刻会闪一次明暗翻转，白色主题用户
 // 尤其明显（以前窗口底色写死 #14181F，深色用户也跟着受了一次多余的变色）。
 // 两个值取自 apps/web/src/index.css 的 --color-bg。
 //
-// 只能给系统值：loading.html 走 file://，应用本体走 http://127.0.0.1:<port>，
-// localStorage 不同源，主进程读不到用户显式选过的主题。对 theme=system（默认）的
-// 用户是准的；手动改过主题的用户在加载页会有一次轻微不一致，但不会再是黑屏。
+// 加载页只在建窗那一次加载，那时网页还没报主题上来，所以这里多半还是系统的值：
+// 对 theme=system（默认）的用户是准的；手动改过主题的用户在加载页会有一次轻微
+// 不一致，但不会再是黑屏。
 function appTheme() {
-  return nativeTheme.shouldUseDarkColors ? "dark" : "light";
+  return isDarkTheme() ? "dark" : "light";
 }
 
 function appBackground() {
-  return nativeTheme.shouldUseDarkColors ? "#16181d" : "#ffffff";
+  return isDarkTheme() ? "#16181d" : "#ffffff";
 }
 
 // 标题栏高度。页面里顶部那一排（Sidebar 的表头、ChatPane 与 WorkspacePanel 的
 // 页头）都是 h-12，overlay 的窗口按钮按这个高度落位，三者才在同一条基线上。
 const TITLEBAR_HEIGHT = 48;
 
-// 窗口按钮的颜色是写死的，不跟 nativeTheme 走：深色主题下按钮会继续用深色图标，
-// 在深色页头上几乎看不见。和 appTheme() 取同一个系统口径。
+// 窗口按钮的颜色是写死的，不跟页面的 CSS 走 —— 它们是原生控件。深色下要换成浅色
+// 图标（#e6e8ec 就是应用深色主题的 --color-ink），否则压在深色头带上几乎看不见；
+// 浅色下用深灰（#3c4048）。口径和 appTheme() 一致，但直接读 appThemeMode，不绕
+// nativeTheme：Windows 上 themeSource 什么时候传到 shouldUseDarkColors 不好说，
+// 而这里一旦算错，症状就是"深色主题配深色按钮"。
 function overlaySymbolColor() {
-  return nativeTheme.shouldUseDarkColors ? "#e6e8ec" : "#3c4048";
+  return isDarkTheme() ? "#e6e8ec" : "#3c4048";
+}
+
+// 按当前原生主题重刷窗口自身那些网页刷不到的东西：底色 + Windows 窗口按钮。
+// 三处（建窗、nativeTheme 变化、渲染进程报来新主题）都走这一个函数，别各写一份。
+function syncWindowChrome(win = mainWindow) {
+  if (!win || win.isDestroyed()) return;
+  win.setBackgroundColor(appBackground());
+  if (process.platform === "win32") {
+    // setTitleBarOverlay 是局部更新，但只给一个键时不同版本的合并行为不一致，稳一点全给。
+    win.setTitleBarOverlay?.({
+      color: "#00000000",
+      symbolColor: overlaySymbolColor(),
+      height: TITLEBAR_HEIGHT,
+    });
+  }
 }
 
 function createWindow() {
@@ -212,19 +245,11 @@ function createWindow() {
     event.preventDefault();
     win.hide();
   });
-  // 跟随系统主题重刷窗口按钮。三个键一起给：setTitleBarOverlay 是局部更新，
-  // 但只给一个键时不同版本的合并行为不一致，稳一点全给。
+  // 跟随系统主题重刷窗口按钮。窗口关掉后把监听摘掉：main.js 是单进程常驻的，
+  // 挂着就是纯泄漏。
   if (process.platform === "win32") {
-    const syncOverlay = () => {
-      if (win.isDestroyed()) return;
-      win.setTitleBarOverlay?.({
-        color: "#00000000",
-        symbolColor: overlaySymbolColor(),
-        height: TITLEBAR_HEIGHT,
-      });
-    };
+    const syncOverlay = () => syncWindowChrome(win);
     nativeTheme.on("updated", syncOverlay);
-    // 窗口关掉后把监听摘掉：main.js 是单进程常驻的，挂着就是纯泄漏。
     win.on("closed", () => nativeTheme.removeListener("updated", syncOverlay));
   }
   return win;
@@ -398,6 +423,21 @@ if (gotLock) app.whenReady().then(async () => {
     if (typeof text !== "string") return { ok: false };
     clipboard.writeText(text);
     return { ok: true };
+  });
+
+  // 应用里选的主题（浅色 / 深色 / 跟随系统）推过来。网页把这套存在自己的
+  // localStorage 里，主进程读不到 —— 而窗口按钮、窗口底色这些是原生控件，不跟网页
+  // 的 CSS 走。以前两边各看各的：用户手动选了深色、系统还是浅色时，右上角那三个按钮
+  // 继续用深色图标，压在深色头带上几乎看不见。
+  //
+  // themeSource 照设，好让原生控件（滚动条、日期选择器这些）也跟着切；但按钮的颜色
+  // 读的是 appThemeMode，不绕 shouldUseDarkColors —— Windows 上 themeSource 什么
+  // 时候传过去并不好说，中间少这一环才稳。
+  ipcMain.on("app:theme-mode", (_event, mode) => {
+    appThemeMode = mode === "light" || mode === "dark" ? mode : null;
+    nativeTheme.themeSource = mode === "light" || mode === "dark" ? mode : "system";
+    // 不指望给 themeSource 赋值一定触发 updated（各平台不一致），直接重刷一次。
+    syncWindowChrome();
   });
   // 重启整个应用。换过数据目录之后只有重启才生效：数据目录在进程启动时解析一次
   // （见 nono_agent/paths），会话事件流、app.db 和托管运行时都被当前进程占着。

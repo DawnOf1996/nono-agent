@@ -35,4 +35,7 @@ contextBridge.exposeInMainWorld("nonoDesktop", {
     ipcRenderer.on("app:update-event", listener);
     return () => ipcRenderer.removeListener("app:update-event", listener);
   },
+  // 把用户选中的主题模式交给主进程。只通知、不等回执：窗口按钮的符号色是原生控件，
+  // 不跟网页的 CSS 走，主进程要自己照着刷新窗口。
+  setThemeMode: (mode) => ipcRenderer.send("app:theme-mode", mode),
 });

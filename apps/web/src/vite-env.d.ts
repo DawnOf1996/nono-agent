@@ -22,6 +22,13 @@ type NonoDesktop = {
   installUpdate?: () => Promise<{ ok: boolean; error?: string }>;
   /** 订阅更新事件流，返回退订函数。渲染进程不直接持有 updater，只能这么听。 */
   onUpdateEvent?: (handler: (event: NonoUpdateEvent) => void) => () => void;
+  /**
+   * 把用户选中的主题模式（light / dark / system）告诉桌面壳。
+   * 窗口按钮、加载页底色这些是原生控件，不跟网页的 localStorage 走，只认主进程的
+   * nativeTheme；不告诉它的话，用户手动选了深色、系统还是浅色时，右上角那三个按钮
+   * 会继续用深色图标，压在深色页头上几乎看不见。纯 web 下是 undefined。
+   */
+  setThemeMode?: (mode: "light" | "dark" | "system") => void;
 };
 
 /**

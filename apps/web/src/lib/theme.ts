@@ -47,6 +47,11 @@ function apply(): void {
   root.dataset.theme = resolved;
   // 让原生控件（滚动条、下拉、日期选择器）也切过去，不然深色页面里会出现一条白滚动条。
   root.style.colorScheme = resolved;
+  // 桌面端还有一批网页管不到的原生控件：右上角那三个窗口按钮、加载页的底色。
+  // 它们只认主进程的 nativeTheme，所以把选中的模式推过去，主进程会照着切。
+  // 放在 apply() 里，是因为三条改动路径（首屏、跟随系统翻面、手动选）都汇到这儿。
+  // 纯 web 没有这个桥，?. 直接跳过。
+  window.nonoDesktop?.setThemeMode?.(mode);
 }
 
 // 模块加载时先落一次。首屏脚本没跑成（比如被 CSP 挡了）时，这里兜底。
