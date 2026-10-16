@@ -1,9 +1,10 @@
-# 同时拉起 sidecar 与 Vite（Windows）
+# 开发态一键启动。
+#
+# 现在桌面壳自己会把 sidecar 和 Vite 都拉起来（见 apps/desktop/src/main.js 的
+# ensureSidecar / ensureWebServer），所以这个脚本只是 `pnpm dev:desktop` 的一层
+# 包装，方便在仓库根直接敲。真正的启动逻辑只有那一处，别在这里重复实现。
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
-Start-Process -FilePath "uv" -ArgumentList @("run", "nono-app-server") -WorkingDirectory (Join-Path $root "apps\server")
-Start-Process -FilePath "pnpm" -ArgumentList @("dev:web") -WorkingDirectory (Join-Path $root "apps")
-
-Write-Host "已启动 sidecar (127.0.0.1:8000) 与 Vite (127.0.0.1:5173)"
-Write-Host "桌面壳另开终端: cd apps; pnpm dev:desktop"
+Set-Location (Join-Path $root "apps")
+pnpm dev:desktop
