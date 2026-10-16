@@ -1,14 +1,17 @@
 """工具插件声明模型 —— 把 plugin.json 的 ``tools`` 段解析成强类型规格。
 
-清单里只允许两种声明：
+清单里允许三种声明：
 
 - ``http_json``：一个 HTTP JSON 端点。请求体是模板，模板里可以引用
   ``${args.<name>}``（模型传进来的参数）与 ``${options.<key>}``（用户在
   settings 里配的值）。
 - ``mcp``：启用本插件 ``mcp`` 段里已声明的 server，并按需注入密钥、
   过滤要暴露的工具。
+- ``builtin``：把引擎里已写好的内置工具挂到这个插件的开关下。
 
-两种声明都是**纯数据**：这里不 import 任何插件代码，也不解析可执行路径。
+三种声明都是**纯数据**：这里不 import 任何插件代码，也不解析可执行路径。
+``builtin`` 尤其如此 —— 它只按名字去 :data:`nono_agent.tools.builtin.
+PLUGIN_MANAGED_TOOL_FACTORIES` 里那张白名单表取工厂，清单点名不到别的。
 """
 
 from __future__ import annotations
@@ -117,7 +120,34 @@ class McpToolSpec:
         return self.auth.api_key_env
 
 
-ToolSpec = HttpToolSpec | McpToolSpec
+@dataclass(frozen=True)
+class BuiltinToolSpec:
+    """``kind: "builtin"`` —— 挂一个引擎内建工具，工具实现在 Python 里。
+
+    用在「实现是我们的、但要不要给用户用得由他说了算」的能力上，比如内置浏览器
+    控制：它不是第三方服务，不能塞进 http_json；但它背后是一条无认证的本机
+    调试端口，默认必须关着，所以也不该无条件出现在工具表里。
+
+    ``tool`` 是工具名，必须能在 ``PLUGIN_MANAGED_TOOL_FACTORIES`` 里查到。
+    """
+
+    plugin_id: str
+    name: str                    # 插件内的短名，仅用于报错定位
+    tool: str                    # 引擎内建工具的真实名字
+    description: str = ""
+    defaults: dict[str, Any] = field(default_factory=dict)
+    auth: AuthSpec = field(default_factory=AuthSpec)
+
+    @property
+    def tool_name(self) -> str:
+        return self.tool
+
+    @property
+    def api_key_env(self) -> str:
+        return self.auth.api_key_env
+
+
+ToolSpec = HttpToolSpec | McpToolSpec | BuiltinToolSpec
 
 
 def parse_tool_specs(plugin_id: str, raw: dict[str, Any]) -> list[ToolSpec]:
@@ -139,6 +169,8 @@ def parse_tool_specs(plugin_id: str, raw: dict[str, Any]) -> list[ToolSpec]:
             specs.append(_parse_http(plugin_id, name, data, defaults, auth))
         elif kind == "mcp":
             specs.append(_parse_mcp(plugin_id, name, data, defaults, auth))
+        elif kind == "builtin":
+            specs.append(_parse_builtin(plugin_id, name, data, defaults))
         else:
             raise ToolSpecError(f"tools.{name}.kind {kind!r} is not supported")
     return specs
@@ -218,5 +250,23 @@ def _parse_mcp(
         description=str(data.get("description", "")),
         allowed_tools=allowed_set,
         auth=auth,
+        defaults=defaults,
+    )
+
+
+def _parse_builtin(
+    plugin_id: str,
+    name: str,
+    data: dict[str, Any],
+    defaults: dict[str, Any],
+) -> BuiltinToolSpec:
+    tool = str(data.get("tool", "")).strip()
+    if not tool:
+        raise ToolSpecError(f"tools.{name}.tool is required for kind=builtin")
+    return BuiltinToolSpec(
+        plugin_id=plugin_id,
+        name=name,
+        tool=tool,
+        description=str(data.get("description", "")),
         defaults=defaults,
     )

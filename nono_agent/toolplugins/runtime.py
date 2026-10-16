@@ -25,6 +25,7 @@ from nono_agent.toolplugins.http_json import HttpJsonTool
 from nono_agent.toolplugins.policy import resolve_tool_policy
 from nono_agent.toolplugins.registry import plugin_dirs_in, registered_plugin_dirs
 from nono_agent.toolplugins.spec import (
+    BuiltinToolSpec,
     HttpToolSpec,
     McpToolSpec,
     ToolSpec,
@@ -220,11 +221,30 @@ async def _build_tool(
     data_dir: Path | None,
     external_servers: set[str],
 ) -> tuple[list[Any], list[Any]]:
+    if isinstance(spec, BuiltinToolSpec):
+        return _build_builtin_tool(spec)
     if isinstance(spec, HttpToolSpec):
         return [HttpJsonTool(spec, policy.options, api_key)], []
     return await _build_mcp_tool(
         spec, manifest, policy, api_key, workspace, data_dir, external_servers
     )
+
+
+def _build_builtin_tool(spec: BuiltinToolSpec) -> tuple[list[Any], list[Any]]:
+    """从白名单表里取一个引擎内建工具。
+
+    推迟到函数内 import：本模块在 sidecar 启动链上，而 ``tools.builtin`` 会把
+    二十多个工具类全拉进来，没必要为「根本不会启用内置插件」的启动付这个代价。
+    """
+    from nono_agent.tools.builtin import create_plugin_builtin_tool
+
+    tool = create_plugin_builtin_tool(spec.tool)
+    if tool is None:
+        raise RuntimeError(
+            f"no plugin-managed builtin tool named '{spec.tool}'; "
+            "add it to PLUGIN_MANAGED_TOOL_FACTORIES before declaring it"
+        )
+    return [tool], []
 
 
 async def _build_mcp_tool(

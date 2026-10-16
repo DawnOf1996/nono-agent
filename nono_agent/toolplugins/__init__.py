@@ -24,6 +24,7 @@ from nono_agent.toolplugins.runtime import (
 )
 from nono_agent.toolplugins.spec import (
     AuthSpec,
+    BuiltinToolSpec,
     HttpToolSpec,
     McpToolSpec,
     ToolSpec,
@@ -33,6 +34,7 @@ from nono_agent.toolplugins.spec import (
 
 __all__ = [
     "AuthSpec",
+    "BuiltinToolSpec",
     "HttpJsonTool",
     "HttpToolSpec",
     "McpToolSpec",

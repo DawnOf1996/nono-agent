@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -47,8 +48,28 @@ from nono_app_server.features.toolplugins.schemas import (
 
 _PLUGIN_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
+#: 环境变量里表示「真开着」的字面量。与 nono_agent.mcp.policy.as_bool 同义，
+#: 但这里不能 import 引擎的解析器：桌面主进程是 Node 侧的写入方，它只会写
+#: 最简单的那一种。
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
 # 一眼就是密钥的 option 键 —— 不允许从 settings 端点写进来。
 _SECRET_OPTION = re.compile(r"(api[-_]?key|secret|password|token|credential)", re.I)
+
+
+def _restart_flag_live(flag_env: str, enabled: bool) -> bool:
+    """本次运行的**实际状态**与用户配置是否一致。
+
+    主进程在 app ready 之前就把东西挂上了，所以「用户想开」和「它真的开着」是
+    两件事，只有主进程知道自己干了什么 —— 它把结果写进 ``flag_env`` 再拉起
+    sidecar，这里拿它跟配置比。不一致就说明得重启。
+
+    没声明 flag 的插件没有「启动前才能生效」这回事，一律按已生效处理。
+    """
+    if not flag_env:
+        return True
+    actual = os.environ.get(flag_env, "").strip().lower() in _TRUTHY
+    return actual == enabled
 
 
 def validate_plugin_id(plugin_id: str) -> str:
@@ -111,14 +132,20 @@ def public_tool_plugins(cwd: str, manager: SessionManager) -> dict[str, Any]:
         schema = parse_config_schema(manifest.config)
         defaults = option_defaults(manifest)
         fields = [f for f in schema.fields if not f.secret]
+        enabled = bool(block.get("enabled", False))
 
         items.append(
             {
                 "id": manifest.name,
                 "version": manifest.version,
                 "description": manifest.description,
+                "examples": list(manifest.examples),
                 "source": source,
-                "enabled": bool(block.get("enabled", False)),
+                "enabled": enabled,
+                # 改了要重启才生效的插件（主进程启动前才能挂上的能力），面板据此
+                # 显示「重启」而不是摆一个已经生效的假开关。
+                "needs_restart": schema.needs_restart,
+                "live": _restart_flag_live(schema.restart_flag_env, enabled),
                 "api_key": {
                     "env": api_key_env,
                     "required": bool(api_key_env),

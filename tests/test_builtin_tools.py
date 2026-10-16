@@ -6,6 +6,7 @@ import pytest
 
 from nono_agent.permissions.sandbox import IgnoreMatcher, PathSandbox
 from nono_agent.tools.builtin import (
+    PLUGIN_MANAGED_TOOL_FACTORIES,
     BashTool,
     EditFileTool,
     GlobTool,
@@ -13,6 +14,7 @@ from nono_agent.tools.builtin import (
     ReadFileTool,
     WriteFileTool,
     create_builtin_tools,
+    create_plugin_builtin_tool,
 )
 from nono_agent.tools.context import ToolUseContext
 
@@ -40,6 +42,11 @@ def _sleep_cmd(seconds: int) -> str:
 
 class TestBuiltinFactory:
     def test_creates_twenty_four_tools(self):
+        """内置集合里**不含**插件托管的工具。
+
+        browser_* 由工具插件挂载（清单里 ``kind: "builtin"``），插件关掉时它们
+        根本不该出现 —— 否则面板上那个开关就只是个摆设。
+        """
         tools = create_builtin_tools()
         names = {t.name for t in tools}
         assert names == {
@@ -67,6 +74,33 @@ class TestBuiltinFactory:
             "task_update",
             "task_stop",
         }
+
+    def test_plugin_managed_tools_are_reachable_by_name(self):
+        """插件要能按名字取到工具，取不到就报错而不是造一个空壳。"""
+        assert create_plugin_builtin_tool("browser_open").name == "browser_open"
+        assert create_plugin_builtin_tool("browser_tabs").name == "browser_tabs"
+        # 交互那组也必须在册 —— 少了它们插件会启动成功但一个动作都做不了。
+        assert create_plugin_builtin_tool("browser_snapshot").name == "browser_snapshot"
+        assert create_plugin_builtin_tool("browser_click").name == "browser_click"
+        assert create_plugin_builtin_tool("browser_type").name == "browser_type"
+        assert create_plugin_builtin_tool("browser_press").name == "browser_press"
+        assert create_plugin_builtin_tool("browser_use").name == "browser_use"
+        # 读正文 / 滚动 / 导航：没有这三个，模型能点但读不到页面、也回不去。
+        assert create_plugin_builtin_tool("browser_read").name == "browser_read"
+        assert create_plugin_builtin_tool("browser_scroll").name == "browser_scroll"
+        assert create_plugin_builtin_tool("browser_navigate").name == "browser_navigate"
+        # 名字不在白名单里 —— 清单点不到不属于它的东西。
+        assert create_plugin_builtin_tool("bash") is None
+        assert create_plugin_builtin_tool("rm_rf") is None
+
+    def test_plugin_managed_names_do_not_overlap_builtin(self):
+        """同一个名字不能既在默认集合里、又被插件挂一次。
+
+        插件装配时会先 unregister 再 register，看起来能覆盖，但那是靠副作用
+        达成的：插件关掉之后工具又凭空消失。这里直接卡住重叠。
+        """
+        builtin_names = {t.name for t in create_builtin_tools()}
+        assert not builtin_names & set(PLUGIN_MANAGED_TOOL_FACTORIES)
 
 
 class TestDecodeText:

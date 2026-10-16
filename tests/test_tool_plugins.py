@@ -33,6 +33,7 @@ from nono_agent.toolplugins.policy import resolve_tool_policy
 from nono_agent.toolplugins.registry import clear_plugin_dirs, registered_plugin_dirs
 from nono_agent.toolplugins.runtime import (
     ToolPluginRuntime,
+    api_key_env_for,
     builtin_plugin_dirs,
     discover_plugins,
     option_defaults,
@@ -159,6 +160,20 @@ class TestSpec:
     def test_mcp_spec_requires_server(self):
         with pytest.raises(ToolSpecError):
             parse_tool_specs("demo", {"search": {"kind": "mcp"}})
+
+    def test_builtin_spec_requires_tool_name(self):
+        with pytest.raises(ToolSpecError):
+            parse_tool_specs("demo", {"open": {"kind": "builtin"}})
+
+    def test_builtin_spec_keeps_tool_name_verbatim(self):
+        """kind=builtin 不加前缀 —— 名字就是引擎里那个真工具的名字。
+
+        加了前缀的话工具名会在两边对不上：清单说 browser_open，装配出来却叫
+        browser_agent__open，权限策略按名字匹配就永远匹配不到。
+        """
+        spec = parse_tool_specs("demo", {"open": {"kind": "builtin", "tool": "browser_open"}})[0]
+        assert spec.tool_name == "browser_open"
+        assert spec.api_key_env == ""
 
 
 class TestPolicy:
@@ -548,8 +563,12 @@ class TestBuiltinPlugins:
         engine_dir = Path(nono_agent.toolplugins.__file__).parent
         assert list(engine_dir.rglob("plugin.json")) == []
 
-    def test_product_plugin_dir_ships_two(self):
-        assert {p.name for p in builtin_plugin_dirs()} == {"minimax_image", "tavily"}
+    def test_product_plugin_dir_ships_three(self):
+        assert {p.name for p in builtin_plugin_dirs()} == {
+            "minimax_image",
+            "tavily",
+            "browser-agent",
+        }
 
     def test_registration_is_idempotent(self):
         before = len(registered_plugin_dirs())
@@ -611,6 +630,76 @@ class TestBuiltinPlugins:
         assert "tavilyApiKey" not in manifest["mcp"]["tavily"]["url"]
         assert "tavilyApiKey" not in json.dumps(manifest)
 
+    def test_browser_agent_declaration_parses(self):
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "browser-agent")
+        manifest = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+        specs = parse_tool_specs(manifest["name"], manifest["tools"])
+        assert {s.tool_name for s in specs} == {
+            "browser_open",
+            "browser_tabs",
+            "browser_use",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_press",
+            "browser_read",
+            "browser_scroll",
+            "browser_navigate",
+        }
+        # 没有密钥 —— 浏览器控制要的是本机用户点一次头，不是厂商的 Key。
+        assert manifest.get("mcp") is None
+        assert api_key_env_for(load_manifest(directory)) == ""
+
+    def test_browser_agent_declares_restart_requirement(self):
+        """端口只能在 app ready 之前挂，清单必须自己说明「改了要重启」。
+
+        少了这两行，面板会以为开关立刻生效，用户重启前一直等。
+        """
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "browser-agent")
+        manifest = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+        assert manifest["config"]["needs_restart"] is True
+        assert manifest["config"]["restart_flag_env"] == "NONO_BROWSER_CDP_ENABLED"
+
+    def test_examples_parse_and_survive_junk(self, tmp_path):
+        """示例句是纯展示文案：写错一条不该让整个插件不可用。"""
+        directory = tmp_path / "sample"
+        directory.mkdir()
+        (directory / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "sample",
+                    "version": "1.0.0",
+                    "examples": ["好的例子", "   ", 42, None, " 另一个  "],
+                }
+            ),
+            encoding="utf-8",
+        )
+        manifest = load_manifest(directory)
+        assert manifest is not None
+        assert manifest.examples == ("好的例子", "另一个")
+
+    def test_examples_default_to_empty(self, tmp_path):
+        directory = tmp_path / "bare"
+        directory.mkdir()
+        (directory / "plugin.json").write_text(
+            json.dumps({"name": "bare", "version": "1.0.0"}), encoding="utf-8"
+        )
+        manifest = load_manifest(directory)
+        assert manifest is not None
+        assert manifest.examples == ()
+
+    def test_examples_are_not_a_list_of_lists(self, tmp_path):
+        """写成字符串（而不是数组）时按没写处理，不逐字符拆开。"""
+        directory = tmp_path / "wrong-type"
+        directory.mkdir()
+        (directory / "plugin.json").write_text(
+            json.dumps({"name": "wrong", "version": "1.0.0", "examples": "一条"}),
+            encoding="utf-8",
+        )
+        manifest = load_manifest(directory)
+        assert manifest is not None
+        assert manifest.examples == ()
+
     def test_tavily_whitelist_is_deliberately_narrow(self):
         """远程端点实际暴露 6 个工具，我们只放行 2 个。
 
@@ -627,6 +716,7 @@ class TestBuiltinPlugins:
         assert {m.name: source for m, source in discover_plugins(tmp_path)} == {
             "minimax-image": "bundled",
             "tavily": "bundled",
+            "browser-agent": "bundled",
         }
 
     def test_project_plugin_overrides_bundled(self, tmp_path):
@@ -643,8 +733,67 @@ class TestRuntime:
     async def test_disabled_plugin_registers_nothing(self, tmp_path):
         runtime = await start_tool_plugin_runtime(tmp_path, settings=_settings({}))
         assert runtime.tools == []
-        assert {s.id for s in runtime.statuses} == {"minimax-image", "tavily"}
+        assert {s.id for s in runtime.statuses} == {
+            "minimax-image",
+            "tavily",
+            "browser-agent",
+        }
         assert all(s.enabled is False for s in runtime.statuses)
+
+    async def test_builtin_plugin_gates_browser_tools(self, tmp_path):
+        """browser_* 只在插件开启时才进工具表。
+
+        这条是安全边界，不是偏好：它们背后是一条无认证的本机调试端口，
+        默认关闭意味着工具**压根不存在**，而不是「存在但一调用就报错」。
+        """
+        off = await start_tool_plugin_runtime(tmp_path, settings=_settings({}))
+        assert "browser_open" not in {t.name for t in off.tools}
+
+        on = await start_tool_plugin_runtime(
+            tmp_path, settings=_settings({"tools": {"browser-agent": {"enabled": True}}})
+        )
+        assert {t.name for t in on.tools} == {
+            "browser_open",
+            "browser_tabs",
+            "browser_use",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_press",
+            "browser_read",
+            "browser_scroll",
+            "browser_navigate",
+        }
+        status = next(s for s in on.statuses if s.id == "browser-agent")
+        assert status.error is None
+        assert status.running is True
+
+    async def test_builtin_plugin_reports_unknown_tool(self, tmp_path):
+        """清单点名一个不在白名单里的工具 → 状态里报错，不静默跳过。
+
+        静默跳过最坏：面板上显示插件已启用、工具列表却空着，用户无从判断
+        是没配好还是根本不支持。
+        """
+        plugin_dir = tmp_path / ".nono-agent" / "plugins" / "rogue"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "rogue",
+                    "version": "1.0.0",
+                    "description": "点一个白名单外的工具名试试",
+                    "tools": {"nuke": {"kind": "builtin", "tool": "definitely_not_a_tool"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        runtime = await start_tool_plugin_runtime(
+            tmp_path, settings=_settings({"tools": {"rogue": {"enabled": True}}})
+        )
+        assert runtime.tools == []
+        status = next(s for s in runtime.statuses if s.id == "rogue")
+        assert status.error is not None
+        assert "definitely_not_a_tool" in status.error
 
     async def test_enabled_http_plugin_builds_tool(self, tmp_path, monkeypatch):
         monkeypatch.delenv(_ENV_KEY, raising=False)
@@ -837,6 +986,45 @@ class TestConfigPanelPayload:
         # 没配的键仍回落默认值（具体值由产品定义决定，这里只验"有值且未被覆盖"）
         assert isinstance(values["base_url"], str) and values["base_url"]
 
+    def test_ordinary_plugin_needs_no_restart(self, tmp_path):
+        plugin = next(
+            p for p in self._snapshot(tmp_path)["plugins"] if p["id"] == "minimax-image"
+        )
+        assert plugin["needs_restart"] is False
+        # 没声明 restart_flag_env 就没有「本次运行 vs 配置」这回事，按已生效算。
+        assert plugin["live"] is True
+
+    def test_browser_agent_reports_pending_restart(self, tmp_path, monkeypatch):
+        """用户开了开关但还没重启 → live=False，面板据此显示「重启后生效」。"""
+        monkeypatch.delenv("NONO_BROWSER_CDP_ENABLED", raising=False)
+        (tmp_path / ".nono-agent").mkdir()
+        (tmp_path / ".nono-agent" / "settings.json").write_text(
+            json.dumps({"tools": {"browser-agent": {"enabled": True}}}),
+            encoding="utf-8",
+        )
+        plugin = next(
+            p for p in self._snapshot(tmp_path)["plugins"] if p["id"] == "browser-agent"
+        )
+        assert plugin["needs_restart"] is True
+        assert plugin["enabled"] is True
+        assert plugin["live"] is False
+
+        # 重启之后主进程把这个变量带进 sidecar，两边就对上了。
+        monkeypatch.setenv("NONO_BROWSER_CDP_ENABLED", "1")
+        plugin = next(
+            p for p in self._snapshot(tmp_path)["plugins"] if p["id"] == "browser-agent"
+        )
+        assert plugin["live"] is True
+
+    def test_browser_agent_reports_pending_shutdown(self, tmp_path, monkeypatch):
+        """反过来也要成立：用户关了但还没重启，端口此刻仍然开着。"""
+        monkeypatch.setenv("NONO_BROWSER_CDP_ENABLED", "1")
+        plugin = next(
+            p for p in self._snapshot(tmp_path)["plugins"] if p["id"] == "browser-agent"
+        )
+        assert plugin["enabled"] is False
+        assert plugin["live"] is False
+
     def test_payload_keys_match_frontend_contract(self, tmp_path):
         """出参的键名必须与 @nono/protocol 的类型对得上，否则前端静默拿到 undefined。"""
         payload = self._snapshot(tmp_path)
@@ -846,8 +1034,11 @@ class TestConfigPanelPayload:
             "id",
             "version",
             "description",
+            "examples",
             "source",
             "enabled",
+            "needs_restart",
+            "live",
             "api_key",
             "fields",
             "project_owned",

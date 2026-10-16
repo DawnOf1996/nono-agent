@@ -6,6 +6,9 @@
 
 密钥是另一条路：它永远不进入 schema 的字段值，只有一个「往哪个凭据名里填」
 的指针（``api_key.env``）。
+
+另有 ``needs_restart`` / ``restart_flag_env``：有些能力由主进程在启动前挂上，
+改了开关热不了，面板据此如实显示「要重启才生效」，而不是假装已经生效。
 """
 
 from __future__ import annotations
@@ -57,6 +60,16 @@ class ConfigSchema:
     api_key_label: str = "API Key"
     api_key_hint: str = ""
     api_key_placeholder: str = ""
+    #: 改动这个插件要重启应用才生效。典型是「主进程启动前才能挂上的东西」，
+    #: 比如 Electron 的远程调试端口 —— 那条开关热不了，只能靠重启。
+    needs_restart: bool = False
+    #: 本次运行实际状态由哪个环境变量说了算。主进程把自己**真正做了什么**写进
+    #: 这个变量再拉起 sidecar，服务端拿它和用户配置比：一致即已生效，不一致就
+    #: 如实告诉用户「要重启」，而不是摆一个看着已经生效的开关。
+    #:
+    #: 刻意做成声明式的，而不是让服务端 import 某个插件的运行时类 —— 否则每加
+    #: 一个需要重启的插件就要改一遍引擎，而清单本来就能说明白这件事。
+    restart_flag_env: str = ""
 
     @property
     def has_fields(self) -> bool:
@@ -148,4 +161,6 @@ def parse_config_schema(raw: Any) -> ConfigSchema:
         api_key_label=str(key_block.get("label", "API Key")),
         api_key_hint=str(key_block.get("hint", "")),
         api_key_placeholder=str(key_block.get("placeholder", "")),
+        needs_restart=bool(raw.get("needs_restart", False)),
+        restart_flag_env=str(raw.get("restart_flag_env", "")).strip(),
     )

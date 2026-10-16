@@ -3,9 +3,11 @@
 插件是「分发单元」，只**组合**下层能力（Rules/Skills/Agents/Hooks/MCP/
 Tool 声明/权限声明），不实现 Agent 逻辑，无 loop 特权入口。
 
-``tools`` 段是**声明式**的：它只描述「一个 HTTP JSON 端点」或「一个 MCP
-server 的启停与密钥注入」，由 :mod:`nono_agent.toolplugins` 的内置执行器
-解释。清单本身不含可执行代码路径，引擎因此不需要给插件开 Python 导入的口子。
+``tools`` 段是**声明式**的：它只描述「一个 HTTP JSON 端点」「启用一个已声明的
+MCP server」或「挂一个引擎内建工具」，由 :mod:`nono_agent.toolplugins` 的内置
+执行器解释。清单本身不含可执行代码路径，引擎因此不需要给插件开 Python 导入
+的口子 —— ``builtin`` 也不例外：它按名字查一张写死在引擎里的白名单表，清单点
+不到表外的任何东西。
 """
 
 from __future__ import annotations
@@ -15,10 +17,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# ``tools.<name>.kind`` 的可取值。刻意只保留两种：一个是「一个 HTTP JSON
-# 端点」，一个是「启用一个已声明的 MCP server」。再加第三种可执行入口
-# （python entrypoint）时，清单才需要开 Python 导入的口子 —— 那是二期的事。
-KNOWN_TOOL_KINDS = frozenset({"http_json", "mcp"})
+# ``tools.<name>.kind`` 的可取值。
+#
+# 前两种是外连（HTTP 端点、MCP server）；``builtin`` 不外连，它把一个**引擎自己
+# 写的**工具挂到插件开关下 —— 实现是产品/引擎的一部分，只有「要不要给用户用」
+# 交给清单决定。仍然没有 python entrypoint：那种等于让清单指定要 import 什么，
+# 是二期的事。
+#
+# 这份名单与 :data:`nono_agent.toolplugins.spec.KNOWN` 语义相同但各写一份：
+# 这里负责「清单本身合不合法」，那边负责「怎么解析成规格」，两边的报错时机和
+# 面向对象不同。改一处记得改另一处 —— 有测试盯着两边同步。
+KNOWN_TOOL_KINDS = frozenset({"http_json", "mcp", "builtin"})
 
 
 @dataclass
@@ -38,6 +47,7 @@ class PluginManifest:
     permissions: dict[str, Any] = field(default_factory=dict)     # 权限需求清单
     hooks: dict[str, Any] = field(default_factory=dict)           # hooks.json 内容
     commands: dict[str, dict[str, Any]] = field(default_factory=dict)  # 自定义 slash（数据驱动）
+    examples: tuple[str, ...] = ()          # 「可以直接这么问」的示例句，详情面板用
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], directory: Path) -> PluginManifest:
@@ -65,6 +75,15 @@ class PluginManifest:
                 if isinstance(data.get("commands"), dict)
                 else {}
             ),
+            # 非字符串元素直接丢掉而不是让整个清单作废：examples 只是详情面板上
+            # 的展示文案，写错一条不该连带插件用不了。
+            examples=tuple(
+                item.strip()
+                for item in (data.get("examples") or [])
+                if isinstance(item, str) and item.strip()
+            )
+            if isinstance(data.get("examples"), (list, tuple))
+            else (),
         )
 
     def validate(self) -> list[str]:
