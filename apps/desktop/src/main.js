@@ -2,12 +2,301 @@ const { app, BrowserWindow, Menu, Tray, WebContentsView, clipboard, dialog, ipcM
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const net = require("node:net");
+const os = require("node:os");
 const path = require("node:path");
+const util = require("node:util");
+
+// 中文 Windows 的 Cursor / Git Bash 终端按系统代码页（CP936）解码管道输出。
+// Electron 的 console.log 走 Chromium，写出 UTF-8，于是「内置」变成「鍐呯疆」。
+// Python sidecar 按 GBK 写，所以同一窗口里 sidecar 中文正常、主进程中文乱码。
+// console.log 不经过 process.stdout.write，必须自己按 GBK 写到 fd。
+function createGbkEncoder() {
+  let table = null;
+  const decoder = new TextDecoder("gbk");
+  return (text) => {
+    if (!table) {
+      table = new Map();
+      const pair = new Uint8Array(2);
+      for (let lead = 0x81; lead <= 0xfe; lead++) {
+        for (let trail = 0x40; trail <= 0xfe; trail++) {
+          if (trail === 0x7f) continue;
+          pair[0] = lead;
+          pair[1] = trail;
+          const ch = decoder.decode(pair);
+          if (ch && ch !== "\uFFFD" && ch.length === 1 && !table.has(ch)) {
+            table.set(ch, (lead << 8) | trail);
+          }
+        }
+      }
+    }
+    const bytes = [];
+    for (const ch of text) {
+      const code = ch.codePointAt(0);
+      if (code < 0x80) {
+        bytes.push(code);
+        continue;
+      }
+      const packed = table.get(ch);
+      if (packed == null) {
+        bytes.push(0x3f);
+        continue;
+      }
+      bytes.push((packed >> 8) & 0xff, packed & 0xff);
+    }
+    return Buffer.from(bytes);
+  };
+}
+
+function patchWindowsConsoleGbk() {
+  if (process.platform !== "win32") return;
+  const encodeGbk = createGbkEncoder();
+  // 行尾必须是 CRLF，不能是裸 LF。
+  //
+  // pnpm 和 Git Bash 都把 stdout 接成管道/pty，不是控制台。裸 \n 在那里只换行、
+  // 不回车 —— 每一行的起点就成了上一行的终点，输出于是变成阶梯：
+  //
+  //     $ pnpm --filter @nono/web dev
+  //                              $ vite     <- 缩进正好等于上一行的长度
+  //
+  // 同一窗口里 sidecar 的 Python 日志一直是整齐的，因为它走文本模式、自己把 \n
+  // 翻成了 \r\n（实测 node 写 "AAA\n"，Python 文本模式写 "AAA\r\n"）。所以乱的
+  // 只有主进程这一路。
+  const eol = "\r\n";
+  const bind = (fd) => (...args) => {
+    // 用 writeFileSync 而不是 writeSync：前者对非阻塞 fd 会自己重试、也会写完整个
+    // 缓冲区。后者只写一次就返回，长日志会被截断，管道忙时还会抛 EAGAIN。
+    fs.writeFileSync(fd, encodeGbk(`${util.format(...args)}${eol}`));
+  };
+  console.log = bind(1);
+  console.info = bind(1);
+  console.warn = bind(2);
+  console.error = bind(2);
+  console.debug = bind(2);
+}
+patchWindowsConsoleGbk();
+
+// 开发态的三个地址必须从**同一个**端口推导出来。
+//
+// 以前这里是两套互不相干的来源：探针读 NONO_SIDECAR_URL（默认 8000），而 spawn
+// 出去的 sidecar 读 NONO_PORT。开发态分支里根本没把端口传给子进程，全靠继承
+// process.env —— 于是「设了 NONO_PORT=8001」会变成「探针还在打 8000、sidecar 却
+// 绑 8001」，永远探不到，10 秒后必然掉线报 offline。
+//
+// 现在端口收口到 devSidecarPort()，探针、spawn、vite 代理三边共用同一个值。
+const DEV_DEFAULT_PORT = 8000;
+
+function devSidecarPort() {
+  const raw = (process.env.NONO_PORT || "").trim();
+  if (!raw) return DEV_DEFAULT_PORT;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    console.warn(`NONO_PORT=${raw} 不是合法端口，回落 ${DEV_DEFAULT_PORT}`);
+    return DEV_DEFAULT_PORT;
+  }
+  return parsed;
+}
+
+/** 取 origin，容忍用户写进 NONO_WEB_URL 的畸形值 —— 这里抛异常会直接掀翻整个启动。 */
+function safeOrigin(value, fallback) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    console.warn(`地址 ${value} 不合法，回落 ${fallback}`);
+    return fallback;
+  }
+}
 
 const DEV_WEB_URL = process.env.NONO_WEB_URL || "http://127.0.0.1:5173";
-const DEV_SIDECAR_HEALTH = process.env.NONO_SIDECAR_URL || "http://127.0.0.1:8000/health";
+// NONO_SIDECAR_URL 仍然优先：mock-sidecar 走的就是它（见 apps/README.md）。
+const DEV_SIDECAR_ORIGIN = (process.env.NONO_SIDECAR_URL || `http://127.0.0.1:${devSidecarPort()}`).replace(/\/+$/, "");
+const DEV_SIDECAR_HEALTH = `${DEV_SIDECAR_ORIGIN}/health`;
+const DEV_WEB_ORIGIN = safeOrigin(DEV_WEB_URL, "http://127.0.0.1:5173");
+
+function devWebPort() {
+  try {
+    const url = new URL(DEV_WEB_URL);
+    if (url.port) return Number(url.port);
+    return url.protocol === "https:" ? 443 : 80;
+  } catch {
+    return 5173;
+  }
+}
+
+// 外部 CDP 调试端口 —— **默认不开**，只有用户在设置页显式打开才会挂。
+//
+// 给的是「让外部工具驱动内置浏览器 <webview>」这条通路（实测 Electron 会把
+// <webview> 以 type=webview 的 target 暴露出来）。之所以门控得这么死，是因为
+// CDP 端点没有任何认证：一旦常开，本机任何进程都能驱动整个 Electron 应用 ——
+// 不只是那个 webview，主窗口、终端、设置页全都算内；而主窗口的渲染进程带着
+// preload 桥（openPath / openExternal / 剪贴板 / relaunch），等于凭空多出一条
+// 「任意本地进程 → 在应用上下文里执行代码」的通路。
+//
+// 开关放在设置页的**插件面板**里，而不是命令行：能在屏幕前决定这件事的应该是
+// 用户本人。见 https://github.com/vercel-labs/agent-browser 之外 BrowserSkill 的
+// 教训 ——「命令行参数是个糟糕的同意决策场所」。Agent 能自己改的开关不叫开关。
+//
+// 配置本体是 ``<数据目录>/settings.json`` 里的 ``tools["browser-agent"].enabled``
+// —— 和其它工具插件同一份文件、同一套面板，所以用户只有一个地方要管。
+//
+// **没有环境变量后门。** 这里曾经留过 NONO_CDP_PORT 供开发态快速验证，后来去掉了：
+// 一个能被环境变量悄悄打开的端口，等于给「默认关闭」开了个后门。开发态要测也走
+// 插件面板那个开关 + 重启，那正好就是用户真实会走的路径。
+//
+// 端口只能在 app ready 之前挂上，所以改开关必须重启应用（面板会提示并提供
+// 重启入口，走 relaunch）。
+// 端口传 **0** =「让 Chromium 自己挑一个空闲端口」。挑完之后它会把真实端口写进
+// ``<userData>/DevToolsActivePort``，:func:`resolveCdpPort` 再读回来。
+//
+// 为什么不再写死 9222：agent-browser 的 daemon 是**跨 Electron 存活的孤儿进程**
+// （父进程一死就被重新挂载，`taskkill /T` 那棵树根本够不着它）。Electron 退出时
+// 它还连着调试端口，那些连接处于半关闭状态，而监听进程已经死了、没法完成拆除，
+// 内核里的 TCB 就永远停在 CLOSE_WAIT —— **连 Listener 一起不释放**。实测：正常
+// 退出再启动，9222 必然绑不上（winerror 10048），杀掉 daemon 也救不回来，只有
+// 重启系统能回收。
+//
+// 自选端口让这一整类失败直接消失：上一个实例漏掉 9222 也无所谓，下次会挑别的；
+// 开发版和已安装版也可以同时跑，不必互相抢同一个号。
+const BROWSER_AGENT_PORT = 0;
+
+// 当前生效的 CDP 端口。``resolveCdpPort()`` 跑完之前是 0，表示「还不知道」；
+// 一直拿不到就一直是 0，而 ``sidecarSpec`` 正是靠这个 0 来决定**不**告诉
+// sidecar「浏览器控制已开启」。
+let browserAgentPort = 0;
+
+// agent-browser 可执行文件。**可选依赖**：没有它插件仍然能开标签（那部分只走
+// 渲染进程的 SSE 总线），只是读不了页面、点不了元素 —— 引擎侧会检测到并主动
+// 说明原因，而不是抛一个「找不到文件」。
+const BROWSER_AGENT_BINARY = "agent-browser-win32-x64.exe";
+
+function agentBrowserBinaryPath() {
+  if (!isPackaged()) {
+    // 开发态指 apps/resources/（提交进仓库的可外挂输入），不是
+    // apps/desktop/resources/ —— 后者是 pack-desktop 每次打包现建现删的组装区，
+    // 跑一次打包就没了，开发时反而最先失效。
+    return path.join(__dirname, "..", "..", "resources", "agent-browser", BROWSER_AGENT_BINARY);
+  }
+  return path.join(process.resourcesPath, "agent-browser", BROWSER_AGENT_BINARY);
+}
+
+// 与 nono_agent/paths.py 的 user_home() 同序：环境变量 > 指针文件 > 默认位置。
+// 指针文件路径本身是固定的（默认位置下的 data-dir.json），所以这里不需要复刻
+// 那套解析 —— 只需要跟着读同一个文件。
+function resolveDataDir() {
+  const fromEnv = (process.env.NONO_DATA_DIR || "").trim();
+  if (fromEnv) return fromEnv;
+  const pointer = path.join(os.homedir(), ".nono-agent", "data-dir.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(pointer, "utf8"));
+    const dir = typeof parsed?.data_dir === "string" ? parsed.data_dir.trim() : "";
+    if (dir) return dir;
+  } catch {
+    // 没有指针文件 / 内容坏了 —— 回落默认位置。
+  }
+  return path.join(os.homedir(), ".nono-agent");
+}
+
+// **只读用户级那一份**，绝不看工作区的 ``.nono-agent/settings.json``。
+// 项目层在 Settings 合并里优先级更高（见 toolplugins/service.py 的说明），
+// 一个工作区完全可能顺手写上 ``tools["browser-agent"].enabled = true``。工具侧
+// 有 fail-fast 兜底，但那是第二道防线；这里的第一道是压根不看那份文件。
+function readBrowserAgentEnabled() {
+  try {
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(resolveDataDir(), "settings.json"), "utf8"),
+    );
+    const block = settings?.tools?.["browser-agent"];
+    return Boolean(block && block.enabled === true);
+  } catch {
+    // 读不到 / 坏了 / 都没有 —— 一律按「关」处理（fail-closed）。
+    return false;
+  }
+}
+
+const browserAgentEnabled = readBrowserAgentEnabled();
+
+if (browserAgentEnabled) {
+  // 端口 0：让 Chromium 自己挑一个空闲端口，避免和上一个没退干净的实例抢号。
+  app.commandLine.appendSwitch("remote-debugging-port", String(BROWSER_AGENT_PORT));
+  // 地址写死回环：绑 0.0.0.0 等于把整个桌面应用敞到局域网上。
+  app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
+
+  // 先把**上一次**留下的 DevToolsActivePort 删掉。
+  //
+  // 不删的话有一个真实的竞态：新实例起来到 Chromium 覆写这个文件之间，旧的还在，
+  // resolveCdpPort() 会把上一个实例的端口当成自己的交给 sidecar —— 于是工具对着
+  // 一个已经没人监听的端口操作，而日志上还显示「端口就绪」。
+  //
+  // 必须在 app ready 之前删：那时 Chromium 还没写盘，删的就是纯旧的；ready 之后再
+  // 删就可能和它自己的写入撞上。app.getPath("userData") 在 ready 前就能取到。
+  try {
+    fs.rmSync(path.join(app.getPath("userData"), "DevToolsActivePort"), { force: true });
+  } catch {
+    // 读不到用户目录就算了，resolveCdpPort() 还有端口探不通的兜底。
+  }
+
+  console.log("[cdp] 已请求内置浏览器控制，端口由 Chromium 自选。");
+}
+
+/**
+ * 读回 Chromium 自己挑的那个端口，读到就写进 ``browserAgentPort``。
+ *
+ * **这个文件是异步落盘的**：它可能晚于 app ready 才出现，也可能先写一半 ——
+ * 第一行只有 ``127.0.0.1:`` 而端口号还没落进去。所以这里轮询到拿到一个合法
+ * 整数为止，绝不把半截内容当成结果。
+ *
+ * 返回 0 表示读不到 —— 调用方据此**不**把「已开启」告诉 sidecar，而不是塞一个
+ * 猜的端口进去让它对着空气报错。
+ */
+async function resolveCdpPort() {
+  const file = path.join(app.getPath("userData"), "DevToolsActivePort");
+  const deadline = Date.now() + 15_000;
+  let sawPartial = false;
+  while (Date.now() < deadline) {
+    try {
+      const raw = fs.readFileSync(file, "utf8");
+      const first = (raw.split(/\r?\n/, 1)[0] || "").trim();
+      // 两个版本见过两种写法：纯端口号，或者 host:port。都取最后一段。
+      const tail = first.includes(":") ? first.slice(first.lastIndexOf(":") + 1) : first;
+      const port = Number(tail);
+      if (Number.isInteger(port) && port > 0 && port < 65536) {
+        return port;
+      }
+      sawPartial = true;
+    } catch {
+      // 文件还没出现 —— 继续等。
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (sawPartial) {
+    console.warn(`[cdp] ${file} 里始终没有合法的端口号，疑似写到一半卡住了。`);
+  }
+  return 0;
+}
+
+/**
+ * 端口定下来之后探一次，把「自选出端口」落实成「真的在应答」。
+ *
+ * 这不是锦上添花：没有它，端口出问题时整条 Agent 浏览器链路会一路超时，而唯一
+ * 的线索是主进程自己打的那句「已请求」。
+ */
+async function verifyCdpPort() {
+  const url = `http://127.0.0.1:${browserAgentPort}/json/version`;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (response.ok) {
+      console.log(`[cdp] 内置浏览器控制端口就绪：127.0.0.1:${browserAgentPort}`);
+      return;
+    }
+    console.warn(`[cdp] 端口 ${browserAgentPort} 返回 ${response.status}，按不可用处理。`);
+  } catch {
+    console.warn(`[cdp] 内置浏览器控制端口 ${browserAgentPort} 没有应答。`);
+    console.warn("[cdp] 文件在、端口却不通，通常是有别的进程抢占了刚挑中的号；重开应用一般就换到别的号了。");
+  }
+}
 
 let sidecar = null;
+// 开发态由桌面壳拉起的 Vite。用户手起的那个不会被记在这里，也就不会被我们杀。
+let webServer = null;
 let mainWindow = null;
 let tray = null;
 let quitting = false;
@@ -43,6 +332,46 @@ async function sidecarUp(healthUrl) {
   }
 }
 
+/** 轮询到健康为止；超时返回 false。 */
+async function waitHealthy(healthUrl, timeoutMs, delayMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await sidecarUp(healthUrl)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+}
+
+// 「这个端口有没有人在听」。
+//
+// 只用来回答「要不要 spawn」，不当作占用检测的最终结论。超时设 1.5s 是有依据的：
+// 连**有监听**的回环端口是 0ms（见 server/nono_app_server/main.py 里关于 WFP
+// filter 的那段注释——装了那类 filter 时，连空闲端口反而要空等约 2s），所以这个
+// 超时只会在「端口确实空着」时被耗掉，而那种情况本来就是我们要的答案。
+function portInUse(port, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: "127.0.0.1", port });
+    const done = (value) => {
+      socket.destroy();
+      resolve(value);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => done(true));
+    socket.once("timeout", () => done(false));
+    socket.once("error", () => done(false));
+  });
+}
+
+/** 等端口真正空出来。Vite 是 strictPort，旧进程不彻底退出，新进程会直接起不来。 */
+async function waitPortFree(port, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!(await portInUse(port, 400))) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+}
+
 function sidecarSpec(port) {
   if (isPackaged()) {
     const exeName = process.platform === "win32" ? "nono-app-server.exe" : "nono-app-server";
@@ -57,6 +386,16 @@ function sidecarSpec(port) {
         NONO_WEB_DIST: path.join(process.resourcesPath, "web"),
         NONO_WEB_ORIGIN: `http://127.0.0.1:${port}`,
         NONO_SIDECAR_LOG: path.join(app.getPath("userData"), "sidecar.log"),
+        // 端口真拿到了才告诉 sidecar。开关开着但端口读不回来时，这几个键干脆
+        // 不出现 —— 引擎侧要能靠「有没有这个变量」区分「用户没开」和
+        // 「开了但端口没落地」，两者的补救动作完全不同。
+        ...(browserAgentPort > 0
+          ? {
+              NONO_BROWSER_CDP_ENABLED: "1",
+              NONO_BROWSER_CDP_PORT: String(browserAgentPort),
+              NONO_BROWSER_BIN: agentBrowserBinaryPath(),
+            }
+          : {}),
       },
     };
   }
@@ -64,8 +403,70 @@ function sidecarSpec(port) {
     command: "uv",
     args: ["run", "nono-app-server"],
     cwd: path.resolve(__dirname, "..", "..", "server"),
-    env: {},
+    // 端口与 origin 显式传下去，不能指望继承父进程 env —— 父进程里很可能根本没有
+    // NONO_PORT，而 Vite 是按 NONO_PORT 决定代理目标的；两边必须同源。
+    env: {
+      NONO_HOST: "127.0.0.1",
+      NONO_PORT: String(port),
+      // 开发态网页跑在 Vite 上，与 sidecar 不同源，写清楚 CORS 白名单。
+      NONO_WEB_ORIGIN: DEV_WEB_ORIGIN,
+      // 同打包态：端口真拿到了才告诉 sidecar，否则引擎侧会以为「开关开了」。
+      ...(browserAgentPort > 0
+        ? {
+            NONO_BROWSER_CDP_ENABLED: "1",
+            NONO_BROWSER_CDP_PORT: String(browserAgentPort),
+            NONO_BROWSER_BIN: agentBrowserBinaryPath(),
+          }
+        : {}),
+    },
   };
+}
+
+// ---------------------------------------------------------------------------
+// 子进程输出的行尾归一
+//
+// 同一个终端里混着两种行尾：pnpm / vite / node 这类工具写出的是**裸 LF**
+// （实测 `pnpm --filter @nono/web dev` 的 stdout+stderr 共 7 处换行、0 个 CR），
+// 而 sidecar 的 Python 走文本模式、发的是 CRLF。Git Bash 的 pty 对裸 LF 不做
+// 回车，于是每一行的起点停在上一行的终点，输出变成阶梯：
+//
+//     $ pnpm --filter @nono/web dev
+//                              $ vite     <- 缩进 29 列，正好是上一行的长度
+//
+// 我们改不了 pnpm/vite 的字节，但可以接管它们的管道。做法是给每个子进程
+// pipe 而不是 inherit，读出来补成 CRLF 再转发到自己的 fd。
+//
+// 只动行尾那一个字节，其余**原样透传、绝不重新编码** —— sidecar 是 GBK、
+// vite 是 UTF-8，任何一层转码都会把中文打碎（打包态压根不转发，见 startSidecar）。
+// ---------------------------------------------------------------------------
+
+function pipeForwarder(child) {
+  // lastWasCR 必须跨 chunk 保留：一次 read 正好切在 \r 和 \n 中间的话，
+  // 逐 chunk 判断会把那个 \n 误判成裸 LF，凭空多插一个 \r。
+  let lastWasCR = false;
+  const normalize = (chunk) => {
+    const bytes = [];
+    for (const byte of chunk) {
+      if (byte === 0x0a && !lastWasCR) bytes.push(0x0d);
+      bytes.push(byte);
+      lastWasCR = byte === 0x0d;
+    }
+    return Buffer.from(bytes);
+  };
+  for (const [stream, fd] of [
+    [child.stdout, 1],
+    [child.stderr, 2],
+  ]) {
+    if (!stream) continue;
+    stream.on("data", (chunk) => {
+      // 终端先关掉了（用户 Ctrl+C / 关窗口）就别再往里写，EPIPE 不该掀翻主进程。
+      try {
+        fs.writeFileSync(fd, normalize(chunk));
+      } catch {
+        /* 终端没了，丢弃即可 */
+      }
+    });
+  }
 }
 
 function startSidecar(port) {
@@ -74,8 +475,10 @@ function startSidecar(port) {
     cwd: spec.cwd,
     env: { ...process.env, PYTHONUNBUFFERED: "1", ...spec.env },
     windowsHide: true,
-    stdio: isPackaged() ? "ignore" : "inherit",
+    // 打包态没有终端可转发，直接丢弃；开发态接管管道做行尾归一。
+    stdio: isPackaged() ? "ignore" : ["ignore", "pipe", "pipe"],
   });
+  if (!isPackaged()) pipeForwarder(child);
   sidecar = child;
   child.on("exit", (code) => {
     if (sidecar === child) sidecar = null;
@@ -83,11 +486,11 @@ function startSidecar(port) {
   });
 }
 
-function stopSidecar() {
-  if (!sidecar) return;
-  const child = sidecar;
+// 回收子进程。Windows 上必须 taskkill /T：pnpm 是壳，真正占着端口的是它下面
+// 那个 node / vite，kill 掉壳本身端口不会释放。
+function killTree(child) {
+  if (!child) return;
   const pid = child.pid;
-  sidecar = null;
   if (process.platform === "win32" && pid) {
     spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
       windowsHide: true,
@@ -100,21 +503,107 @@ function stopSidecar() {
   }
 }
 
+function stopSidecar() {
+  const child = sidecar;
+  sidecar = null;
+  killTree(child);
+}
+
+function stopWebServer() {
+  const child = webServer;
+  webServer = null;
+  killTree(child);
+}
+
 async function ensureSidecar(healthUrl, port) {
   if (process.env.NONO_SIDECAR === "0") return;
   if (await sidecarUp(healthUrl)) return;
+
+  // 端口被人占着 ≠ 有人提供服务。
+  //
+  // 以前这里是「探针一次 false 就 spawn」，于是手动起的 server 只要还在冷启动
+  // （`uv run` 首次导入 + 加载 catalog，十几秒并不罕见），桌面壳就会抢同一个
+  // 8000，撞出 winerror 10048 然后 sidecar exited with code 3 —— 而真正在跑的那个
+  // 服务其实好好的。
+  //
+  // 现在改成：端口有主儿就先等它把 /health 撑起来（那大概率只是还没启动完），
+  // 等到了就直接复用；一直等不到才判定这个端口被别的程序占了，此时**不再 spawn**
+  // —— 那个 spawn 必然失败，只会多一条看不懂的报错。
+  if (!isPackaged() && (await portInUse(port))) {
+    console.log(`端口 127.0.0.1:${port} 已被占用，等待已有服务就绪…`);
+    if (await waitHealthy(healthUrl, 30_000, 250)) {
+      console.log(`已复用 127.0.0.1:${port} 上已有的服务。`);
+      return;
+    }
+    console.warn(`端口 127.0.0.1:${port} 上的服务 30s 内没通过 /health，它可能不是 nono sidecar，或者已经卡住。`);
+    console.warn("请关掉占用进程，或用 NONO_PORT 换一个端口（Vite 也要跟着用同一个 NONO_PORT 启动）。");
+    return;
+  }
+
   startSidecar(port);
   // 以前打包态 500ms 一轮，平均要多等 250ms 才发现 sidecar 好了。80ms 一轮在本机
   // 几乎不花钱：Node 的 fetch 连空回环端口走 ConnectEx + SIO_LOOPBACK_FAST_PATH，
-  // 实测 1~40ms 就返回。总预算（60s / 10s）保持不变，只是探测更密。
-  const timeoutMs = isPackaged() ? 60_000 : 10_000;
-  const delayMs = 80;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-    if (await sidecarUp(healthUrl)) return;
-  }
+  // 实测 1~40ms 就返回。打包态总预算 60s 不变。
+  //
+  // 开发态从 10s 放宽到 20s：桌面壳现在是开发态启动后端的**主路径**，冷启动时
+  // `uv run nono-app-server` 可能要十几秒，10s 容易误判成失败。
+  const timeoutMs = isPackaged() ? 60_000 : 20_000;
+  if (await waitHealthy(healthUrl, timeoutMs, 80)) return;
   console.warn("sidecar did not become healthy in time; UI will show offline");
+}
+
+// ---------------------------------------------------------------------------
+// 开发态的 Vite
+//
+// 打包态网页是冻在 sidecar 里的静态资源，不需要额外进程；开发态要的是 Vite 的 HMR，
+// 这个没法从 sidecar 里长出来。以前它只能手起，于是「起全栈」要开三个终端。
+//
+// 这里让桌面壳在发现 5173 没服务时自己拉一个 —— 与 sidecar 完全同构的健康检查
+// + 复用语义：已经在跑就复用（用户手起的 Vite 不会被杀），没在跑才 spawn，并且
+// 只回收自己 spawn 的那一个。
+// ---------------------------------------------------------------------------
+
+async function webUp(webUrl) {
+  try {
+    const response = await fetch(webUrl, { signal: AbortSignal.timeout(1500) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function startWebServer() {
+  // Windows 上 pnpm 是 pnpm.cmd，Node 现在禁止直接 spawn .cmd（安全修复），所以走
+  // cmd.exe。这里**刻意不用 shell:true** —— 它会往终端打一条 DEP0190 弃用警告，
+  // 而 args 全是这里的字面量、没有任何用户输入，没有需要转义的东西。
+  const isWindows = process.platform === "win32";
+  const command = isWindows ? process.env.ComSpec || "cmd.exe" : "pnpm";
+  const args = isWindows ? ["/d", "/s", "/c", "pnpm dev:web"] : ["dev:web"];
+  const child = spawn(command, args, {
+    // 两级：`__dirname` 是 apps/desktop/src，pnpm workspace 根在 apps/。
+    // 少一级会落到 apps/desktop，那里的 package.json 根本没有 dev:web 这个脚本。
+    cwd: path.resolve(__dirname, "..", ".."),
+    // Vite 按 NONO_PORT 决定代理目标，必须和 sidecar 拿到同一个端口。
+    env: { ...process.env, NONO_PORT: String(devSidecarPort()) },
+    windowsHide: true,
+    // 跟 sidecar 一样接管管道：Vite 的编译报错要看得见，同时行尾归一成 CRLF。
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  pipeForwarder(child);
+  webServer = child;
+  child.on("exit", (code) => {
+    if (webServer === child) webServer = null;
+    console.log(`web dev server exited with code ${code}`);
+  });
+}
+
+async function ensureWebServer(webUrl) {
+  if (process.env.NONO_WEB === "0") return;
+  if (await webUp(webUrl)) return;
+  console.log(`[web] ${webUrl} 没在监听，自动拉起 Vite…`);
+  startWebServer();
+  if (await waitHealthy(webUrl, 30_000, 250)) return;
+  console.warn(`web dev server did not come up in time: ${webUrl}`);
 }
 
 function showWindow(win = mainWindow) {
@@ -643,6 +1132,14 @@ if (gotLock) app.whenReady().then(async () => {
     // 不指望给 themeSource 赋值一定触发 updated（各平台不一致），直接重刷一次。
     syncWindowChrome();
   });
+  // ---- 内置浏览器 Agent 控制 ----
+  // 这里**没有 IPC**：开关是工具插件的开关，写在 <数据目录>/settings.json 里，
+  // 由 sidecar 的插件接口负责读写，与其它工具插件走同一条路。面板判断「要不要
+  // 重启」靠的是 sidecar 侧比对配置与本进程注入的环境变量，主进程不必再开一条
+  // 只服务于这一个开关的通道。
+  //
+  // 重启本身走下面的 relaunch。
+
   // 重启整个应用。换过数据目录之后只有重启才生效：数据目录在进程启动时解析一次
   // （见 nono_agent/paths），会话事件流、app.db 和托管运行时都被当前进程占着。
   // 顺序是「先停 sidecar 再退」：app.quit() 不会替我们回收子进程，sidecar 拿着旧
@@ -650,9 +1147,18 @@ if (gotLock) app.whenReady().then(async () => {
   ipcMain.handle("relaunch", async () => {
     quitting = true;
     stopSidecar();
-    // taskkill 是异步的：旧 sidecar 还没退干净时新进程就抢端口，开发态（固定 8000）
-    // 会直接撞上「端口已被占用」而启动失败。给它一点收尾时间。
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // 开发态的自启 Vite 一并回收：strictPort 意味着它还占着 5173 的话，新进程
+    // 再 spawn 一个必然起不来。而且所有权要跟着进程走 —— 不在这里杀，它就成了
+    // 没人认领的孤儿进程。
+    if (!isPackaged()) stopWebServer();
+    // taskkill 是异步的：旧 sidecar 还没退干净时新进程就抢端口。开发态直接等到
+    // 端口真的空出来，比盲等 400ms 稳。
+    if (isPackaged()) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    } else {
+      await waitPortFree(devSidecarPort(), 5000);
+      await waitPortFree(devWebPort(), 5000);
+    }
     app.relaunch();
     app.quit();
     return true;
@@ -701,7 +1207,20 @@ if (gotLock) app.whenReady().then(async () => {
     return { ok: true };
   });
 
-  const port = isPackaged() ? await pickFreePort() : Number(process.env.NONO_PORT || 8000);
+  // CDP 端口**必须**在 ensureSidecar 之前定下来：sidecarSpec() 是靠
+  // ``browserAgentPort > 0`` 决定要不要告诉 sidecar「浏览器控制已开启」的，
+  // 顺序反了就会拿一个还没解析出来的端口（0）去发环境变量。
+  if (browserAgentEnabled) {
+    browserAgentPort = await resolveCdpPort();
+    if (browserAgentPort > 0) {
+      console.log(`[cdp] Chromium 自选端口：127.0.0.1:${browserAgentPort}`);
+    } else {
+      console.warn("[cdp] 没能读回 Chromium 自选的调试端口，Agent 浏览器控制这次保持关闭。");
+      console.warn(`[cdp] 预期文件：${path.join(app.getPath("userData"), "DevToolsActivePort")}`);
+    }
+  }
+
+  const port = isPackaged() ? await pickFreePort() : devSidecarPort();
   const healthUrl = isPackaged()
     ? `http://127.0.0.1:${port}/health`
     : DEV_SIDECAR_HEALTH;
@@ -710,7 +1229,14 @@ if (gotLock) app.whenReady().then(async () => {
   // 先把 sidecar 拉起来再开窗：这里刻意不 await。ensureSidecar() 的第一步就是
   // spawn（打包态），Python 进程启动与建窗口、渲染 loading.html 并行进行。
   // 以前是建完窗口才 spawn，白白串行了一整个 Python 启动时间。
+  //
+  // 开发态多拉一个 Vite，同样不 await —— 它和 sidecar 各冷启动各的，并行比串行快，
+  // 而且已经在跑（用户手起过）就直接复用，两条都不占额外时间。
   const sidecarReady = ensureSidecar(healthUrl, port);
+  const webReady = isPackaged() ? Promise.resolve() : ensureWebServer(webUrl);
+  // 不 await：端口通不通和 sidecar/vite 能不能起来无关，不该拖慢开窗。
+  // 失败也只是打日志 —— 但这条日志是**真的**（见 verifyCdpPort 自己的注释）。
+  if (browserAgentPort > 0) verifyCdpPort();
   mainWindow = createWindow();
   tray = await createTray(mainWindow);
   if (isPackaged()) {
@@ -718,7 +1244,7 @@ if (gotLock) app.whenReady().then(async () => {
       query: { theme: appTheme() },
     });
   }
-  await sidecarReady;
+  await Promise.all([sidecarReady, webReady]);
   await mainWindow.loadURL(webUrl);
 
   // 启动后静默问一次有没有新版。不下载、不弹窗，只把结果留给设置页那一行 ——
@@ -737,6 +1263,7 @@ if (gotLock) app.whenReady().then(async () => {
 app.on("before-quit", () => {
   quitting = true;
   stopSidecar();
+  stopWebServer();
   if (tray) {
     tray.destroy();
     tray = null;

@@ -10,6 +10,7 @@ from nono_agent.core.config import EngineConfig
 from nono_agent.session.transcript import list_session_files
 from nono_app_server.common.store import AppStore, default_db_path
 from nono_app_server.config import SidecarSettings
+from nono_app_server.features.browser.api import router as browser_router
 from nono_app_server.features.catalog.api import router as catalog_router
 from nono_app_server.features.changes.api import router as changes_router
 from nono_app_server.features.changes.service import WorkspaceChangesService
@@ -49,6 +50,7 @@ def mount_product_routes(
     router.include_router(mcp_router)
     router.include_router(toolplugins_router)
     router.include_router(permissions_router)
+    router.include_router(browser_router)
     router.include_router(control_router)
     router.include_router(filesystem_router)
     router.include_router(git_router)

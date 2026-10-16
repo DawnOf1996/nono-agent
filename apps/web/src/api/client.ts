@@ -586,6 +586,74 @@ export async function watchControl(
   }
 }
 
+export type BrowserCommand = {
+  request_id: string;
+  op: "open" | "tabs" | string;
+  url?: string;
+  /** 总线给出的顺序号，仅用于排障。 */
+  seq?: number;
+};
+
+export type BrowserTabInfo = { tabId: string; title: string; url: string };
+
+export type BrowserReplyBody = {
+  request_id: string;
+  ok: boolean;
+  message?: string;
+  tab_id?: string;
+  title?: string;
+  url?: string;
+  bound?: string;
+  tabs?: BrowserTabInfo[];
+};
+
+/** 把一条回执送回引擎。找不到对应请求时服务端会回 ok=false，正常现象。 */
+export async function sendBrowserReply(body: BrowserReplyBody): Promise<{ ok: boolean }> {
+  return readJson(
+    await fetch("/app/browser/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/**
+ * 订阅引擎下发给内置浏览器的命令。
+ *
+ * 连上这条流本身就是一个信号：说明桌面端在场，引擎的 browser_* 工具才可用。
+ * web 版不连，于是工具会在几百毫秒内给出明确提示而不是干等超时。
+ */
+export async function watchBrowser(
+  signal: AbortSignal,
+  handlers: {
+    onCommand: (command: BrowserCommand) => void | Promise<void>;
+    onOpen?: () => void;
+    onClose?: () => void;
+  },
+): Promise<void> {
+  while (!signal.aborted) {
+    try {
+      const response = await fetch("/app/browser/stream", {
+        headers: { Accept: "text/event-stream" },
+        signal,
+      });
+      if (!response.ok || !response.body) throw new Error("浏览器通道连接失败");
+      handlers.onOpen?.();
+      for await (const frame of parseSse(response)) {
+        if (!frame.data || frame.event !== "command") continue;
+        const command = readFrame<BrowserCommand>(frame.data);
+        if (command) await handlers.onCommand(command);
+      }
+    } catch {
+      // 断线（含 abort）都走下面的重连
+    }
+    handlers.onClose?.();
+    if (signal.aborted) return;
+    await reconnectDelay();
+  }
+}
+
 export async function fetchDirectory(path?: string | null): Promise<FsListing> {
   const query = path ? `?path=${encodeURIComponent(path)}` : "";
   return readJson(await fetch(`/app/fs${query}`));

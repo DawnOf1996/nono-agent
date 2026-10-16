@@ -28,12 +28,20 @@
 #   打包完把产物发成 GitHub Release（安装包 / latest.yml / blockmap 一起）。
 #   需要环境变量 GH_TOKEN。本地手工打包别开 —— 免得误传。
 #
+# -SkipAgentBrowser:
+#   不打包 agent-browser（browser-agent 插件交互那一半依赖的可执行文件）。
+#   它是提交进仓库的，所以正常情况下**不会**触发下载，缺文件只会说明 clone 时
+#   没带上（或被手工删了），跑 scripts\fetch_agent_browser.ps1 补回来即可。
+#   少了它，插件仍然能用 —— 能开标签、列标签 —— 只是读不了页面、点不了元素。
+#   想先打个轻量包自测就加这个参数；**发版别加**。
+#
 
 [CmdletBinding()]
 param(
     [switch]$SkipWeb,
     [switch]$SkipSidecar,
     [switch]$SkipElectron,
+    [switch]$SkipAgentBrowser,
     [string]$OutputDir = "release",
     [string]$Version,
     [switch]$Publish,
@@ -48,6 +56,8 @@ $webDist = Join-Path $apps "web\dist"
 $resources = Join-Path $desktop "resources"
 $sidecarDir = Join-Path $root "dist\desktop-sidecar\nono-app-server"
 $sidecarExe = Join-Path $sidecarDir "nono-app-server.exe"
+$agentBrowserCache = Join-Path $apps "resources\agent-browser"
+$agentBrowserExe = Join-Path $agentBrowserCache "agent-browser-win32-x64.exe"
 $outDir = if ([System.IO.Path]::IsPathRooted($OutputDir)) { $OutputDir } else { Join-Path $desktop $OutputDir }
 
 function Require-Cmd([string]$Name) {
@@ -481,6 +491,33 @@ if (Test-Path $resources) {
 }
 Copy-Tree $sidecarDir (Join-Path $resources "sidecar")
 Copy-Tree $webDist (Join-Path $resources "web")
+
+# agent-browser：browser-agent 工具插件交互那一半（读页面/点元素/输文字）靠它。
+# 源在 apps\resources\（提交进仓库的输入），这里是组装区的副本 —— 上面刚把
+# resources\ 整个删过，所以必须重新拷。
+#
+# 目录**一定要建**：electron-builder 碰上 extraResources 指向不存在的目录会报
+# 一个跟原因完全脱节的错，不如我们自己先把话说清楚。
+#
+# 拿不到就失败，除非显式 -SkipAgentBrowser。理由：browser-agent 默认关闭，
+# 但一个发出去才发现「插件只能开标签」的安装包，是没法靠用户投诉才发现的坏法。
+# 想本地先打个不带它的包，加 -SkipAgentBrowser 就行。
+New-Item -ItemType Directory -Force -Path (Join-Path $resources "agent-browser") | Out-Null
+if ($SkipAgentBrowser) {
+    Write-Warning "跳过了 agent-browser。browser-agent 插件仍然能用（能开标签），但读不了页面、点不了元素。"
+}
+else {
+    if (-not (Test-Path $agentBrowserExe)) {
+        Write-Host "==> 补取 agent-browser（仓库里这份不见了）"
+        & (Join-Path $PSScriptRoot "fetch_agent_browser.ps1")
+        Assert-LastExit "取 agent-browser"
+    }
+    if (-not (Test-Path $agentBrowserExe)) {
+        throw "没拿到 agent-browser：$agentBrowserExe。浏览器控制插件将只能开标签。跑 scripts\fetch_agent_browser.ps1 补一份，或者本次打包加 -SkipAgentBrowser。"
+    }
+    Copy-Item -Path $agentBrowserExe -Destination (Join-Path $resources "agent-browser") -Force
+    Write-Host "    agent-browser $([math]::Round((Get-Item $agentBrowserExe).Length / 1MB, 1)) MB"
+}
 
 $desktopVersion = $null
 if (-not $SkipElectron) {

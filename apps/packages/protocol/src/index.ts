@@ -515,8 +515,30 @@ export type ToolPluginInfo = {
   id: string;
   version: string;
   description: string;
+  /**
+   * 「可以直接这么问」的示例句，来自清单的 `examples` 段。
+   *
+   * 不是文档：插件刚装上时用户不知道它能干什么，而一句话例子比读工具名有效
+   * 得多。缺省就是空数组，详情面板整段不渲染。
+   */
+  examples: string[];
   source: ToolPluginSource;
   enabled: boolean;
+  /**
+   * 改了要重启应用才生效。
+   *
+   * 有些能力由主进程在启动前挂上（Electron 的远程调试端口就是例子），开关
+   * 热不了。面板据此显示「重启」，而不是摆一个其实还没生效的开关。
+   */
+  needs_restart: boolean;
+  /**
+   * 本次运行的实际状态与 `enabled` 是否一致。
+   *
+   * false = 用户改了还没重启。开关显示的是**用户想要的状态**，`live` 才
+   * 回答「现在真的生效了吗」—— 两者不一致时必须说出来，否则用户会对着一个
+   * 怎么按都没反应的开关反复试。
+   */
+  live: boolean;
   api_key: ToolPluginApiKey;
   fields: ToolPluginField[];
   /**

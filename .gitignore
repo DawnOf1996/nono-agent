@@ -145,6 +145,8 @@ node_modules/
 apps/web/dist/
 apps/desktop/out/
 apps/desktop/release/
+# 组装区：pack-desktop 每次打包现建现删，只放构建产物。
+# 注意别跟 apps/resources/ 搞混 —— 后者是提交进仓库的可外挂输入。
 apps/desktop/resources/
 *.tsbuildinfo
 

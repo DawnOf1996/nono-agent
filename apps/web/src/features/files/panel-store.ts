@@ -155,7 +155,7 @@ type PanelState = ScopeSnapshot & {
   showTasks: () => void;
   openBeside: (path: string, title?: string) => void;
   clearSide: () => void;
-  openBrowser: (url?: string) => void;
+  openBrowser: (url?: string) => string;
   patchBrowser: (id: string, patch: { url?: string; title?: string }) => void;
   addTerminal: (tab: NewTerminal) => void;
   patchTerminal: (id: string, patch: Partial<NewTerminal>) => void;
@@ -421,6 +421,9 @@ export const usePanelStore = create<PanelState>((set, get) => ({
       active: id,
       revealRequest: state.revealRequest + 1,
     }));
+    // 把新标签的 id 带回去：Agent 侧的 browser_open 需要它来回报「开成了哪个标签」，
+    // 否则模型只能知道「开了」，不知道开的是哪一个。
+    return id;
   },
   patchBrowser: (id, patch) =>
     set((state) => ({

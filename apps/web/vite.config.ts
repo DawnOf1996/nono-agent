@@ -46,7 +46,15 @@ function pdfjsAssets(): Plugin {
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 
-const sidecar = process.env.NONO_SIDECAR_URL || "http://127.0.0.1:8000";
+// 代理目标必须和桌面壳拉起的 sidecar 同端口，否则前端会一直 502。
+//
+// 桌面壳 spawn 本进程时会显式把 NONO_PORT 传下来（见 desktop/src/main.js 的
+// startWebServer），手起 Vite 时也认同一个变量 —— 两边从此只有一处口径。
+// NONO_SIDECAR_URL 仍然优先，mock-sidecar 走的就是它。
+const sidecarPort = Number(process.env.NONO_PORT || 8000);
+const sidecar =
+  process.env.NONO_SIDECAR_URL ||
+  `http://127.0.0.1:${Number.isInteger(sidecarPort) && sidecarPort > 0 && sidecarPort < 65536 ? sidecarPort : 8000}`;
 
 const desktopPackage = JSON.parse(
   fs.readFileSync(path.resolve(rootDir, "../desktop/package.json"), "utf8"),

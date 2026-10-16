@@ -1,10 +1,10 @@
-import { ArrowRight, Check, Loader2, RotateCw } from "lucide-react";
+import { ArrowRight, Check, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { updateDataDir } from "@/api/client";
 import { Button } from "@/components/ui/button";
-import { relaunchApp, canRelaunch } from "@/lib/relaunch";
+import { RestartButtons } from "@/features/settings/RestartDialog";
 
 /**
  * 更改数据目录的确认弹窗。
@@ -178,28 +178,5 @@ function PathRow({ label, value, arrow }: { label: string; value: string; arrow?
         {value}
       </span>
     </div>
-  );
-}
-
-/** 待重启这一步的按钮：桌面端能自己重启，浏览器里只能让人手动关。 */
-function RestartButtons({ onClose }: { onClose: () => void }) {
-  const [restarting, setRestarting] = useState(false);
-  const canRelaunchNow = canRelaunch();
-
-  async function restart() {
-    setRestarting(true);
-    await relaunchApp();
-  }
-
-  return (
-    <>
-      <Button variant="outline" onClick={onClose}>
-        稍后重启
-      </Button>
-      <Button disabled={restarting || !canRelaunchNow} onClick={() => void restart()}>
-        {restarting ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCw className="size-3.5" />}
-        {canRelaunchNow ? "立即重启" : "请手动重启应用"}
-      </Button>
-    </>
   );
 }

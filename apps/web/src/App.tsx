@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 
+import { startBrowserBridge } from "@/features/files/browser-bridge";
 import { usePanelStore } from "@/features/files/panel-store";
 import { PermissionDialog } from "@/features/permissions/PermissionDialog";
 import { NewTaskDialog } from "@/features/session/NewTaskDialog";
@@ -33,6 +34,11 @@ export function App() {
     watchControl();
     return () => unwatchControl();
   }, [watchControl, unwatchControl]);
+
+  // Agent 操作内置浏览器用的反向通道：引擎把「开标签/列标签」发过来，这里落到
+  // 面板 store 上再回执。整条应用存活期都开着，且只有桌面端会真的连 ——
+  // 连上本身就是「桌面端在场」的信号。
+  useEffect(() => startBrowserBridge(), []);
 
   // 底部统计只订阅**正在浏览**的那个会话：服务端在引擎每落一步事件时推一帧，
   // 这里既不轮询也不订阅别的会话。切换会话时关掉旧流再开新流。
