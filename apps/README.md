@@ -45,7 +45,42 @@ node node_modules/.pnpm/electron@37.10.3/node_modules/electron/install.js
 
 ### 启动
 
-三个终端：
+开发有两条路，按要不要 Electron 来选。
+
+#### A. 桌面联调（一条命令）
+
+```bash
+cd apps
+pnpm dev:desktop
+```
+
+Windows 上也可以在仓库根执行 `.\scripts\dev.ps1`，就是上面那条命令的包装。
+
+桌面壳会把整条链自己拉起来，逻辑和打包态一致：
+
+| 进程     | 端口  | 谁负责拉起                                         |
+| -------- | ----- | -------------------------------------------------- |
+| sidecar  | 8000  | 桌面壳 spawn `uv run nono-app-server`，已在跑就复用 |
+| Vite     | 5173  | 桌面壳 spawn `pnpm dev:web`，已在跑就复用           |
+| Electron | —     | 你执行的那条命令                                   |
+
+**不需要**再手动启动 sidecar 或 Vite。反过来同时手动起也没坏处 —— 桌面壳会
+探测到端口上已有健康服务就直接复用，但那种情况下 sidecar 的日志不在你眼前。
+
+两个「已在跑就复用」的例外：
+
+- 端口上有个服务在监听、但 `/health` 不通（还在冷启动，或压根不是 nono sidecar），
+  桌面壳会先等它 30s 就绪，仍然不通就**放弃 spawn 并打印原因**——那种情况下
+  再 spawn 必然撞 `winerror 10048`，只会多一条看不懂的报错；
+- 想完全接管某个进程，设 `NONO_SIDECAR=0`（不碰后端）或 `NONO_WEB=0`（不碰 Vite）
+  再启动桌面壳。
+
+从托盘图标或窗口关闭按钮退出时，桌面壳会回收**自己拉起**的那些进程；你手起的
+不会被误杀。注意窗口的关闭按钮只是隐藏到托盘，进程还在 —— 要真正退出请用托盘菜单。
+
+#### B. 纯 Web 联调（三个终端）
+
+只改前端、不用 Electron 时走这条。sidecar 的日志直接落在终端里，比 A 更方便看：
 
 ```bash
 # 1. sidecar
@@ -56,12 +91,29 @@ uv run nono-app-server
 cd apps
 pnpm dev:web
 
-# 3. 桌面壳（可选；会复用已启动的 sidecar）
+# 3. 浏览器
+#    打开 http://127.0.0.1:5173
+```
+
+sidecar 记得在 `apps/server` 目录下跑（`cwd` 决定它读哪份配置）。这条路上
+不要再开 `pnpm dev:desktop` —— 不然 Electron 会去复用你手起的 sidecar，而且
+关窗口只是缩到托盘，进程还在。
+
+#### 换端口
+
+两条路都用 `NONO_PORT`，桌面壳会把它同时传给 sidecar 和 Vite：
+
+```powershell
 cd apps
+$env:NONO_PORT = "8010"
 pnpm dev:desktop
 ```
 
-Windows 也可在仓库根执行 `.\scripts\dev.ps1`，会拉起 sidecar 与 Vite。
+走 B 的话，手起 sidecar 和手起 Vite 要在**各自那个终端里**都设上同一个
+`NONO_PORT`，否则 Vite 的代理会指向 8000。
+
+> 注意：Vite 的代理目标在**启动时**固化（`__NONO_SIDECAR_HTTP__`）。改了
+> `NONO_PORT` 必须把 Vite 重启才生效。
 
 浏览器打开 [http://127.0.0.1:5173](http://127.0.0.1:5173) 。Electron 加载同一地址。点「新任务」可选本地目录作为工作空间；「设置」里配置 / 切换模型。
 
