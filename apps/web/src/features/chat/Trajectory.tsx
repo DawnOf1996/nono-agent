@@ -2,6 +2,7 @@ import { useMemo } from "react";
 
 import { extractTextDelta, extractThinkingDelta } from "@/api/sse";
 import type { SessionEvent } from "@nono/protocol";
+import { CopyButton } from "@/components/CopyButton";
 import { useChatStore } from "@/store/chat";
 
 type TrajectoryRow = {
@@ -36,7 +37,17 @@ export function Trajectory() {
                   <span className="ml-2 text-faint">×{row.count}</span>
                 ) : null}
               </span>
-              <span className="font-mono text-[11px] text-faint">{row.seqLabel}</span>
+              {/* 事件数据是排查问题时唯一要往外搬的东西（贴 issue、喂给模型、
+                  存成样本），没有复制键就只能一段段手选。放在标题行而不是代码块
+                  里面：数据块可能很长，按钮浮在内容上会跟着滚动，且会挡住第一行。 */}
+              <div className="flex shrink-0 items-center gap-1">
+                <CopyButton
+                  text={JSON.stringify(row.data, null, 2)}
+                  label="复制事件数据"
+                  compact
+                />
+                <span className="font-mono text-[11px] text-faint">{row.seqLabel}</span>
+              </div>
             </div>
             {Object.keys(row.data).length ? (
               <pre className="mt-1 max-h-40 overflow-auto font-mono text-[11px] leading-5 text-muted">
