@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -87,6 +88,13 @@ def _ok(stdout: str = "") -> cli.AgentBrowserResult:
 
 def _failed(stderr: str, exit_code: int = 1) -> cli.AgentBrowserResult:
     return cli.AgentBrowserResult(stdout="", stderr=stderr, exit_code=exit_code)
+
+
+#: 下面绝大多数用例把 ``context`` 传成 ``None``，也就是「没有会话 id」—— 引擎侧
+#: 真是每个工具调用都带着 ``session_id``，但绑定的**分桶逻辑**与它无关，空串也
+#: 只是一个普通的桶。真正要验「两个会话互不干扰」的那些用例在
+#: :class:`TestSessionsDoNotStealEachOther` 里，用的是真的 session id。
+_SESSION = ""
 
 
 
@@ -219,26 +227,26 @@ class TestTargetMath:
 
 class TestBinding:
     def test_bound_roundtrip(self):
-        targets.bind("tab-1", "TARGET")
-        assert targets.bound() == ("tab-1", "TARGET")
+        targets.bind(_SESSION, "tab-1", "TARGET")
+        assert targets.bound(_SESSION) == ("tab-1", "TARGET")
 
     async def test_resolve_without_binding_explains_what_to_do(self):
         with pytest.raises(targets.TargetResolutionError) as exc:
-            await targets.resolve()
+            await targets.resolve(_SESSION)
         # 没有绑定时不能随便挑一个 target —— 那会让模型动一个用户没选过的页面。
         assert "browser_tabs" in str(exc.value)
 
     async def test_resolve_prefers_bound_target(self, monkeypatch):
-        targets.bind("tab-1", "TARGET")
+        targets.bind(_SESSION, "tab-1", "TARGET")
 
         async def _alive(tid: str) -> bool:
             return True
 
         monkeypatch.setattr(targets, "_alive", _alive)
-        assert await targets.resolve() == "TARGET"
+        assert await targets.resolve(_SESSION) == "TARGET"
 
     async def test_resolve_drops_dead_binding(self, monkeypatch):
-        targets.bind("tab-1", "GONE")
+        targets.bind(_SESSION, "tab-1", "GONE")
 
         async def _dead(tid: str) -> bool:
             return False
@@ -254,7 +262,7 @@ class TestBinding:
         monkeypatch.setattr(cdp, "list_webviews", _webviews)
 
         with pytest.raises(targets.TargetResolutionError) as exc:
-            await targets.resolve("tab-1")
+            await targets.resolve(_SESSION, "tab-1")
         # 绑定失效后要把「现在开着哪些」摊开，让模型自己重选。
         assert "https://b.com/" in str(exc.value)
 
@@ -276,7 +284,7 @@ class TestBinding:
         monkeypatch.setattr(cdp, "list_webviews", _webviews)
 
         with pytest.raises(targets.TargetResolutionError) as exc:
-            await targets.resolve("tab-2")
+            await targets.resolve(_SESSION, "tab-2")
         assert "2 tabs" in str(exc.value)
 
 
@@ -402,7 +410,7 @@ class TestActionFailureIsNotSuccess:
 
     def test_browser_type_surfaces_the_failure(self, monkeypatch):
         """端到端：工具层必须返回 is_error，而不是一句「已把内容填进」。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         _script_cli(monkeypatch, [_failed("✗ Unknown ref: e25")])
 
         result = asyncio.run(BrowserTypeTool().execute({"ref": "e25", "text": "你好"}, None))
@@ -445,7 +453,7 @@ class TestPinFailureMustNotRunTheAction:
 
     def test_successful_pin_proceeds(self, monkeypatch):
         """守住另一头：钉成功不能被这次改动挡下。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(monkeypatch, [_ok("body")])
 
         asyncio.run(_act("T1", ["read"]))
@@ -465,16 +473,16 @@ class TestResolveVerifiesTheCachedTarget:
             return [{"id": "T7", "type": "webview", "url": "https://a.com/"}]
 
         monkeypatch.setattr(cdp, "list_targets", only_other_targets)
-        targets.bind("tab-1", "DEAD")
+        targets.bind(_SESSION, "tab-1", "DEAD")
 
         with pytest.raises(targets.TargetResolutionError):
-            await targets.resolve()
+            await targets.resolve(_SESSION)
 
     async def test_live_cached_target_is_returned_directly(self, monkeypatch):
         """还活着就该走缓存，不额外去反查 —— 那是常见路径。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
 
-        assert await targets.resolve() == "T1"
+        assert await targets.resolve(_SESSION) == "T1"
 
 
 class TestActionFailureCarriesCdpDiagnosis:
@@ -529,7 +537,7 @@ class TestTypeUsesKeyboardPath:
 
     def test_sends_focus_select_all_then_inserttext(self, monkeypatch):
         """顺序不能换：先 focus 才有焦点，Control+a 才能选中旧内容。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(
             monkeypatch, [_ok(), _ok(), _ok(), _ok("你好")]
         )
@@ -545,7 +553,7 @@ class TestTypeUsesKeyboardPath:
 
     def test_pins_only_once_across_the_three_steps(self, monkeypatch):
         """中间再插一次 ``tab`` 会清掉焦点，整条路径就废了。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(monkeypatch, [_ok(), _ok(), _ok(), _ok("你好")])
 
         asyncio.run(BrowserTypeTool().execute({"ref": "e25", "text": "你好"}, None))
@@ -554,7 +562,7 @@ class TestTypeUsesKeyboardPath:
 
     def test_cjk_text_is_passed_through_verbatim(self, monkeypatch):
         """inserttext 是 IME 无关通道，中文不能被转义或截断。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(monkeypatch, [_ok(), _ok(), _ok(), _ok("你好，世界")])
 
         asyncio.run(BrowserTypeTool().execute({"ref": "e25", "text": "你好，世界"}, None))
@@ -563,7 +571,7 @@ class TestTypeUsesKeyboardPath:
 
     def test_empty_readback_is_reported_not_silently_ok(self, monkeypatch):
         """三步都退出码 0 但回读为空 = 焦点被页面抢走，必须报错。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         _script_cli(monkeypatch, [_ok(), _ok(), _ok(), _ok("")])
 
         result = asyncio.run(BrowserTypeTool().execute({"ref": "e25", "text": "你好"}, None))
@@ -574,7 +582,7 @@ class TestTypeUsesKeyboardPath:
 
     def test_failure_on_any_step_is_reported(self, monkeypatch):
         """三步里任何一步失败都必须如实报错，不能只回一句「已把内容填进」。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         _script_cli(monkeypatch, [_ok(), _failed("✗ Unknown ref: e25"), _ok(), _ok()])
 
         result = asyncio.run(BrowserTypeTool().execute({"ref": "e25", "text": "你好"}, None))
@@ -584,7 +592,7 @@ class TestTypeUsesKeyboardPath:
         assert "Unknown ref: e25" in result.content
 
     def test_success_when_text_landed(self, monkeypatch):
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         _script_cli(monkeypatch, [_ok(), _ok(), _ok(), _ok("你好")])
 
         result = asyncio.run(BrowserTypeTool().execute({"ref": "e25", "text": "你好"}, None))
@@ -606,7 +614,7 @@ class TestActionErrorTaxonomy:
         assert OSError in browser_tools._ACTION_ERRORS
 
     def test_snapshot_tool_reports_oserror_as_tool_error(self, monkeypatch):
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
 
         async def boom(args, *, timeout_s: float = 30.0):
             raise OSError(32, "另一个程序正在使用此文件")
@@ -631,7 +639,7 @@ class TestBrowserRead:
         URL，CLI 就会另发 HTTP 请求去抓 —— 那是一条用户看不见、也绕开了侧边栏
         标签生命周期的旁路，整个插件的前提（动作发生在用户眼前）就破了。
         """
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(monkeypatch, [_ok("正文内容")])
 
         result = asyncio.run(BrowserReadTool().execute({}, None))
@@ -641,7 +649,7 @@ class TestBrowserRead:
         assert "正文内容" in result.content
 
     def test_outline_appends_flag(self, monkeypatch):
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(monkeypatch, [_ok("# 标题")])
 
         result = asyncio.run(BrowserReadTool().execute({"outline": True}, None))
@@ -650,7 +658,7 @@ class TestBrowserRead:
         assert calls[-1] == ["read", "--outline"]
 
     def test_contains_becomes_filter(self, monkeypatch):
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(monkeypatch, [_ok("价格小节")])
 
         asyncio.run(BrowserReadTool().execute({"contains": "pricing"}, None))
@@ -658,7 +666,7 @@ class TestBrowserRead:
         assert calls[-1] == ["read", "--filter", "pricing"]
 
     def test_ref_reads_that_element_only(self, monkeypatch):
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(monkeypatch, [_ok("段落文本")])
 
         result = asyncio.run(BrowserReadTool().execute({"ref": "e12"}, None))
@@ -686,7 +694,7 @@ class TestBrowserRead:
 
     def test_empty_page_points_at_scroll(self, monkeypatch):
         """读不到字时要把下一步指出来，否则模型只会反复重试同一个工具。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         _script_cli(monkeypatch, [_ok("   ")])
 
         result = asyncio.run(BrowserReadTool().execute({}, None))
@@ -696,7 +704,7 @@ class TestBrowserRead:
 
     def test_long_page_is_truncated_and_says_so(self, monkeypatch):
         """截断必须自报，否则模型会以为页面就这么多内容。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         body = "字" * (browser_tools._MAX_READ_CHARS + 500)
         _script_cli(monkeypatch, [_ok(body)])
 
@@ -707,7 +715,7 @@ class TestBrowserRead:
         assert len(result.content) < len(body)
 
     def test_failure_surfaces_as_tool_error(self, monkeypatch):
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         _script_cli(monkeypatch, [_failed("✗ no active tab")])
 
         result = asyncio.run(BrowserReadTool().execute({}, None))
@@ -717,7 +725,7 @@ class TestBrowserRead:
 
 class TestBrowserScroll:
     def test_defaults_to_down_300(self, monkeypatch):
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(monkeypatch, [_ok()])
 
         result = asyncio.run(BrowserScrollTool().execute({}, None))
@@ -726,7 +734,7 @@ class TestBrowserScroll:
         assert calls[-1] == ["scroll", "down", "300"]
 
     def test_explicit_direction_and_amount(self, monkeypatch):
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(monkeypatch, [_ok()])
 
         asyncio.run(BrowserScrollTool().execute({"direction": "up", "amount": 200}, None))
@@ -756,7 +764,7 @@ class TestBrowserScroll:
 class TestBrowserNavigate:
     @pytest.mark.parametrize("action", ["back", "forward", "reload"])
     def test_each_action_maps_to_one_cli_command(self, monkeypatch, action):
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         calls = _script_cli(monkeypatch, [_ok()])
 
         result = asyncio.run(BrowserNavigateTool().execute({"action": action}, None))
@@ -766,7 +774,7 @@ class TestBrowserNavigate:
 
     def test_result_warns_that_refs_died(self, monkeypatch):
         """导航作废所有 ref —— 不说这句，模型会拿着旧 ref 去点，会点到别的东西上。"""
-        targets.bind("tab-1", "T1")
+        targets.bind(_SESSION, "tab-1", "T1")
         _script_cli(monkeypatch, [_ok()])
 
         result = asyncio.run(BrowserNavigateTool().execute({"action": "back"}, None))
@@ -790,4 +798,124 @@ class TestBrowserNavigate:
 
         assert result.is_error is True
         assert calls == []
+
+
+class TestSessionsDoNotStealEachOther:
+    """回归：两个会话同时用浏览器时，动作必须落在**自己**的标签上。
+
+    改造前有两层进程级单例，两个会话一开就互相踩：
+
+    1. ``targets`` 的 tab→target 绑定是模块级全局 —— B 开一个标签就把 A 的绑定顶掉；
+    2. agent-browser 只有一个 daemon、一个 active target —— A 钉完标签正要动手，
+       B 插进来钉了另一个，A 的动作就落到了 B 的页面上。
+
+    第 1 层靠按 session 分桶解决，第 2 层靠 :class:`_ActionGate` 串行化解决。
+    """
+
+    @staticmethod
+    def _ctx(session: str):
+        return SimpleNamespace(session_id=session)
+
+    @staticmethod
+    def _two_sessions(monkeypatch):
+        """给两个会话各绑一个活着的 target。
+
+        fixture 里那份合成 target 列表只有 ``T1``，所以这里直接把 ``_alive`` 打成
+        「都活着」—— 本组用例要验的是**分桶**与**串行化**，不是验活逻辑本身。
+        """
+
+        async def _alive(target_id: str) -> bool:
+            return True
+
+        monkeypatch.setattr(targets, "_alive", _alive)
+        targets.bind("s1", "tab-a", "TA")
+        targets.bind("s2", "tab-b", "TB")
+
+    def test_bind_is_per_session(self):
+        targets.bind("s1", "tab-a", "TA")
+        targets.bind("s2", "tab-b", "TB")
+
+        assert targets.bound("s1") == ("tab-a", "TA")
+        assert targets.bound("s2") == ("tab-b", "TB")
+
+    def test_clearing_one_session_leaves_the_other(self):
+        targets.bind("s1", "tab-a", "TA")
+        targets.bind("s2", "tab-b", "TB")
+
+        targets.clear("s1")
+
+        assert targets.bound("s1") == ("", "")
+        assert targets.bound("s2") == ("tab-b", "TB")
+
+    async def test_resolve_uses_this_sessions_binding(self, monkeypatch):
+        targets.bind("s1", "tab-a", "TA")
+        targets.bind("s2", "tab-b", "TB")
+
+        async def _alive(target_id: str) -> bool:
+            return True
+
+        monkeypatch.setattr(targets, "_alive", _alive)
+
+        assert await targets.resolve("s1") == "TA"
+        assert await targets.resolve("s2") == "TB"
+
+    def test_one_session_opening_a_tab_does_not_move_the_other(self, monkeypatch):
+        """两个会话各点一下，命令必须发到各自的 target。"""
+        self._two_sessions(monkeypatch)
+        _script_cli(monkeypatch, [_ok("- a"), _ok("- b")])
+
+        asyncio.run(browser_tools.BrowserSnapshotTool().execute({}, self._ctx("s1")))
+        asyncio.run(browser_tools.BrowserSnapshotTool().execute({}, self._ctx("s2")))
+
+        # 两个会话各自被钉过一次 —— 旧实现下第二个会话根本走不到这一步，
+        # 它会直接用「全局那个」绑定，于是两条命令都发给 TA。
+        assert browser_tools._pinned_target_id == "TB"
+
+    def test_actions_from_two_sessions_are_serialized(self, monkeypatch):
+        """闸门必须真的排他，否则 daemon 的 active target 会在两页之间翻。
+
+        两个会话故意用**不同**的命令，这样「谁的命令插进了谁的中段」在记录里
+        一眼能看出来。命令里那 10ms 的 await 就是给交错留的口子。
+        """
+        self._two_sessions(monkeypatch)
+        order: list[str] = []
+
+        async def interleaving_run_async(args, *, timeout_s: float = 30.0):
+            label = " ".join(args)
+            order.append(f"start {label}")
+            await asyncio.sleep(0.01)          # 制造交错的机会
+            order.append(f"end {label}")
+            return _ok("- body")
+
+        monkeypatch.setattr(cli, "run_async", interleaving_run_async)
+
+        async def both():
+            await asyncio.gather(
+                browser_tools.BrowserSnapshotTool().execute({}, self._ctx("s1")),
+                browser_tools.BrowserScrollTool().execute({}, self._ctx("s2")),
+            )
+
+        asyncio.run(both())
+
+        # 每条 start 后面紧跟自己的 end：中间夹进别人的命令就说明闸门没生效。
+        assert len(order) % 2 == 0 and order
+        for start, end in zip(order[::2], order[1::2]):
+            assert start.split(" ", 1)[1] == end.split(" ", 1)[1]
+        # 两条动作都真的跑到了（而不是其中一条在 resolve 阶段就报错）。
+        assert "snapshot -i" in " ".join(order)
+        assert "scroll down 300" in " ".join(order)
+
+    def test_the_gate_is_reentrant_within_one_tool_call(self, monkeypatch):
+        """``browser_type`` 连发四条命令：闸门可重入，否则它自己把自己锁死。"""
+        self._two_sessions(monkeypatch)
+        calls = _script_cli(monkeypatch, [_ok(), _ok(), _ok(), _ok("你好")])
+
+        result = asyncio.run(
+            BrowserTypeTool().execute({"ref": "e25", "text": "你好"}, self._ctx("s1"))
+        )
+
+        assert result.is_error is not True
+        # 四条命令 + 一次钉标签，中间不能被别的会话插进来。
+        assert calls[0] == ["tab", "TA"]
+        assert [call for call in calls if call[0] == "tab"] == [["tab", "TA"]]
 

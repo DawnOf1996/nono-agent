@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
 
@@ -145,6 +147,12 @@ def _check_ref(raw: Any) -> str:
 #: daemon 里当前选中的是哪个 target。``tab <id>`` 会顺手清空 snapshot 的 ref
 #: 缓存，所以**不能**每次动作前都重钉 —— 实测那样 ``fill``/``click`` 100% 报
 #: ``Unknown ref``（详见 ``_act``）。这里记住上次钉到哪，只在换标签时重钉。
+#:
+#: **它必须是全局的，不能按会话分桶。** 它镜像的是 daemon 那**一个** active
+#: target，不是某个会话的意图。分桶之后反而会漏判：A 记得自己钉的是 T1、B 钉了
+#: T2，轮到 A 时「我记得是 T1」于是跳过重钉 —— 而 daemon 此刻停在 T2，动作就落到
+#: B 的页面上了。保持全局、配合下面 :class:`_ActionGate` 串行化，「我记得的」和
+#: 「daemon 现在是」才始终是同一个事实。
 _pinned_target_id = ""
 
 
@@ -152,6 +160,68 @@ def _forget_pin() -> None:
     """让下一次 ``_act`` 重新钉标签（daemon 丢了绑定时用来自愈）。"""
     global _pinned_target_id
     _pinned_target_id = ""
+
+
+def _session_id(context: Any) -> str:
+    """工具上下文里的会话 id。
+
+    ``context`` 可能整个是 ``None``（测试、部分调用路径），这时退回空串 ——
+    相当于「没有会话概念」，所有调用共用一个桶，也就是改成按会话之前的行为。
+    """
+    return str(getattr(context, "session_id", "") or "")
+
+
+class _ActionGate:
+    """跨会话的浏览器动作闸门：同一时刻只放一个动作进 daemon。
+
+    **为什么必须串行**：agent-browser 只有一个 daemon、一个 active target。A 刚
+    ``tab T1`` 完、正要 ``click``，B 这时插进来 ``tab T2``，A 的 click 就点到了 B
+    的页面上，而且**两边都收到「成功」**。这不是软件能绕过的：daemon 侧根本没有
+    第二个槽位，只能把「钉标签 + 执行」做成不可分割的一段。
+
+    **为什么可重入**：``browser_type`` 要连着发四条命令（focus / press /
+    inserttext / get），中间任何一次被别的会话插进来都会把整条路径废掉 —— 实测的
+    症状是「三步全部退出码 0，但回读为空」。所以外层先 ``hold()`` 一次，内层各条
+    ``_act`` 各自持有，重入计数让它们认得出「锁是我这个 task 已经拿着的」。
+
+    **锁按事件循环取**：``asyncio.Lock`` 绑死在创建它的那个循环上，而测试里每次
+    ``asyncio.run`` 都开一个新循环 —— 模块级单例会在第二次调用时报
+    ``is bound to a different event loop``。按 ``get_running_loop()`` 现取就没这
+    一说，代价只是多一个字典项。
+    """
+
+    def __init__(self) -> None:
+        self._locks: dict[Any, asyncio.Lock] = {}
+        self._owner: Any = None
+        self._depth = 0
+
+    @asynccontextmanager
+    async def hold(self) -> AsyncIterator[None]:
+        task = asyncio.current_task()
+        if self._owner is task and self._depth > 0:
+            self._depth += 1
+            try:
+                yield
+            finally:
+                self._depth -= 1
+            return
+
+        loop = asyncio.get_running_loop()
+        lock = self._locks.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[loop] = lock
+        async with lock:
+            self._owner = task
+            self._depth = 1
+            try:
+                yield
+            finally:
+                self._depth = 0
+                self._owner = None
+
+
+_gate = _ActionGate()
 
 
 def _failure_message(result: cli.AgentBrowserResult, args: list[str]) -> str:
@@ -188,6 +258,11 @@ async def _cdp_diagnosis() -> str:
 async def _act(target_id: str, args: list[str], *, timeout_s: float = _SNAPSHOT_TIMEOUT) -> str:
     """必要时钉到这个 target，然后跑命令；**失败必须抛异常**。
 
+    **为什么要过闸门**：agent-browser 只有一个 daemon、一个 active target。「钉标签」
+    和「执行动作」之间只要插进另一个会话的一次 ``tab``，本次动作就落到别人的页面
+    上去了，而双方都以为成功。所以这两步必须在 :class:`_ActionGate` 的同一个临界区
+    里，且临界区只包住真正发命令的部分。
+
     **为什么不能每次都重钉**：``tab <id>`` 会清空 snapshot 建立的 ref 缓存。
     实测（对着本机 baidu webview）``snapshot`` 拿到 ``e25``，中间插一次 ``tab``，
     紧接着的 ``fill e25`` 必然报 ``Unknown ref: e25`` —— 也就是说每次动作前重钉
@@ -201,35 +276,38 @@ async def _act(target_id: str, args: list[str], *, timeout_s: float = _SNAPSHOT_
     ``_kill_tree`` 一起杀掉，这两种情况下绑定就没了。下一轮 ``_act`` 会重新钉，
     自愈掉 —— 同时 ``--pin-tab`` 保证不会静默落到别的标签上。
 
-    失败信息后面接一段**端口诊断**：CLI 只会说「操作超时」，那句话分不清
-    「页面慢」和「调试端口压根没绑上」，后者会让模型反复重试。见 :func:`_cdp_diagnosis`。
+    端口诊断放在**闸门之外**：它要打一次 ``/json/version``（探测超时 1s），失败路径
+    上已经有别的会话在排队了，不该让它们陪着一起等。
     """
     global _pinned_target_id
-    if _pinned_target_id != target_id:
-        # 钉标签的失败**必须**当成失败处理。
-        #
-        # 以前这里把 `tab` 的返回值丢了，不管成没成都记下 target_id 继续往下走。
-        # 一旦钉失败（target 已经不在了 —— 导航一次就可能换），后面的动作就会
-        # 落到 CLI **当前默认的那个 target** 上，而那个默认 target 很可能是
-        # 主窗口自己（实测 `tab list` 里 t1 就是 NoNo 主界面）。于是
-        # `browser_navigate reload` 会把整个应用界面重载一遍，用户看到的是
-        # 主界面闪一下白。
-        #
-        # 「先钉对、再动手」是这个模块的基本纪律，宁可报错也不能动作落错窗口。
-        pinned = await cli.run_async(["tab", target_id])
-        if pinned.exit_code != 0 or pinned.stderr.strip():
-            raise cli.AgentBrowserError(
-                f"Could not bind the action target to tab {target_id}: "
-                f"{_failure_message(pinned, ['tab', target_id])}. "
-                "Run browser_tabs to see which tabs are open, then browser_use "
-                "to pick one again."
-            )
-        _pinned_target_id = target_id
+    async with _gate.hold():
+        if _pinned_target_id != target_id:
+            # 钉标签的失败**必须**当成失败处理。
+            #
+            # 以前这里把 `tab` 的返回值丢了，不管成没成都记下 target_id 继续往下走。
+            # 一旦钉失败（target 已经不在了 —— 导航一次就可能换），后面的动作就会
+            # 落到 CLI **当前默认的那个 target** 上，而那个默认 target 很可能是
+            # 主窗口自己（实测 `tab list` 里 t1 就是 NoNo 主界面）。于是
+            # `browser_navigate reload` 会把整个应用界面重载一遍，用户看到的是
+            # 主界面闪一下白。
+            #
+            # 「先钉对、再动手」是这个模块的基本纪律，宁可报错也不能动作落错窗口。
+            pinned = await cli.run_async(["tab", target_id])
+            if pinned.exit_code != 0 or pinned.stderr.strip():
+                raise cli.AgentBrowserError(
+                    f"Could not bind the action target to tab {target_id}: "
+                    f"{_failure_message(pinned, ['tab', target_id])}. "
+                    "Run browser_tabs to see which tabs are open, then browser_use "
+                    "to pick one again."
+                )
+            _pinned_target_id = target_id
 
-    result = await cli.run_async(args, timeout_s=timeout_s)
-    if result.exit_code != 0 or result.stderr.strip():
-        if _pinned_target_id == target_id:
+        result = await cli.run_async(args, timeout_s=timeout_s)
+        failed = bool(result.exit_code != 0 or result.stderr.strip())
+        if failed and _pinned_target_id == target_id:
             _forget_pin()
+
+    if failed:
         raise cli.AgentBrowserError(_failure_message(result, args) + await _cdp_diagnosis())
     return result.stdout.strip()
 
@@ -288,7 +366,9 @@ class BrowserOpenTool(ToolBase):
         bound_note = ""
         if tab_id and cdp.is_enabled():
             try:
-                target_id = await _bind_new_tab(tab_id, before, target_url)
+                target_id = await _bind_new_tab(
+                    _session_id(context), tab_id, before, target_url
+                )
             except targets.TargetResolutionError as exc:
                 bound_note = f"\n(Could not bind to this tab for now: {exc})"
             else:
@@ -312,23 +392,27 @@ class BrowserOpenTool(ToolBase):
         )
 
 
-async def _bind_new_tab(tab_id: str, before: set[str], url: str) -> str:
+async def _bind_new_tab(session_id: str, tab_id: str, before: set[str], url: str) -> str:
     """把新建的标签绑到它的 CDP target 上，返回 targetId。
 
     优先用差集（无歧义）；差集不唯一时退回按地址反查；都不行就抛出去让工具
     如实告诉模型 —— 宁可说「指不清」，也别默默绑到另一个标签上。
+
+    绑的是**发起方那个会话**：用户同时开着两个会话时，它们各自开的标签必须各自
+    记住，否则后开的会把先开的顶掉（这正是改造前「两个会话一起用就调不通」的一半
+    原因）。
     """
     # webview 的 target 是异步出现的，给它一点时间。
     for _ in range(20):
         current = await cdp.list_webviews()
         target_id = targets.new_since(before, current)
         if target_id:
-            targets.bind(tab_id, target_id)
+            targets.bind(session_id, tab_id, target_id)
             return target_id
         await asyncio.sleep(0.1)
 
-    resolved = await targets.resolve(tab_id)
-    targets.bind(tab_id, resolved)
+    resolved = await targets.resolve(session_id, tab_id)
+    targets.bind(session_id, tab_id, resolved)
     return resolved
 
 
@@ -355,7 +439,12 @@ class BrowserTabsTool(ToolBase):
             tabs = []
         return ok_result(
             self._name,
-            _describe_tabs(tabs, str(reply.get("bound") or "") or None),
+            # 「当前绑定」是**本会话**的绑定。以前这个标记取自桌面端回执里的
+            # ``bound`` 字段，而渲染进程从来没填过那个字段（见
+            # apps/web/src/features/files/browser-bridge.ts，``tabs`` 回执里只有
+            # ``tabs``），所以它一直是空的 —— 工具描述承诺的「看看现在绑在哪个标签
+            # 上」其实从没兑现过。绑定就在引擎自己手里，压根不用问桌面端。
+            _describe_tabs(tabs, targets.bound(_session_id(context))[0] or None),
         )
 
 
@@ -387,11 +476,12 @@ class BrowserUseTool(ToolBase):
         tab_id = str(input_params.get("tab") or "").strip()
         if not tab_id:
             return error_result(self._name, "tab is required")
+        session_id = _session_id(context)
         try:
-            target_id = await targets.resolve(tab_id)
+            target_id = await targets.resolve(session_id, tab_id)
         except _ACTION_ERRORS as exc:
             return error_result(self._name, str(exc))
-        targets.bind(tab_id, target_id)
+        targets.bind(session_id, tab_id, target_id)
         return ok_result(self._name, f"Later browser actions will act on tab {tab_id}.")
 
 
@@ -414,7 +504,7 @@ class BrowserSnapshotTool(ToolBase):
 
     async def execute(self, input_params: dict[str, Any], context: Any) -> ToolResult:
         try:
-            target_id = await targets.resolve()
+            target_id = await targets.resolve(_session_id(context))
             body = await _act(target_id, ["snapshot", "-i"])
         except _ACTION_ERRORS as exc:
             return error_result(self._name, str(exc))
@@ -437,7 +527,7 @@ class BrowserClickTool(ToolBase):
         if not ref:
             return error_result(self._name, "ref looks like e12 and comes from browser_snapshot")
         try:
-            target_id = await targets.resolve()
+            target_id = await targets.resolve(_session_id(context))
             body = await _act(target_id, ["click", ref])
         except _ACTION_ERRORS as exc:
             return error_result(self._name, str(exc))
@@ -476,7 +566,7 @@ class BrowserTypeTool(ToolBase):
         if not text:
             return error_result(self._name, "text must not be empty")
         try:
-            target_id = await targets.resolve()
+            target_id = await targets.resolve(_session_id(context))
             # 不用 CLI 的 ``fill <ref>``：在本机 Electron 的 webview 里，它会
             # 退出码 0、stdout 回一句「✓ Done」，**但输入框的值根本没变**（真机
             # 实测，ASCII 和中文都一样）。同一批 ref 上 ``click`` 却正常，说明
@@ -486,15 +576,20 @@ class BrowserTypeTool(ToolBase):
             # inserttext 再覆盖。inserttext 走的是 IME 无关的通道，中文不需要
             # 切输入法（``keyboard type`` 会逐字符派发按键，中文在 Windows 上
             # 没有对应键码）。三步实测能把 "OLDDIRTYVALUE" 干净替换成「你好」。
-            await _act(target_id, ["focus", ref])
-            await _act(target_id, ["press", "Control+a"])
-            await _act(target_id, ["keyboard", "inserttext", text])
+            # **四条命令必须锁在同一个闸门临界区里**：每条 ``_act`` 自己也会过闸门，
+            # 但那只能保证「单条命令不被打断」。这里一旦被别的会话插进来一次
+            # ``tab``，焦点就被抢走，最后回读为空 —— 症状是「三步全部退出码 0，
+            # 什么都没发生」，属于最难查的那一种。闸门可重入，内层不会自锁。
+            async with _gate.hold():
+                await _act(target_id, ["focus", ref])
+                await _act(target_id, ["press", "Control+a"])
+                await _act(target_id, ["keyboard", "inserttext", text])
 
-            # 回读一次。这三步**都会**退出码 0，哪怕一个字都没送进去 —— 页面
-            # 完全可能在中途把焦点抢走（真机实测：百度首页的 AI 对话 textarea 会
-            # 自动夺走焦点，于是文字进了聊天框、搜索框还是空的）。所以这里不
-            # 相信退出码，直接看目标元素现在到底是什么值。
-            landed = await _act(target_id, ["get", "value", ref])
+                # 回读一次。这三步**都会**退出码 0，哪怕一个字都没送进去 —— 页面
+                # 完全可能在中途把焦点抢走（真机实测：百度首页的 AI 对话 textarea 会
+                # 自动夺走焦点，于是文字进了聊天框、搜索框还是空的）。所以这里不
+                # 相信退出码，直接看目标元素现在到底是什么值。
+                landed = await _act(target_id, ["get", "value", ref])
             if not landed.strip():
                 raise cli.AgentBrowserError(
                     f"Input was dispatched to {ref}, but reading its value back came "
@@ -535,7 +630,7 @@ class BrowserPressTool(ToolBase):
                 self._name, "key must be a single key name, e.g. Enter / Tab / Escape"
             )
         try:
-            target_id = await targets.resolve()
+            target_id = await targets.resolve(_session_id(context))
             await _act(target_id, ["press", key])
         except _ACTION_ERRORS as exc:
             return error_result(self._name, str(exc))
@@ -600,7 +695,7 @@ class BrowserReadTool(ToolBase):
             )
 
         try:
-            target_id = await targets.resolve()
+            target_id = await targets.resolve(_session_id(context))
 
             if ref:
                 # 指定了 ref 就只读那一个元素。正文抽取对整页有意义，对单个
@@ -692,7 +787,7 @@ class BrowserScrollTool(ToolBase):
                 )
 
         try:
-            target_id = await targets.resolve()
+            target_id = await targets.resolve(_session_id(context))
             await _act(target_id, ["scroll", direction, str(amount)])
         except _ACTION_ERRORS as exc:
             return error_result(self._name, str(exc))
@@ -736,7 +831,7 @@ class BrowserNavigateTool(ToolBase):
                 self._name, f"action must be one of: {' / '.join(_NAVIGATE_ACTIONS)}"
             )
         try:
-            target_id = await targets.resolve()
+            target_id = await targets.resolve(_session_id(context))
             await _act(target_id, [action])
         except _ACTION_ERRORS as exc:
             return error_result(self._name, str(exc))

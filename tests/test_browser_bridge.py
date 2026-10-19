@@ -255,7 +255,7 @@ class TestCdpGate:
         monkeypatch.setattr(cdp, "list_webviews", empty_targets)
 
         with pytest.raises(targets.TargetResolutionError) as excinfo:
-            await targets.resolve("tab-1")
+            await targets.resolve("s1", "tab-1")
 
         assert "never bound" in str(excinfo.value)
 
