@@ -1,5 +1,5 @@
 const { app, BrowserWindow, Menu, Tray, WebContentsView, clipboard, dialog, ipcMain, nativeImage, nativeTheme, shell, webContents } = require("electron");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
@@ -106,9 +106,18 @@ function safeOrigin(value, fallback) {
   }
 }
 
-const DEV_WEB_URL = process.env.NONO_WEB_URL || "http://127.0.0.1:5173";
-// NONO_SIDECAR_URL 仍然优先：mock-sidecar 走的就是它（见 apps/README.md）。
-const DEV_SIDECAR_ORIGIN = (process.env.NONO_SIDECAR_URL || `http://127.0.0.1:${devSidecarPort()}`).replace(/\/+$/, "");
+// **显式指向别处**的地址。这两个变量一旦有值，桌面壳就不再自己拉起对应的进程：
+// 网页和引擎会连它们指的那个服务，我们这个端口上起来的东西没人用 —— 白占一个
+// 端口，还多一份不在你眼前的日志。mock-sidecar（scripts/dev/mock-sidecar.mjs）
+// 走的就是 NONO_SIDECAR_URL。
+//
+// 这跟「探到端口上有服务就复用」是两回事：那是**猜**，这是用户点名。区别与理由
+// 见下面 ensureSidecar 上方那段「进程所有权」。
+const externalSidecarOrigin = (process.env.NONO_SIDECAR_URL || "").trim().replace(/\/+$/, "");
+const externalWebUrl = (process.env.NONO_WEB_URL || "").trim();
+
+const DEV_WEB_URL = externalWebUrl || "http://127.0.0.1:5173";
+const DEV_SIDECAR_ORIGIN = externalSidecarOrigin || `http://127.0.0.1:${devSidecarPort()}`;
 const DEV_SIDECAR_HEALTH = `${DEV_SIDECAR_ORIGIN}/health`;
 const DEV_WEB_ORIGIN = safeOrigin(DEV_WEB_URL, "http://127.0.0.1:5173");
 
@@ -300,6 +309,9 @@ let webServer = null;
 let mainWindow = null;
 let tray = null;
 let quitting = false;
+// 退出收尾的状态机：idle → running → done。托盘退出要等端口空出来才能真退，
+// 所以第一次 before-quit 会被拦下来（理由见 cleanupOwnedProcesses）。
+let cleanupState = "idle";
 
 // 停靠在内部浏览器面板里的 DevTools 宿主视图。一次只有一个。
 let devToolsView = null;
@@ -369,6 +381,117 @@ async function waitPortFree(port, timeoutMs = 10_000) {
     if (!(await portInUse(port, 400))) return true;
     if (Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 进程所有权：一个进程，只服务它自己启动的那些依赖
+//
+// 一条规则贯穿下面两个 ensure：**端口上已有的服务一律不接管，只自己拉起的才算。**
+// 这不是洁癖，是被现实按出来的 ——
+//
+// 复用来的 sidecar 带着**上一个 Electron 实例**注入的环境变量。浏览器控制的
+// CDP 端口就是这么变成过期值的：主进程这边刚让 Chromium 自选到 57524，引擎那边
+// 却还在戳上一个实例的 9222，最后报一句「端口没绑上」—— 而端口其实好好的，
+// 57524 上 /json/version 正常回。这个错误提示还是**误导**的：它把原因归给
+// 「端口被占」，真凶恰恰就是「端口被复用」。
+//
+// 更麻烦的是这种状态没法自愈：进程活着、/health 照常回 ok，应用内部察觉不到，
+// 只有等某次真正操作页面时才炸出来。所以现在改成：端口空就自己起，被占就明确
+// 报错并且不接管；退出时只回收自己起的那几个 —— 进程和它的主人始终是同一个。
+//
+// 仍然存在的两条「不自己起」的口子，都是用户**点名**的，不是猜的：
+// NONO_SIDECAR=0 / NONO_WEB=0（这个我全权负责），以及上面那两个 URL 变量。
+// ---------------------------------------------------------------------------
+
+/** netstat / lsof 的输出里找出监听该端口的那个进程。查不到就返回空串。 */
+function parsePortHolder(output, port) {
+  const text = String(output || "");
+  if (process.platform === "win32") {
+    // `  TCP    127.0.0.1:8000    0.0.0.0:0    LISTENING    2740`
+    for (const line of text.split(/\r?\n/)) {
+      const hit = line.match(/^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i);
+      if (hit && Number(hit[1]) === port) return describePid(Number(hit[2]));
+    }
+    return "";
+  }
+  // lsof：`python  2740  user  21u  IPv4  12345  0t0  TCP *:8000 (LISTEN)`
+  for (const line of text.split(/\r?\n/)) {
+    if (!new RegExp(`:${port}\\s+\\(LISTEN\\)`).test(line)) continue;
+    const hit = line.trim().match(/^(\S+)\s+(\d+)\s+/);
+    if (hit) return `${hit[1]}（PID ${hit[2]}）`;
+  }
+  return "";
+}
+
+function describePid(pid) {
+  try {
+    process.kill(pid, 0);
+    return `PID ${pid}`;
+  } catch (error) {
+    // ESRCH：内核里还挂着一条属于死进程的监听 socket —— 进程没了、连接停在
+    // CLOSE_WAIT，Listener 也没释放（main.js 顶部讲 9222 那段就是这个坑）。这种
+    // 占位杀不掉也等不掉，只能把「进程已经不在了」说出来，否则用户会去 taskkill
+    // 一个空 PID还以为杀成功了。
+    return error?.code === "EPERM"
+      ? `PID ${pid}（没有权限查看）`
+      : `PID ${pid}（进程已经不在了，是残留的 socket）`;
+  }
+}
+
+/**
+ * 谁占着这个端口 —— 同步查，**尽力而为**：工具不在、没权限、超时都只返回空串。
+ *
+ * 刻意用 spawnSync 而不是异步 spawn：这条路径的终点就是弹模态框，而模态框会卡住
+ * 主进程的消息循环，于是并发的另一个冲突检查（比如同一轮启动里的 sidecar 与 Vite）
+ * 的 netstat 定时器会先于它的输出被处理，把已经到手的答案白白丢掉。实测就踩到过：
+ * 同一个启动里 5173 报出了占用者 PID，8000 却显示「查不到」。同步查没有这个竞态，
+ * 代价只是这条冷门路径上阻塞几十毫秒 —— 马上就要弹窗了，阻塞一下无所谓。
+ */
+function portHolder(port, timeoutMs = 1500) {
+  try {
+    const isWin = process.platform === "win32";
+    const result = spawnSync(
+      isWin ? "netstat" : "lsof",
+      isWin ? ["-ano", "-p", "tcp"] : ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN"],
+      {
+        encoding: "utf8",
+        timeout: timeoutMs,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+    if (result.error || result.status !== 0) return "";
+    return parsePortHolder(result.stdout, port);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 端口被一个**不是我们拉起**的进程占了：把话说清楚，然后不接管。
+ *
+ * 这个分支必须有人看见，所以开发态弹窗。超时不弹 —— 冷启动慢是常事，不该拦人；
+ * 而端口被占是确定性的配置错误，不弹的话界面会一直离线（sidecar）或一直停在
+ * 加载页（Vite），原因却只写在这次启动的终端里。
+ */
+function reportPortConflict(label, port, remedies) {
+  const holder = portHolder(port);
+  const who = holder ? `占用者：${holder}` : "占用者：查不到（工具缺失或权限不足）";
+  console.error(`[${label}] 127.0.0.1:${port} 已经被别的进程占用，这次不接管它。`);
+  console.error(`[${label}]   ${who}`);
+  console.error(`[${label}]   不接管是因为它带着自己主人的环境变量跑着，退出时我们也不能`);
+  console.error(`[${label}]   替用户杀它 —— 那种状态既不可控也没法自愈。`);
+  for (const line of remedies) console.error(`[${label}]   · ${line}`);
+  if (!isPackaged()) {
+    dialog.showErrorBox(
+      `${label} 端口被占用`,
+      [
+        `127.0.0.1:${port} 已经被别的进程占用，桌面壳不会接管别人的服务。`,
+        holder ? `\n占用者：${holder}` : "",
+        `\n${remedies.map((line) => `· ${line}`).join("\n")}`,
+      ].join(""),
+    );
   }
 }
 
@@ -503,41 +626,84 @@ function killTree(child) {
   }
 }
 
+// 收尾时要知道「到底有没有子进程要杀」：没有就不该去等那个端口。
 function stopSidecar() {
   const child = sidecar;
   sidecar = null;
+  if (!child) return false;
   killTree(child);
+  return true;
 }
 
 function stopWebServer() {
   const child = webServer;
   webServer = null;
+  if (!child) return false;
   killTree(child);
+  return true;
 }
 
-async function ensureSidecar(healthUrl, port) {
-  if (process.env.NONO_SIDECAR === "0") return;
-  if (await sidecarUp(healthUrl)) return;
-
-  // 端口被人占着 ≠ 有人提供服务。
-  //
-  // 以前这里是「探针一次 false 就 spawn」，于是手动起的 server 只要还在冷启动
-  // （`uv run` 首次导入 + 加载 catalog，十几秒并不罕见），桌面壳就会抢同一个
-  // 8000，撞出 winerror 10048 然后 sidecar exited with code 3 —— 而真正在跑的那个
-  // 服务其实好好的。
-  //
-  // 现在改成：端口有主儿就先等它把 /health 撑起来（那大概率只是还没启动完），
-  // 等到了就直接复用；一直等不到才判定这个端口被别的程序占了，此时**不再 spawn**
-  // —— 那个 spawn 必然失败，只会多一条看不懂的报错。
-  if (!isPackaged() && (await portInUse(port))) {
-    console.log(`端口 127.0.0.1:${port} 已被占用，等待已有服务就绪…`);
-    if (await waitHealthy(healthUrl, 30_000, 250)) {
-      console.log(`已复用 127.0.0.1:${port} 上已有的服务。`);
-      return;
-    }
-    console.warn(`端口 127.0.0.1:${port} 上的服务 30s 内没通过 /health，它可能不是 nono sidecar，或者已经卡住。`);
-    console.warn("请关掉占用进程，或用 NONO_PORT 换一个端口（Vite 也要跟着用同一个 NONO_PORT 启动）。");
+/**
+ * 退出前的收尾：杀掉自己拉起的进程，**并且等端口真的空出来**才返回。
+ *
+ * 为什么不能「spawn 完 taskkill 就走」：Windows 上 taskkill 是异步的，而 Vite 那条
+ * 链的根是 cmd.exe —— 主进程一退出，它继承的 stdout 管道写端就断了，cmd.exe 跟着
+ * 自己退出，taskkill 就扑空了。实测（Electron + 三层进程链，最深一层真监听端口）：
+ * killTree 之后主进程只多活 18ms 时，整条 cmd → pnpm → cmd → vite 子树原样留下、
+ * 继续占着 5173；同一段 killTree 只要主进程多活约 700ms，两棵树连端口一起收得干
+ * 干净净。relaunch 那条路一直就是等端口的（见 ipcMain "relaunch"），托盘退出没沿用
+ * 同一套，于是每次只收得回 sidecar。
+ *
+ * 只等**自己杀过**的那个端口：NONO_SIDECAR=0 / NONO_WEB=0 时端口上是用户自己的服务，
+ * 等它是白等 5 秒，还会让退出看起来像卡住了。
+ */
+async function cleanupOwnedProcesses() {
+  const killedSidecar = stopSidecar();
+  const killedWeb = stopWebServer();
+  if (isPackaged()) {
+    // 打包态网页是 sidecar 里的静态文件，没有额外进程；等一小段让 taskkill 落地。
+    await new Promise((resolve) => setTimeout(resolve, 400));
     return;
+  }
+  if (killedSidecar && !(await waitPortFree(devSidecarPort(), 5000))) {
+    console.warn(`[sidecar] 127.0.0.1:${devSidecarPort()} 5s 内没空出来。`);
+  }
+  if (killedWeb && !(await waitPortFree(devWebPort(), 5000))) {
+    console.warn(`[web] 127.0.0.1:${devWebPort()} 5s 内没空出来。`);
+  }
+}
+
+/**
+ * 拉起 sidecar。**永远自己起**：端口上有东西就是冲突，不复用（理由见上面那段
+ * 「进程所有权」）。
+ *
+ * 返回状态而不是布尔，因为启动流程要区分「没起来」和「不归我管」——
+ * 前者要提示用户，后者一句日志就够，弹窗和报错都是噪音。
+ * ``started`` / ``external`` / ``conflict`` / ``failed``。
+ */
+async function ensureSidecar(healthUrl, port) {
+  if ((process.env.NONO_SIDECAR || "").trim() === "0") {
+    console.log("[sidecar] NONO_SIDECAR=0：后端不由本进程拉起，退出时也不管它。");
+    return "external";
+  }
+  if (externalSidecarOrigin) {
+    console.log(`[sidecar] NONO_SIDECAR_URL=${externalSidecarOrigin}：用它，不自己起 sidecar。`);
+    return "external";
+  }
+
+  // 端口被占 = 那个进程不是我们起的。以前这里是「等它就绪然后复用」，代价是
+  // 上面那段注释说的那整套不可控状态；现在只回答「能不能自己起」。
+  //
+  // 这个探针有 1.5s 的超时成本：端口空着的时候，连空回环端口反而要空等（装了那类
+  // WFP filter 的机器上尤其明显，见 portInUse 自己的注释）。以前这里无论开发态
+  // 打包态都要付一次 sidecarUp 的同款代价，所以并没有变慢。
+  if (await portInUse(port)) {
+    reportPortConflict("sidecar", port, [
+      "关掉占用它的进程再重开本进程（多半是上一次没退干净的 dev:desktop）",
+      '换端口：$env:NONO_PORT = "<空闲端口>"（Vite 会跟着用同一个）',
+      "后端你自己管：设 NONO_SIDECAR=0，再配 NONO_SIDECAR_URL 可以指向别处",
+    ]);
+    return "conflict";
   }
 
   startSidecar(port);
@@ -548,8 +714,9 @@ async function ensureSidecar(healthUrl, port) {
   // 开发态从 10s 放宽到 20s：桌面壳现在是开发态启动后端的**主路径**，冷启动时
   // `uv run nono-app-server` 可能要十几秒，10s 容易误判成失败。
   const timeoutMs = isPackaged() ? 60_000 : 20_000;
-  if (await waitHealthy(healthUrl, timeoutMs, 80)) return;
+  if (await waitHealthy(healthUrl, timeoutMs, 80)) return "started";
   console.warn("sidecar did not become healthy in time; UI will show offline");
+  return "failed";
 }
 
 // ---------------------------------------------------------------------------
@@ -558,19 +725,10 @@ async function ensureSidecar(healthUrl, port) {
 // 打包态网页是冻在 sidecar 里的静态资源，不需要额外进程；开发态要的是 Vite 的 HMR，
 // 这个没法从 sidecar 里长出来。以前它只能手起，于是「起全栈」要开三个终端。
 //
-// 这里让桌面壳在发现 5173 没服务时自己拉一个 —— 与 sidecar 完全同构的健康检查
-// + 复用语义：已经在跑就复用（用户手起的 Vite 不会被杀），没在跑才 spawn，并且
-// 只回收自己 spawn 的那一个。
+// 这里让桌面壳在发现 5173 没服务时自己拉一个 —— 与 sidecar 同一套所有权语义：
+// 端口空就 spawn，端口被占就报错并**不接管**，退出时只回收自己 spawn 的那一个。
+// （曾经是「已经在跑就复用」，代价见上面那段「进程所有权」。）
 // ---------------------------------------------------------------------------
-
-async function webUp(webUrl) {
-  try {
-    const response = await fetch(webUrl, { signal: AbortSignal.timeout(1500) });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
 
 function startWebServer() {
   // Windows 上 pnpm 是 pnpm.cmd，Node 现在禁止直接 spawn .cmd（安全修复），所以走
@@ -597,13 +755,37 @@ function startWebServer() {
   });
 }
 
+/**
+ * 拉起开发态的 Vite。同样**永远自己起**（理由见上面那段「进程所有权」）。
+ *
+ * 返回状态与 :func:`ensureSidecar` 一致：``started`` / ``external`` /
+ * ``conflict`` / ``failed``。
+ */
 async function ensureWebServer(webUrl) {
-  if (process.env.NONO_WEB === "0") return;
-  if (await webUp(webUrl)) return;
-  console.log(`[web] ${webUrl} 没在监听，自动拉起 Vite…`);
+  if ((process.env.NONO_WEB || "").trim() === "0") {
+    console.log("[web] NONO_WEB=0：网页不由本进程拉起，退出时也不管它。");
+    return "external";
+  }
+  if (externalWebUrl) {
+    console.log(`[web] NONO_WEB_URL=${externalWebUrl}：用它，不自己起 Vite。`);
+    return "external";
+  }
+
+  const port = devWebPort();
+  if (await portInUse(port)) {
+    reportPortConflict("web", port, [
+      "关掉占用它的进程再重开本进程（多半是上一次没退干净的 dev:desktop）",
+      '换端口：$env:NONO_WEB_URL = "http://127.0.0.1:<空闲端口>"',
+      "网页你自己起：设 NONO_WEB=0，再配 NONO_WEB_URL 指向你的地址",
+    ]);
+    return "conflict";
+  }
+
+  console.log(`[web] 拉起 Vite：${webUrl}`);
   startWebServer();
-  if (await waitHealthy(webUrl, 30_000, 250)) return;
+  if (await waitHealthy(webUrl, 30_000, 250)) return "started";
   console.warn(`web dev server did not come up in time: ${webUrl}`);
+  return "failed";
 }
 
 function showWindow(win = mainWindow) {
@@ -1230,10 +1412,11 @@ if (gotLock) app.whenReady().then(async () => {
   // spawn（打包态），Python 进程启动与建窗口、渲染 loading.html 并行进行。
   // 以前是建完窗口才 spawn，白白串行了一整个 Python 启动时间。
   //
-  // 开发态多拉一个 Vite，同样不 await —— 它和 sidecar 各冷启动各的，并行比串行快，
-  // 而且已经在跑（用户手起过）就直接复用，两条都不占额外时间。
+  // 开发态多拉一个 Vite，同样不 await —— 它和 sidecar 各冷启动各的，并行比串行快。
+  // 两边都不再探测端口上有没有现成的服务：占了就是冲突，报清楚、不接管（见上面
+  // 那段「进程所有权」）。
   const sidecarReady = ensureSidecar(healthUrl, port);
-  const webReady = isPackaged() ? Promise.resolve() : ensureWebServer(webUrl);
+  const webReady = isPackaged() ? Promise.resolve("packaged") : ensureWebServer(webUrl);
   // 不 await：端口通不通和 sidecar/vite 能不能起来无关，不该拖慢开窗。
   // 失败也只是打日志 —— 但这条日志是**真的**（见 verifyCdpPort 自己的注释）。
   if (browserAgentPort > 0) verifyCdpPort();
@@ -1244,8 +1427,14 @@ if (gotLock) app.whenReady().then(async () => {
       query: { theme: appTheme() },
     });
   }
-  await Promise.all([sidecarReady, webReady]);
-  await mainWindow.loadURL(webUrl);
+  const [, webStatus] = await Promise.all([sidecarReady, webReady]);
+  // 网页没起来就**别**往里加载：明知 5173 上是别人的服务还要 loadURL，只会在窗口里
+  // 留一张 ERR_CONNECTION_REFUSED 白页，把真正的原因（终端里那几行）挡在后面。
+  // 冲突时 reportPortConflict 已经弹过窗了，这里让窗口空着就行 —— 用户要么按
+  // 提示处理完从托盘退出重开，要么 NONO_WEB=0 自己管网页。
+  if (webStatus !== "conflict" && webStatus !== "failed") {
+    await mainWindow.loadURL(webUrl);
+  }
 
   // 启动后静默问一次有没有新版。不下载、不弹窗，只把结果留给设置页那一行 ——
   // 用户打开设置时按钮已经是"有新版本"，而不是还得先点一下才知道。
@@ -1260,15 +1449,43 @@ if (gotLock) app.whenReady().then(async () => {
   });
 });
 
-app.on("before-quit", () => {
+// 托盘「退出」走这里。收尾是**异步**的：killTree 只 spawn 一个 taskkill 就返回，
+// 而 Vite 那棵树的根是 cmd.exe —— 主进程一退出它就自己死了，taskkill 扑空，整条
+// pnpm/vite 子树留下继续占着 5173。所以先把这次退出拦下来，等端口真的空出来再放行
+// （实测多活约 700ms 就能收干净，理由见 cleanupOwnedProcesses）。
+app.on("before-quit", (event) => {
   quitting = true;
-  stopSidecar();
-  stopWebServer();
   if (tray) {
     tray.destroy();
     tray = null;
   }
+  // done：这是收尾完成后自己发起的第二次 quit，放行。
+  if (cleanupState === "done") return;
+  event.preventDefault();
+  // running：已经有一轮收尾在跑，它结束时会自己 app.quit()，这里别再排一轮。
+  if (cleanupState === "running") return;
+  cleanupState = "running";
+  console.log("回收自己拉起的进程，等端口空出来再退出。");
+  cleanupOwnedProcesses().finally(() => {
+    cleanupState = "done";
+    console.log("回收完成，退出。");
+    app.quit();
+  });
 });
+
+// 终端里 Ctrl+C、或直接关掉跑 dev:desktop 的那个终端窗口 —— 这两条路**不会**走到
+// app.quit()，before-quit 于是也不会触发，sidecar 和 Vite 就成了没人认领的孤儿：
+// 端口还占着、/health 还回 ok，而下一个 dev:desktop 只会撞上一句莫名其妙的端口冲突。
+//
+// 孤儿进程正是上面那套「自己起、自己收」要消灭的东西，所以把信号接到同一条收尾
+// 路径上（依然是先杀进程树、再退出）。
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    if (quitting) return;
+    console.log(`收到 ${signal}，回收自己拉起的进程后退出。`);
+    quitApp();
+  });
+}
 
 app.on("window-all-closed", () => {
   // 点 × 只是隐藏窗口，进程留在托盘，不退出。
