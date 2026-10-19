@@ -29,6 +29,7 @@ from typing import Any
 from nono_agent.core.config import EngineConfig, ProviderConfig, QueryConfig, RuntimeGates
 from nono_agent.core.loop import agentic_loop
 from nono_agent.core.state import (
+    ABORTED_TERMINALS,
     AutoCompactTracking,
     LoopState,
 )
@@ -709,10 +710,20 @@ class QueryEngine:
         # Phase 6: 发出 SDKResultMessage（最终结果消息）
         elapsed = (time.monotonic() - start_time) * 1000  # 总耗时（毫秒）
 
-        # 确定结果子类型: 正常完成 vs 错误终止
-        is_error = terminal_reason not in (None, "COMPLETED")
+        # 确定结果子类型 —— 三种终态，不是两种：
+        #   正常完成   → "success"
+        #   用户主动停 → "aborted_streaming" / "aborted_tools"（不是失败）
+        #   其他终止   → "error_<原因>"
+        #
+        # 中止保留自己的 subtype 而不是塌成 "success"：客户端要能区分
+        # 「用户提前收工」和「真的写完了」，但它不该出现在失败统计里。
         reason = terminal_reason or "unknown"
-        result_subtype = "success" if not is_error else f"error_{reason.lower()}"
+        if reason in ABORTED_TERMINALS:
+            is_error = False
+            result_subtype = reason.lower()
+        else:
+            is_error = reason != "COMPLETED"
+            result_subtype = "success" if not is_error else f"error_{reason.lower()}"
 
         # 从最后一条 assistant 消息提取结果文本
         result_text = ""

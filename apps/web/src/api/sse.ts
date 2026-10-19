@@ -1,5 +1,6 @@
 import type { FileDiffUi } from "@nono/protocol";
 
+import { stripAbortMarker } from "@/lib/abort-marker";
 import { usageTotal, type TurnTokens } from "@/lib/usage";
 
 export type SseFrame = {
@@ -110,6 +111,8 @@ export type ReplayStep = {
   text?: string;
   thinking?: string;
   tools?: ReplayToolCall[];
+  /** 本段回复被用户按下停止打断（标记块已从 text 里摘掉）。 */
+  aborted?: boolean;
 };
 
 export function extractTools(payload: unknown): ReplayToolCall[] {
@@ -118,6 +121,9 @@ export function extractTools(payload: unknown): ReplayToolCall[] {
   return toolsFromContent(message?.content);
 }
 
+/**
+ * 中止标记的识别与摘除在 `lib/abort-marker.ts`（前后端共享契约，且可单测）。
+ */
 export function contentToText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -375,11 +381,16 @@ function stepFromContent(id: string, content: unknown): ReplayStep | null {
   const thinking = contentToThinking(content).trim();
   const tools = toolsFromContent(content);
   if (!text && !thinking && tools.length === 0) return null;
+  // 摘掉末尾的中止标记：它给模型看，不该原样出现在用户已经读过的正文下面。
+  const stripped = stripAbortMarker(text);
+  const body = stripped.text;
+  if (!body && !thinking && tools.length === 0) return null;
   return {
     id,
-    text: text || undefined,
+    text: body || undefined,
     thinking: thinking || undefined,
     tools: tools.length ? tools : undefined,
+    aborted: stripped.aborted || undefined,
   };
 }
 
@@ -387,18 +398,28 @@ export function foldAssistantTurn(parts: ReplayStep[]): {
   text: string;
   thinking?: string;
   steps?: ReplayStep[];
+  aborted?: boolean;
 } {
   const last = parts[parts.length - 1];
   if (!last) return { text: "" };
   const prior = parts.slice(0, -1);
   const tail =
     last.thinking || last.tools?.length
-      ? [{ id: `${last.id}-tail`, thinking: last.thinking, tools: last.tools }]
+      ? [
+          {
+            id: `${last.id}-tail`,
+            thinking: last.thinking,
+            tools: last.tools,
+            aborted: last.aborted,
+          },
+        ]
       : [];
   const steps = [...prior, ...tail];
   return {
     text: last.text ?? "",
     steps: steps.length ? steps : undefined,
+    // 任何一段被打断过，整条回复就标成被打断 —— 用户只需要知道"这段没说完"。
+    aborted: parts.some((part) => part.aborted) || undefined,
   };
 }
 
@@ -409,6 +430,8 @@ export type ReplayMessage = {
   images?: ReplayImage[];
   thinking?: string;
   steps?: ReplayStep[];
+  /** 这条回复被用户按下停止打断过（末尾标记块已摘掉，不在 text 里）。 */
+  aborted?: boolean;
   durationMs?: number;
   seq?: number;
   /** 事件时间戳（毫秒）—— 气泡上的时刻。 */

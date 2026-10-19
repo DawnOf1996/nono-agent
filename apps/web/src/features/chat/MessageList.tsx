@@ -1,5 +1,5 @@
 import type { TurnChanges } from "@nono/protocol";
-import { ChevronDown, FileDown, GitFork } from "lucide-react";
+import { ChevronDown, FileDown, GitFork, Square } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { writeMarkdownFile } from "@/api/client";
@@ -139,6 +139,14 @@ const MessageBlock = memo(function MessageBlock({
         />
       ) : null}
       {answer ? <MarkdownText text={answer} streaming={message.streaming} /> : null}
+      {message.aborted && !message.streaming ? (
+        // 用户自己按的停止，不是故障 —— 用一枚安静的提示说明「这段没说完」，
+        // 而不是再把上面那段原文复述一遍（那正是之前中止时看到的红字重复）。
+        <p className="mt-1 flex items-center gap-1.5 text-[11px] text-faint">
+          <Square className="size-2.5 fill-current" />
+          已停止 · 这条回复没有说完
+        </p>
+      ) : null}
       {message.streaming && !answer && !showThinking ? (
         <p className="text-sm text-faint">正在写入…</p>
       ) : null}

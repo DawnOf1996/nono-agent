@@ -104,6 +104,9 @@ class OpenAIResponsesProvider:
         usage: dict[str, Any] = {}
 
         async for event in stream:
+            if signal is not None and signal.aborted:
+                # 用户中止：只 break 不抛，理由同 anthropic_messages.stream()。
+                break
             etype = getattr(event, "type", "")
 
             if etype == "response.output_item.added":

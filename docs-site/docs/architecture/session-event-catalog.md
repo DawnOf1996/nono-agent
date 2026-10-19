@@ -246,7 +246,10 @@ sequenceDiagram
     这两个成员目前 loop 不产出（压缩/上限都走恢复链而不是直接终止），所以正常日志里看不到它们。
 
 !!! note "它不是 `SDKResultMessage.subtype`"
-    对应的 SDK 结果里，成功时 `subtype` 是 `success`，失败时是 `error_<reason 小写>`。所以「`turn/end.reason == COMPLETED`」与「`result.subtype == COMPLETED`」**同时不成立**，排查时别拿两个字段互相印证。
+    对应的 SDK 结果里，成功时 `subtype` 是 `success`，用户主动停止时是
+    `aborted_streaming` / `aborted_tools`（`is_error` 为 `false`，不算失败），
+    其余失败时是 `error_<reason 小写>`。所以「`turn/end.reason == COMPLETED`」与
+    「`result.subtype == COMPLETED`」**同时不成立**，排查时别拿两个字段互相印证。
 
 发射者：`QueryEngine.submit_message`。
 

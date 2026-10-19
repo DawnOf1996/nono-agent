@@ -121,6 +121,10 @@ class AnthropicMessagesProvider:
             )
             async with client.messages.stream(**params) as stream:
                 async for event in stream:
+                    if signal is not None and signal.aborted:
+                        # 用户中止：不再映射后续事件，退出后由 async with 断连。
+                        # 只 break 不抛 —— 抛出去会被 RecoveryChain 判成 API 错误重试。
+                        break
                     mapped = self._map_stream_event(event)
                     if mapped is not None:  # 过滤冗余事件（TextEvent 等）
                         yield mapped

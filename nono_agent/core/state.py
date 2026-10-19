@@ -62,6 +62,19 @@ class TerminalReason(Enum):
     TASK_BUDGET_EXHAUSTED = auto() # 超出 token 预算 (task_budget)
 
 
+# **用户主动按停止**的终态，不算失败。
+#
+# 把它们算成错误会造成两处具体的错：失败率统计里混进「用户提前收工」，
+# 以及 CLI/界面打出红字 —— 但用户是自己点的停止，那里根本没有故障。
+#
+# 判定用字符串而非枚举成员：``SDKResultMessage`` 的 subtype 是从终止原因的
+# 名字派生的，这一份就是那个名字集合。
+ABORTED_TERMINALS = frozenset({
+    TerminalReason.ABORTED_STREAMING.name,   # "ABORTED_STREAMING"
+    TerminalReason.ABORTED_TOOLS.name,       # "ABORTED_TOOLS"
+})
+
+
 @dataclass(frozen=True)
 class Transition:
     """描述循环为什么继续 —— 包含原因和可选的元数据。"""

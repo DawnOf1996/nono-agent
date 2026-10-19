@@ -137,8 +137,14 @@ class TestQueryEngine:
         assert notices[0].tool_is_error is True
 
     @pytest.mark.asyncio
-    async def test_abort(self):
-        """Test that abort stops the loop."""
+    async def test_abort_before_query_does_not_leak_into_next_query(self):
+        """查询开始前的 abort 不能污染下一次查询。
+
+        每次查询开头都会重置取消控制器（防止上一轮的 aborted 状态粘住）。
+        这条以前叫 test_abort，但它在 submit_message **之前** abort、断言只有
+        ``len(messages) > 0`` —— 无论中止是否生效都会通过，中止功能因此长期
+        没有真实覆盖（真场景见 tests/test_abort.py）。
+        """
         engine = create_test_engine(
             responses=[
                 {"text": "This should be interrupted.", "tool_calls": []},
@@ -152,8 +158,8 @@ class TestQueryEngine:
             async for msg in engine.submit_message("Long task"):
                 messages.append(msg)
 
-            # Should still get a result (even if aborted)
-            assert len(messages) > 0
+        result = next(m for m in messages if isinstance(m, SDKResultMessage))
+        assert result.subtype == "success"
 
     @pytest.mark.asyncio
     async def test_session_id(self):

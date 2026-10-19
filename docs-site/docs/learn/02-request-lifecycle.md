@@ -164,10 +164,21 @@ return
 引擎把这段文本里的理由名解析出来，用在两个地方：
 
 - `turn/end` 事件的 `reason` 字段（**原样保留** `COMPLETED` / `MAX_TURNS` …）
-- `SDKResultMessage.subtype` —— 正常完成是 `"success"`，
-  否则拼成 `f"error_{reason.lower()}"`，比如 `error_max_turns`
+- `SDKResultMessage.subtype` —— 分三类（见 `core/state.py` 的 `ABORTED_TERMINALS`）：
+
+  | 终态 | `subtype` | `is_error` |
+  |---|---|---|
+  | 正常完成 | `"success"` | `false` |
+  | **用户主动按停止** | `"aborted_streaming"` / `"aborted_tools"` | `false` |
+  | 其他终止 | `f"error_{reason.lower()}"`，如 `error_max_turns` | `true` |
 
 > 所以 `subtype` 里**看不到**完整的原因名：`COMPLETED` 变成了 `"success"`。
+
+!!! note "中止为什么不算失败"
+    用户是自己按的停止，那里没有故障。算进 `is_error` 会让失败率统计混入
+    「用户提前收工」，CLI 与界面也会为此打红字。但它**保留** `aborted_*` 的
+    subtype 而不塌成 `"success"` —— 客户端要能区分「提前收工」和「真的写完了」。
+    判定集合是 `ABORTED_TERMINALS`，加新的非失败终态时改那里。
 
 `TransitionReason`（`core/state.py`）：
 

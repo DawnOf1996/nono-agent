@@ -144,6 +144,9 @@ class OpenAIChatCompletionsProvider:
             thinking_closed = False  # 防止迟到的 reasoning_content 追加到正文之后
 
             async for chunk in stream:
+                if signal is not None and signal.aborted:
+                    # 用户中止：只 break 不抛，理由同 anthropic_messages.stream()。
+                    break
                 if not chunk.choices:
                     # 仅包含 usage 的最终 chunk
                     if chunk.usage:

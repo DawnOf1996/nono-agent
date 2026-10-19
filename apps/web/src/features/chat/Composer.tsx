@@ -25,6 +25,7 @@ import {
   filesFromClipboard,
   filesFromList,
 } from "@/lib/images";
+import { toast } from "@/lib/toast";
 import { useChatStore } from "@/store/chat";
 
 export function Composer() {
@@ -291,7 +292,16 @@ export function Composer() {
                 <button
                   type="button"
                   className="flex size-8 items-center justify-center rounded-full bg-accent text-on-accent"
-                  onClick={() => void abort()}
+                  title="停止"
+                  // 不能 void 掉：中止请求失败（会话不存在 / 服务不可达）时，
+                  // 静默的 rejection 和「点了没反应」在用户眼里一模一样。
+                  onClick={() => {
+                    void abort().catch((err: unknown) => {
+                      toast(`停止失败：${err instanceof Error ? err.message : String(err)}`, {
+                        duration: 5000,
+                      });
+                    });
+                  }}
                 >
                   <Square className="size-3 fill-current" />
                 </button>

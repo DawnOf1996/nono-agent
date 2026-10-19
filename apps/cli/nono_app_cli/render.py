@@ -185,6 +185,15 @@ async def consume_stream(
                     f"Turns: {sdk_msg.num_turns} | "
                     f"Tokens: {token_str}"
                 )
+            elif sdk_msg.subtype.startswith("aborted"):
+                # 用户自己按的停止：不打红字（那会像故障），也别写 Completed ——
+                # 这轮确实没写完。
+                console.print(
+                    f"\n[yellow][Stopped] Stopped by user | "
+                    f"Duration: {sdk_msg.duration_ms:.0f}ms | "
+                    f"Turns: {sdk_msg.num_turns} | "
+                    f"Tokens: {token_str}[/yellow]"
+                )
             else:
                 console.print(
                     f"\n[dim][OK] Completed in {sdk_msg.duration_ms:.0f}ms | "

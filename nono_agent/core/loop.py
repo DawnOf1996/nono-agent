@@ -74,7 +74,7 @@ from nono_agent.session.events import (
 from nono_agent.session.store import MessageStore
 from nono_agent.tools.executor import StreamingToolExecutor
 from nono_agent.tools.registry import ToolRegistry
-from nono_agent.utils.abort import AbortSignal
+from nono_agent.utils.abort import AbortSignal, iterate_with_abort
 from nono_agent.utils.tokens import (
     estimate_messages_tokens,
     estimate_system_prompt_tokens,
@@ -82,6 +82,16 @@ from nono_agent.utils.tokens import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 用户按下停止时追加在回复末尾的标记（单独一个 text block）。
+#
+# 为什么要它：中止的回复是**半截**的。只把半截原文丢回历史，模型下一轮看不到任何
+# 「被打断」的痕迹，会当成自己说完了，在断句处接着往下编。补一句显式的取消说明，
+# 它才知道该从哪儿接、该不该重说。
+#
+# 前端按同一个字符串识别它，渲染成一枚「已停止」提示而不是正文 —— 用户不该在自己
+# 已经看过的回复下面再读一遍自己刚说过的话。
+ABORT_MARKER = "[用户已取消本次请求，上面的回复未完成]"
 
 
 async def agentic_loop(
@@ -301,26 +311,36 @@ async def agentic_loop(
         usage = Usage()                                # 累积的 token 用量
         stop_reason: str | None = None                 # 停止原因 (end_turn/tool_use/max_tokens)
         api_error: str | None = None                   # API 错误信息
+        # 本 step 是否被用户中止（流结束后才判定，见下面的 aborted = signal.aborted）。
+        # 中止不是错误，但内容要照常落库 —— 用户已经看见这些字了，历史里没有
+        # 会让模型下一轮失忆。
+        aborted = False
 
         try:
             # 调用 provider 的流式 API，每次 yield 一个 StreamEvent 或 AssistantMessage
-            async for event in provider.stream(
-                messages=messages,
-                system_prompt=system_prompt,
-                tools=api_tools,
-                thinking_config=config.thinking_config,
-                model=current_model,
-                fallback_model=config.fallback_model,
-                max_tokens=(
-                    state.max_output_tokens_override
-                    or (
-                        config.provider.max_tokens
-                        if config.provider is not None
-                        else None
-                    )
+            # 用 iterate_with_abort 包一层：流式期间占墙钟时间最长的就是这里的
+            # 「等下一个 chunk」，裸 async for 会一直阻塞到 provider 自己结束，
+            # 中止信号置位了也没人读 —— 那正是停止按钮"点了没反应"的根因。
+            async for event in iterate_with_abort(
+                provider.stream(
+                    messages=messages,
+                    system_prompt=system_prompt,
+                    tools=api_tools,
+                    thinking_config=config.thinking_config,
+                    model=current_model,
+                    fallback_model=config.fallback_model,
+                    max_tokens=(
+                        state.max_output_tokens_override
+                        or (
+                            config.provider.max_tokens
+                            if config.provider is not None
+                            else None
+                        )
+                    ),
+                    signal=signal,
+                    json_schema=config.json_schema,
                 ),
-                signal=signal,
-                json_schema=config.json_schema,
+                signal,
             ):
                 # 将流式事件透传给消费者（CLI/Server 适配器）
                 if isinstance(event, StreamEvent):
@@ -370,6 +390,14 @@ async def agentic_loop(
                     if event.message.get("usage"):
                         usage = Usage(**event.message["usage"])
                     stop_reason = event.message.get("stop_reason")
+
+            # 流式期间被中止 —— 这里只做标记，不收摊。
+            # 此刻 assistant_content 里已经攒了用户看到的那些字，直接 return 会把它们
+            # 一起丢掉：界面渲染过了、模型历史里却没有，下一轮它不知道自己说过什么，
+            # 半截 tool_use 还会失去配对。统一交给 Phase 4 落库后再收束。
+            # 同样刻意**不抛异常**：except Exception 会把它判成 API 错误交给
+            # RecoveryChain 重试，用户点了停止反而又被续上。
+            aborted = signal.aborted
 
         except FallbackTriggeredError as exc:
             # 主模型过载 → 切换到 fallback_model 重试（仅一次）
@@ -476,12 +504,24 @@ async def agentic_loop(
         )
 
         # 组装完整的 assistant 消息
+        if aborted and assistant_content:
+            # 末尾补一句「被用户取消」。模型下一轮靠它知道上一段是**被打断**的，
+            # 而不是自己想说完的 —— 否则它会在断句处若无其事地接着编。
+            # 单独一个 text block：前端按同一常量识别出来渲染成一枚「已停止」提示，
+            # 不会混进正文里给人看（见 apps/web/src/lib/abort-marker.ts）。
+            assistant_content = [
+                *assistant_content,
+                {"type": "text", "text": ABORT_MARKER},
+            ]
+
         assistant_msg = AssistantMessage(
             message={
                 "role": "assistant",
                 "content": assistant_content,
                 "usage": usage.model_dump(),
-                "stop_reason": stop_reason,
+                # 中止的回复 stop_reason 是空的（流没跑完）。给个明确取值，
+                # 免得日志/回放里这条消息看着像"正常但说了一半"。
+                "stop_reason": "aborted" if aborted else stop_reason,
             },
             api_error=api_error,
         )
@@ -495,6 +535,37 @@ async def agentic_loop(
         # 将 assistant 消息存入 store 并 yield 给消费者
         store.append(assistant_msg)
         yield assistant_msg
+
+        # 流式期间被中止：上面那句半截回复已经落库了，这里收束。
+        # 刻意不跑工具/stop hook —— 用户要的就是停下。
+        if aborted:
+            interrupted = _extract_tool_use_blocks(assistant_msg)
+            if interrupted:
+                # 半截 tool_use 没有对应结果，补占位 —— 否则下一轮请求会被
+                # API 以 "tool call result does not follow tool call" 拒掉。
+                aborted_msg = UserMessage(
+                    message={
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tb.id,
+                                "content": "[Aborted by user]",
+                                "is_error": True,
+                            }
+                            for tb in interrupted
+                        ],
+                    },
+                    tool_use_result="aborted",
+                )
+                store.append(aborted_msg)
+                # 必须 yield —— 引擎据此写 tool/result 事件；否则占位结果只存在
+                # 于内存状态，日志重建会缺这条消息。
+                yield aborted_msg
+
+            emit_step_end("aborted")
+            yield _make_terminal(store, state, TerminalReason.ABORTED_STREAMING)
+            return
 
         # ------------------------------------------------------------------
         # Phase 5: Post-sampling 钩子

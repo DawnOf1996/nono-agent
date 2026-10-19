@@ -146,6 +146,8 @@ export type ChatMessage = {
   steps?: ChatStep[];
   streaming?: boolean;
   durationMs?: number;
+  /** 这条回复被用户按下停止打断过。末尾给模型看的标记块已摘掉，不在 text 里。 */
+  aborted?: boolean;
   /** 事件流剪切点（含此 seq），用于从此条回复叉分出新会话。 */
   seq?: number;
   /** 流式过程中收到的本轮文件变更摘要 id；历史消息按 seq 区间匹配。 */
@@ -1518,10 +1520,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         } else if (frame.event === "result") {
           flushStream();
           const result = payload as SdkResultMessage;
+          // 用户按停止不会走到这里：引擎把它报成 subtype=aborted_* 且 is_error=false
+          // （见 nono_agent/core/state.py 的 ABORTED_TERMINALS）。能进来就是真失败。
+          //
+          // 注意别拿 result.result 兜底：那是模型正文（正常写完的轮次也带），
+          // 拿它当错误文案会把整段回复原样再显示一遍红字。
           if (result.is_error) {
             set((state) =>
               patchRun(state, runKey, {
-                error: result.errors?.join("\n") || result.result || "本轮失败",
+                error: result.errors?.join("\n") || "本轮失败",
               }),
             );
           }
