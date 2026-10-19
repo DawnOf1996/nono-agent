@@ -150,3 +150,11 @@ apps/desktop/release/
 apps/desktop/resources/
 *.tsbuildinfo
 
+# 本机运行时产物
+# .mavis/ 整个目录都是本地工具运行时生成的（canvas 素材等），不入库。
+.mavis/
+# runtime-test/ 是有意维护的内容目录（README、verify_*.py、mcp_servers/、.nono-agent/），
+# 只忽略跑一次冒烟产生的东西：引擎按 session id 落盘的消息转写。
+# 注意别写成 runtime-test/ —— 那会把以后新增的验证脚本和文档一起悄悄吞掉。
+runtime-test/*.jsonl
+
