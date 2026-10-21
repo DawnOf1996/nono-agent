@@ -36,7 +36,7 @@ title: Nono Agent —— 后续规划 Roadmap
 | 用户态 Hooks 配置                                    | 可用需打磨 | `hooks.json` 命令执行器（before_tool 可否决）；HTTP 执行器待做        |
 | 权限模式 + PermissionRule + denial 追踪               | 可用需打磨 | `permissions/` 策略/规则/沙箱/denial/Bash 分类；Server 默认 deny-write |
 | Slash / 运行时命令（MVP 子集）                           | 可用需打磨 | `commands/` + help/model/tokens/context/clear 等；不对齐 CC 100+ 全量 |
-| Plan / Memory / Checkpoint / Task 生命周期          | 可用需打磨 | Plan/TodoWrite/Memory/Checkpoint/Task 均已落地；多模态附件待做     |
+| Plan / Memory / Checkpoint / Task 生命周期          | 可用需打磨 | Plan/TodoWrite/Memory/Checkpoint/Task 均已落地；资产 GC 待做     |
 | 子 Agent 三件套                                     | 可用需打磨 | AgentTool + AgentDefinition + AgentRunner；worktree 隔离/后台待做   |
 | Worktree 进出工具                                   | 可用需打磨 | enter/exit_worktree；cwd 自动切换待做                        |
 | Agent Teams / Coordinator                       | 未开始   | **P2 / 可选**；见 §6                                  |
@@ -340,7 +340,7 @@ Definition 来源：`built-in` / `user`（`~/.nono-agent/agents`）/ `project`�
 | Task 工具族            | Create/List/Get/Update/Stop（输出由 JobOutput 承担） | P2  | 可用需打磨 |
 | Memory（memdir 思路）   | 记忆目录 + 类型约束 + Prompt Section       | P2  | 可用需打磨 |
 | Checkpoint / Rewind | 编辑快照/补丁栈                           | P2  | 已完成 |
-| 多模态附件               | `attachments` 产品化                  | P2  | 未开始 |
+| 多模态附件               | `attachments` 产品化                  | P2  | 可用需打磨 |
 
 
 Protocol：`MemoryStore` / `CheckpointStore`。

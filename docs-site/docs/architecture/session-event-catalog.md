@@ -265,11 +265,14 @@ sequenceDiagram
 { "content": "帮我算 6*7" }
 ```
 
-带附件时多一个 `attachments` 字段（原始附件原样保留）：
+带附件时多一个 `attachments` 字段（附件原样保留）：
 
 ```json
 { "content": "看这张图", "attachments": [ { "type": "image", "source": { ... } } ] }
 ```
+
+图片附件在落盘前是 base64，落盘后换成**资产引用**（`source.type == "asset"`）——
+事件流里留的是引用，图片字节在 `<数据目录>/assets/YYYY/MM/DD/` 下。
 
 发射者：`QueryEngine.submit_message`。
 
@@ -295,10 +298,28 @@ sequenceDiagram
 {
   "content": [
     { "type": "text", "text": "看这张图" },
-    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "..." } }
+    {
+      "type": "image",
+      "source": {
+        "type": "asset",
+        "asset_id": "asset_20261010-153205-614_893f5a01c263_e651d25f",
+        "media_type": "image/png",
+        "path": "assets/2026/10/10/15-32-05-614-asset_…-image.png",
+        "sha256": "…",
+        "bytes": 37848,
+        "width": 1024,
+        "height": 768
+      }
+    }
   ]
 }
 ```
+
+**为什么是引用而不是 base64。** base64 会让会话文件永久膨胀：一张 1MB 的图在
+`user/input` 与 `user/message` 里各存一份，而且永远删不掉。改成「文件 + 引用」
+后，日志里只剩一个小引用，真正的字节在请求发出的那一刻才从磁盘读回来
+（见 `nono_agent.assets.materialize`）。老会话里的 `source.type == "base64"`
+仍然照常处理。
 
 工具结果**不是**这条事件，而是 `tool/result`。
 

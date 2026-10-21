@@ -93,7 +93,7 @@ title: 新增工具插件
 
 ### 两种映射器
 
-- **`result: {"kind": "save_images"}`** —— 响应侧，把 base64 / URL 两种返回都落盘到 `output_dir` 并给 UI 附图片卡片。工具结果里塞图对当前 provider 链路没意义（只有 user 消息会被解析成 image 块）。
+- **`result: {"kind": "save_images"}`** —— 响应侧，把 base64 / URL 两种返回都落盘到 `output_dir` 并给 UI 附图片卡片。工具结果里直接塞 base64 图对当前 provider 链路没意义（OpenAI 的 tool role 只收字符串）；要让模型看见图，工具得把图片放进 `ToolResult.images`，由引擎作为一条带 image 块的 user 消息发出。
 - **`inputs: {"kind": "image_data_urls"}`** —— 请求侧，把**本地文件**读成 data URL。图生图这类接口要公网 URL 或 base64，而模型手里只有工作区路径，这一层就是那座桥。它是声明式的替代方案：模板层刻意不提供 `${file:...}`，否则任意 `plugin.json` 都能变成任意文件读。读取一律过沙箱，按**魔数**（不按扩展名）校验 JPG/PNG，并卡体积上限。
 
 ### `mcp` 声明

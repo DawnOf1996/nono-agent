@@ -358,7 +358,7 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 两种声明，`plugin.json` 的 `tools` 段是纯数据、不含可执行入口：
 
 - **`kind: "http_json"`**：一个 HTTP JSON 端点。请求体写模板，`${args.<name>}` 取模型入参（缺省则整个字段丢弃，不送 `null`），`${options.<key>}` 取用户配置。两侧各挂一个映射器：
-  - `result: {"kind": "save_images"}` —— 响应侧，把 base64 / URL 两种返回都落盘到 `output_dir`，并给 UI 附图片卡片。工具结果里塞图对当前 provider 链路没有意义（只有 user 消息会被解析成 image 块）。
+  - `result: {"kind": "save_images"}` —— 响应侧，把 base64 / URL 两种返回都落盘到 `output_dir`，并给 UI 附图片卡片。工具结果里直接塞 base64 图对当前 provider 链路没有意义（OpenAI 的 tool role 只收字符串）；要让模型看见图，工具得把图片放进 `ToolResult.images`，由引擎作为一条带 image 块的 user 消息发出。
   - `inputs: {"kind": "image_data_urls"}` —— 请求侧，把**本地文件**读成 data URL。图生图这类接口要的是公网 URL 或 base64，而模型手里只有工作区里的路径，这一层就是那座桥。它是声明式的替代方案：模板层刻意不提供 `${file:...}`，否则任意 `plugin.json` 都能变成任意文件读。读取一律过 `context.resolve_path()` 沙箱，按**魔数**（不按扩展名）校验 JPG/PNG，并卡体积上限。
 - **`kind: "mcp"`**：启用本插件 `mcp` 段里已声明的 server，按 `allowed_tools` 白名单接入。密钥注入支持三种方式，由 `auth.type` 选：
 
