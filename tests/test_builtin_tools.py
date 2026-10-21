@@ -41,7 +41,7 @@ def _sleep_cmd(seconds: int) -> str:
 
 
 class TestBuiltinFactory:
-    def test_creates_twenty_four_tools(self):
+    def test_creates_twenty_five_tools(self):
         """内置集合里**不含**插件托管的工具。
 
         browser_* 由工具插件挂载（清单里 ``kind: "builtin"``），插件关掉时它们
@@ -54,6 +54,7 @@ class TestBuiltinFactory:
             "job_output",
             "job_kill",
             "read_file",
+            "read_image",
             "write_file",
             "edit_file",
             "glob",

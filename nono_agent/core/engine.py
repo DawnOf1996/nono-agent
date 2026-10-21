@@ -26,6 +26,7 @@ import uuid
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
+from nono_agent.assets import AssetStore, get_asset_store
 from nono_agent.core.config import EngineConfig, ProviderConfig, QueryConfig, RuntimeGates
 from nono_agent.core.loop import agentic_loop
 from nono_agent.core.state import (
@@ -204,6 +205,7 @@ class QueryEngine:
         shell_jobs: JobRegistry | None = None,
         auto_load_mcp: bool = True,
         auto_load_tool_plugins: bool = True,
+        asset_store: AssetStore | None = None,
     ) -> None:
         self._config = config
         self._initialized = False
@@ -216,6 +218,8 @@ class QueryEngine:
         self._stop_hook_executor = stop_hook_executor or StopHookExecutor()
         self._post_sampling_chain = post_sampling_chain or PostSamplingChain()
         self._recovery_chain = recovery_chain or RecoveryChain()
+        # 资产存储 —— 图片附件落盘的地方。默认走进程级单例（数据目录下的 assets/）。
+        self._asset_store = asset_store
 
         # Shell 能力缝：执行器可注入（沙箱部署换实现），作业注册表按会话持有。
         # bash / job_output / job_kill 三个工具共享同一个注册表。
@@ -416,6 +420,29 @@ class QueryEngine:
                 "请在「设置 → 模型」中勾选该模型的「图片」输入类型，或换一个支持图片的模型。"
             )
 
+    def _persist_attachments(
+        self,
+        attachments: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        """把附件里的 base64 图片落盘，换成资产引用。
+
+        落盘失败时按原样透传：宁可让 provider 报一句"图片太大/格式不对"，
+        也不要在这里把用户的图片悄悄丢掉。
+        """
+        if not attachments:
+            return attachments
+        store = self._asset_store or get_asset_store()
+        try:
+            return store.persist_attachments(
+                attachments,
+                session_id=self._session_id,
+                turn_id=str(uuid.uuid4()),
+                source_kind="user-paste",
+            )
+        except Exception:
+            logger.exception("附件落盘失败，按原始附件继续")
+            return attachments
+
     async def submit_message(
         self,
         user_input: str,
@@ -439,6 +466,11 @@ class QueryEngine:
         # 图片输入门禁 —— 必须在任何事件落盘 / 轮次自增之前。
         # 放到这里是为了让"模型不支持图片"成为一次干净的拒绝：不留下半截 turn。
         self._check_attachments_supported(attachments)
+
+        # 图片附件落盘 —— 事件流与模型上下文里只留资产引用。
+        # base64 会让会话文件永久膨胀（user/input 与 user/message 各存一份），
+        # 真正的字节在请求发出的那一刻才从磁盘读回来。
+        attachments = self._persist_attachments(attachments)
 
         # 重置取消控制器 —— 上一次查询的 abort() 状态不能污染本次查询
         self._abort_controller = AbortController()
@@ -580,6 +612,7 @@ class QueryEngine:
                 event_sink=self._stage_event,
                 commit_permission=self._commit_pending_permission,
                 turn_user_message=user_msg,
+                asset_store=self._asset_store,
             ):
                 # 请求前一致性门禁 —— 此刻 loop 已把本 step 的状态事件全部上报。
                 # 先补写 user/message + request/header（放在 step/start 之后），再校验。

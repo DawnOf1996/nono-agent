@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from nono_agent.commands import CommandRegistry
 from nono_app_server.engine.session_manager import SessionManager
 
-from . import chat, commands, health, sessions
+from . import assets, chat, commands, health, sessions
 
 
 def register_engine_routes(
@@ -19,6 +19,7 @@ def register_engine_routes(
     app.state.engine_sessions = manager
     app.state.command_registry = command_registry
     app.include_router(health.router)
+    app.include_router(assets.router)
     app.include_router(chat.router)
     app.include_router(sessions.router)
     app.include_router(commands.router)

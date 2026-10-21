@@ -363,6 +363,12 @@ class ToolResult(BaseModel):
     # 只给客户端 UI 的结构化附件，**不进 content**，所以永远不会进模型上下文。
     # 目前只有文件工具用：整文件的前后差异（真实行号），对话里的 diff 卡片靠它渲染。
     ui: dict[str, Any] | None = None
+    # 给**模型**看的图片。与 ``ui`` 相反：它会进上下文。
+    #
+    # 为什么不塞进 content：OpenAI 的 tool role 与 Responses 的
+    # function_call_output 只收字符串，图片塞进去三家就不通用了。引擎会把
+    # 这里的图片块单独作为一条 user 消息发出 —— 那是三家都认的形状。
+    images: list[dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------

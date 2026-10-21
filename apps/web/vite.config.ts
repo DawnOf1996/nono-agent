@@ -85,6 +85,7 @@ export default defineConfig({
       "/command": sidecar,
       "/commands": sidecar,
       "/abort": sidecar,
+      "/asset": sidecar,
       "/app": { target: sidecar, ws: true },
     },
   },

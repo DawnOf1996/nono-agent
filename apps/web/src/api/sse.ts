@@ -149,12 +149,23 @@ export function contentToImages(content: unknown): ReplayImage[] {
     if (!block || typeof block !== "object") continue;
     const rec = block as {
       type?: string;
-      source?: { type?: string; media_type?: string; data?: string; url?: string };
+      source?: {
+        type?: string;
+        media_type?: string;
+        data?: string;
+        url?: string;
+        asset_id?: string;
+      };
       image_url?: { url?: string } | string;
       url?: string;
     };
     if (rec.type === "image") {
       const source = rec.source;
+      // 资产引用：图片字节在服务端资产目录里，按 ID 回读。
+      if (source?.type === "asset" && source.asset_id) {
+        images.push({ src: `/asset/${encodeURIComponent(source.asset_id)}` });
+        continue;
+      }
       if (source?.type === "base64" && source.data) {
         const media = source.media_type || "image/png";
         images.push({ src: `data:${media};base64,${source.data}` });

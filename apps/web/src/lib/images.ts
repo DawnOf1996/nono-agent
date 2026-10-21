@@ -1,4 +1,4 @@
-import type { ChatImageAttachment } from "@nono/protocol";
+import type { ChatImageAttachment, UploadedAsset } from "@nono/protocol";
 
 export const MAX_PENDING_IMAGES = 8;
 export const ACCEPT_IMAGE = "image/png,image/jpeg,image/webp,image/gif,image/bmp";
@@ -15,15 +15,64 @@ export type PendingImage = {
   preview: string;
 };
 
-export function toApiAttachments(images: PendingImage[]): ChatImageAttachment[] {
-  return images.map((item) => ({
+/**
+ * 把待发图片先传到服务端的资产目录，再换成资产引用。
+ *
+ * 走这条路的收益：base64 不再进 `/chat` 的 JSON，也不再进会话事件流 ——
+ * 会话文件里只留一个引用，图片字节留在磁盘上。单个上传失败时退回
+ * base64 形态（旧路径，服务端仍然支持），不因为一次上传失败丢掉整条消息。
+ */
+export async function uploadPendingImages(images: PendingImage[]): Promise<ChatImageAttachment[]> {
+  const out: ChatImageAttachment[] = [];
+  for (const item of images) {
+    const uploaded = await uploadAsset(item).catch(() => null);
+    if (!uploaded) {
+      out.push(toBase64Attachment(item));
+      continue;
+    }
+    out.push({
+      type: "image",
+      source: {
+        type: "asset",
+        asset_id: uploaded.asset_id,
+        media_type: uploaded.media_type,
+        path: uploaded.relative_path,
+        sha256: uploaded.sha256,
+        bytes: uploaded.byte_size,
+        width: uploaded.width,
+        height: uploaded.height,
+      },
+    });
+  }
+  return out;
+}
+
+/** 旧路径：图片字节直接带在请求里。服务端仍然支持，作为上传失败时的兜底。 */
+function toBase64Attachment(item: PendingImage): ChatImageAttachment {
+  return {
     type: "image",
-    source: {
-      type: "base64",
-      media_type: item.mediaType,
-      data: item.data,
-    },
-  }));
+    source: { type: "base64", media_type: item.mediaType, data: item.data },
+  };
+}
+
+async function uploadAsset(item: PendingImage): Promise<UploadedAsset> {
+  const form = new FormData();
+  form.append("file", base64ToBlob(item.data, item.mediaType), item.name || "image.png");
+  // 路径是 /asset（单数）—— /assets 归打包后的前端产物（JS/CSS chunk）用。
+  const response = await fetch("/asset", { method: "POST", body: form });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return (await response.json()) as UploadedAsset;
+}
+
+function base64ToBlob(data: string, mediaType: string): Blob {
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mediaType });
 }
 
 export function filesFromClipboard(event: { clipboardData?: DataTransfer | null }): File[] {

@@ -12,6 +12,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# 图片 token 估算参数（对齐 Anthropic 的图片计价）：
+# 宽 x 高 / 750，长边超过 1568px 先等比缩小，单图封顶 1600 token。
+_IMAGE_TOKEN_DIVISOR = 750
+_IMAGE_MAX_EDGE = 1568
+_IMAGE_MAX_TOKENS = 1600
+
 # 懒加载 tiktoken：编码器初始化要读 BPE 词表，别拖慢 import。
 _tiktoken_encoder: Any = None
 # 已经试过并失败了就不再重试。词表是**首次使用时才下载**的，
@@ -105,6 +111,40 @@ def _count_tool_result_content(content: Any) -> int:
         return count_tokens(str(content))
 
 
+def _estimate_image_tokens(block: dict[str, Any]) -> int:
+    """估算图片块的 token 数。
+
+    Anthropic 的图片计价是 ``(宽 x 高) / 750``，长边先缩到 1568px、总量封顶
+    1600 token。尺寸来自资产元数据（落盘时探测并写进内容块）。
+
+    **历史实现没有 image 分支**：块被当成「未知类型」，base64 字符串被当
+    文本逐字计数 —— 一张 100KB 的图估出 12820 token，真实值约 1048，12 倍
+    高估会把压缩阈值整体提前触发。
+
+    尺寸拿不到时（老会话日志里只有 base64）退回单图上限 1600 —— 宁可略高估，
+    也不能漏算：漏算会直接撞上 context 上限。
+    """
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return _IMAGE_MAX_TOKENS
+    width = source.get("width")
+    height = source.get("height")
+    if (
+        isinstance(width, (int, float))
+        and isinstance(height, (int, float))
+        and width > 0
+        and height > 0
+    ):
+        longest = max(float(width), float(height))
+        if longest > _IMAGE_MAX_EDGE:
+            ratio = _IMAGE_MAX_EDGE / longest
+            width = float(width) * ratio
+            height = float(height) * ratio
+        pixels = float(width) * float(height)
+        return max(1, min(_IMAGE_MAX_TOKENS, int(pixels / _IMAGE_TOKEN_DIVISOR)))
+    return _IMAGE_MAX_TOKENS
+
+
 def _count_content_block(block: Any) -> int:
     """估算单个内容块的 token 数 —— 按 ``type`` 分派。
 
@@ -114,6 +154,7 @@ def _count_content_block(block: Any) -> int:
     块 type               取值字段
     ===================  ====================================
     ``text``              ``text``
+    ``image``             图片本身（按宽高折算，不按 base64 长度）
     ``tool_use``          ``name`` + ``input``
     ``tool_result``       ``content``（str **或** 富内容 list）
     ``thinking``          ``thinking``（**不是** ``text``）
@@ -159,6 +200,9 @@ def _count_content_block(block: Any) -> int:
 
     if block_type == "tool_result":
         return _count_tool_result_content(block.get("content", ""))
+
+    if block_type == "image":
+        return _estimate_image_tokens(block)
 
     if block_type == "text":
         text = block.get("text", "")

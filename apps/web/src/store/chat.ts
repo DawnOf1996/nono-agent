@@ -94,7 +94,7 @@ import {
   saveDraftModel,
   saveDraftWorkspace,
 } from "@/lib/workspace";
-import { MAX_PENDING_IMAGES, toApiAttachments, type PendingImage } from "@/lib/images";
+import { MAX_PENDING_IMAGES, uploadPendingImages, type PendingImage } from "@/lib/images";
 import type { TurnTokens } from "@/lib/usage";
 import {
   MAX_QUOTE_CHARS,
@@ -1387,7 +1387,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         text,
         get().model || undefined,
         get().permissionMode,
-        pending.length ? toApiAttachments(pending) : undefined,
+        // 图片先传到服务端的资产目录，再把资产引用带上来 ——
+        // base64 不进请求体，也不进会话事件流。
+        pending.length ? await uploadPendingImages(pending) : undefined,
       );
       if (!response.ok) {
         throw new Error(await response.text());

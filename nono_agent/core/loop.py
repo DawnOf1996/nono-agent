@@ -29,6 +29,8 @@ from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from nono_agent.assets.materialize import materialize_asset_images
+from nono_agent.assets.store import AssetStore
 from nono_agent.core.config import EngineConfig, QueryConfig
 from nono_agent.core.state import (
     LoopState,
@@ -115,6 +117,7 @@ async def agentic_loop(
     event_sink: SessionEventSink | None = None,
     commit_permission: Callable[[str], None] | None = None,
     turn_user_message: UserMessage | None = None,
+    asset_store: AssetStore | None = None,
 ) -> AsyncGenerator[InternalMessage, None]:
     """主 Agentic 循环 —— while(True) 驱动的代理核心。
 
@@ -315,6 +318,15 @@ async def agentic_loop(
         # 中止不是错误，但内容要照常落库 —— 用户已经看见这些字了，历史里没有
         # 会让模型下一轮失忆。
         aborted = False
+
+        # 资产水合 —— 消息里的图片引用换成 base64。
+        #
+        # 放在这里（消息全部就位、即将发给 provider）而不是预处理管线里：
+        # 本轮的用户消息是在管线之后才追加进请求列表的，挂在管线上，本轮贴进来
+        # 的图在第一次请求里就丢了。
+        #
+        # 改的是请求用的深拷贝 —— store 与事件流里留的始终是引用。
+        materialize_asset_images(messages, asset_store)
 
         try:
             # 调用 provider 的流式 API，每次 yield 一个 StreamEvent 或 AssistantMessage
@@ -769,6 +781,31 @@ async def agentic_loop(
         )
         store.append(tool_result_msg)
         yield tool_result_msg
+
+        # 工具产出的图片：单独一条 user 消息带 image 块。
+        #
+        # 为什么不是塞进 tool_result.content：OpenAI 的 tool role 与 Responses
+        # 的 function_call_output 只收字符串，塞进去三家就不通用了。拆成独立的
+        # user 消息是三家都认的形状 —— Anthropic 会把连续的同角色消息并成一轮，
+        # OpenAI 则是 tool 消息之后跟一条带 image_url 的 user 消息。
+        image_blocks = [
+            block
+            for result in tool_results
+            for block in (result.images or [])
+            if isinstance(block, dict)
+        ]
+        if image_blocks:
+            image_msg = UserMessage(
+                message={
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "[工具返回的图片]"},
+                        *image_blocks,
+                    ],
+                },
+            )
+            store.append(image_msg)
+            yield image_msg
 
         # 决策转移: 工具已完成，继续下一轮
         transition = Transition(reason=TransitionReason.NEXT_TURN)

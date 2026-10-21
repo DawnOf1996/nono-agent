@@ -42,6 +42,7 @@ from nono_agent.tools.builtin.ls import LSTool
 from nono_agent.tools.builtin.lsp import LSPTool
 from nono_agent.tools.builtin.plan import EnterPlanModeTool, ExitPlanModeTool
 from nono_agent.tools.builtin.read import ReadFileTool
+from nono_agent.tools.builtin.read_image import ReadImageTool
 from nono_agent.tools.builtin.task import TaskStore, create_task_tools
 from nono_agent.tools.builtin.todo_write import TodoWriteTool
 from nono_agent.tools.builtin.tool_search import ToolSearchTool
@@ -76,6 +77,7 @@ __all__ = [
     "JobOutputTool",
     "PLUGIN_MANAGED_TOOL_FACTORIES",
     "ReadFileTool",
+    "ReadImageTool",
     "TodoWriteTool",
     "WriteFileTool",
     "create_builtin_tools",
@@ -126,6 +128,7 @@ def create_builtin_tools(config: EngineConfig | None = None) -> list[ToolBase]:
         JobOutputTool(),
         JobKillTool(),
         ReadFileTool(),
+        ReadImageTool(),
         WriteFileTool(),
         EditFileTool(),
         GlobTool(),

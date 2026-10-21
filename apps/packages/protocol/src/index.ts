@@ -2,13 +2,44 @@
 
 export type PermissionMode = "default" | "accept_edits" | "plan" | "bypass";
 
+/**
+ * 图片附件。
+ *
+ * 两种来源：
+ * - `base64` —— 图片字节直接带在请求里（旧路径，仍然支持）。
+ * - `asset` —— 图片已经落在服务端资产目录里，这里只带一个引用。
+ *   会话事件流里留的也是这种引用，base64 不会进会话文件。
+ */
 export type ChatImageAttachment = {
   type: "image";
-  source: {
-    type: "base64";
-    media_type: string;
-    data: string;
-  };
+  source:
+    | {
+        type: "base64";
+        media_type: string;
+        data: string;
+      }
+    | {
+        type: "asset";
+        asset_id: string;
+        media_type: string;
+        path?: string;
+        sha256?: string;
+        bytes?: number;
+        width?: number | null;
+        height?: number | null;
+      };
+};
+
+/** POST /assets 的返回 —— 上传一张图片后拿到的资产引用。 */
+export type UploadedAsset = {
+  asset_id: string;
+  media_type: string;
+  byte_size: number;
+  sha256: string;
+  width?: number | null;
+  height?: number | null;
+  relative_path: string;
+  source: ChatImageAttachment["source"];
 };
 
 export type SlashCommandInfo = {
