@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,6 +68,40 @@ class StreamingToolExecutor:
     def __init__(self, registry: ToolRegistry) -> None:
         self._registry = registry
 
+    @staticmethod
+    def _cancelled(block_id: str, block_name: str) -> ToolExecutionResult:
+        """被中止打断的工具结果。
+
+        必须产出这么一条，而不是静默丢掉：模型下一轮会看到「调用了但没结果」，
+        那是 API 会直接拒绝的悬空 tool_use。
+        """
+        return ToolExecutionResult(
+            result=ToolResult(
+                tool_use_id=block_id,
+                content="Tool execution cancelled.",
+                is_error=True,
+                tool_name=block_name,
+            ),
+            tool_use_id=block_id,
+            tool_name=block_name,
+            was_cancelled=True,
+        )
+
+    @staticmethod
+    async def _drain_cancelled(
+        pending: set[asyncio.Task[ToolExecutionResult]],
+        names: dict[str, str],
+    ) -> AsyncGenerator[ToolExecutionResult, None]:
+        """取消在跑的工具，逐条产出「被取消」结果。"""
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            block_id = names.get(task.get_name(), "")
+            with suppress(BaseException):
+                await task
+            block_name = names.get(block_id, "")
+            yield StreamingToolExecutor._cancelled(block_id, block_name)
+
     async def execute(
         self,
         tool_blocks: list[ToolUseBlock],
@@ -75,6 +110,11 @@ class StreamingToolExecutor:
         """执行工具块，结果随完成而 yield。
 
         并发安全工具并行执行，顺序工具逐一执行。
+
+        两条路径都把「取结果」和「等中止」放进同一个 ``asyncio.wait``：工具执行
+        期间同样可能挂很久（浏览器一次交互就几秒，MCP 更久），而绝大多数工具并不
+        读 ``context.signal``。不race 的话，按停止要等**至少一个工具跑完**才生效，
+        用户看到的就是「按钮没反应」—— 和流式输出那次一模一样的病根。
         """
         if not tool_blocks:
             return
@@ -90,71 +130,86 @@ class StreamingToolExecutor:
             else:
                 sequential_blocks.append(block)
 
+        signal = getattr(context, "signal", None)
+
         # 并发安全工具: asyncio.create_task 并行执行
         tasks: dict[str, asyncio.Task[ToolExecutionResult]] = {}
+        names: dict[str, str] = {}
         for block in concurrent_blocks:
-            task = asyncio.create_task(
+            name = f"tool:{block.name}:{block.id}"  # 任务名用于调试
+            tasks[block.id] = asyncio.create_task(
                 self._execute_one(block, context),
-                name=f"tool:{block.name}:{block.id}",  # 任务名用于调试
+                name=name,
             )
-            tasks[block.id] = task
+            names[name] = block.id
 
-        # 并发结果: asyncio.wait FIRST_COMPLETED，完成一个就 yield 一个
+        # 并发结果: FIRST_COMPLETED，完成一个就 yield 一个；中止随时打断。
         if tasks:
             pending = set(tasks.values())
-            while pending:
-                done, pending = await asyncio.wait(
-                    pending, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in done:
-                    result = await task
-                    yield result
-                # abort 后取消剩余任务，避免已取消的查询仍在后台执行工具
-                if context.signal.aborted:
-                    for t in pending:
-                        t.cancel()
-                    # 等待取消完成，收集已取消的结果
-                    for t in pending:
-                        try:
-                            result = await t
-                            yield result
-                        except asyncio.CancelledError:
-                            # 从 task name 提取 block id
-                            name = t.get_name()  # tool:{name}:{id}
-                            parts = name.split(":")
-                            block_id = parts[2] if len(parts) >= 3 else ""
-                            block_name = parts[1] if len(parts) >= 2 else ""
-                            yield ToolExecutionResult(
-                                result=ToolResult(
-                                    tool_use_id=block_id,
-                                    content="Tool execution cancelled.",
-                                    is_error=True,
-                                    tool_name=block_name,
-                                ),
-                                tool_use_id=block_id,
-                                tool_name=block_name,
-                                was_cancelled=True,
-                            )
-                    break  # 退出 while pending
+            waiter = (
+                asyncio.ensure_future(signal.wait()) if signal is not None else None
+            )
+            try:
+                while pending:
+                    if waiter is None:
+                        done, pending = await asyncio.wait(
+                            pending, return_when=asyncio.FIRST_COMPLETED
+                        )
+                    else:
+                        done, pending = await asyncio.wait(
+                            pending | {waiter},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        # asyncio.wait 会把 waiter 一起算进返回值，这里摘掉。
+                        pending = {t for t in pending if t is not waiter}
+                        if waiter in done:
+                            # 已经跑完的照常交结果，在跑的立刻停 —— 不等它们收尾。
+                            for task in done:
+                                if task is waiter:
+                                    continue
+                                yield await task
+                            async for item in self._drain_cancelled(pending, names):
+                                yield item
+                            return
+                    for task in done:
+                        if task is waiter:
+                            continue
+                        result = await task
+                        yield result
+            finally:
+                if waiter is not None:
+                    waiter.cancel()
 
-        # 顺序工具: 逐一执行，每个结果检查取消信号
+        # 顺序工具: 逐一执行；中止会中断当前这个，并且不再启动后面的。
+        aborted = False
         for block in sequential_blocks:
-            if context.signal.aborted:
-                yield ToolExecutionResult(
-                    result=ToolResult(
-                        tool_use_id=block.id,
-                        content="Tool execution cancelled.",
-                        is_error=True,
-                        tool_name=block.name,
-                    ),
-                    tool_use_id=block.id,
-                    tool_name=block.name,
-                    was_cancelled=True,
-                )
+            if aborted or (signal is not None and signal.aborted):
+                aborted = True
+                yield self._cancelled(block.id, block.name)
                 continue
 
-            result = await self._execute_one(block, context)
-            yield result
+            task = asyncio.ensure_future(self._execute_one(block, context))
+            waiter = (
+                asyncio.ensure_future(signal.wait()) if signal is not None else None
+            )
+            try:
+                if waiter is None:
+                    yield await task
+                    continue
+                done, _ = await asyncio.wait(
+                    {task, waiter}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if waiter in done and task not in done:
+                    task.cancel()
+                    with suppress(BaseException):
+                        await task
+                    aborted = True
+                    yield self._cancelled(block.id, block.name)
+                    continue
+                yield task.result()
+            finally:
+                if waiter is not None:
+                    waiter.cancel()
 
     async def _execute_one(
         self,

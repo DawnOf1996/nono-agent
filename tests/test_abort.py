@@ -660,7 +660,6 @@ class TestIterateWithAbort:
     @pytest.mark.asyncio
     async def test_tolerates_none_signal(self):
         """signal=None 表示不设中止控制，照常消费到底。"""
-        controller = AbortController()
 
         async def source():
             yield 1
