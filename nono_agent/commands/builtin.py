@@ -192,6 +192,26 @@ class PermissionCommand(_SimpleCommand):
             current += (
                 f"\nPending: {pending.value} (applies at next turn or step)"
             )
+        # 把生效的规则也列出来 —— 「配了规则却没生效」是排查起来最费时间的一类
+        # 问题，能一眼看到当前策略里有什么，比只报一个模式值有用得多。
+        rules = policy.rules
+        auto = policy.auto_approve_rules
+        if rules:
+            lines = [
+                f"  - {r.action.value} {r.label}"
+                + (f" ({r.tool_name})" if r.tool_name else "")
+                for r in rules
+            ]
+            current += "\nRules:\n" + "\n".join(lines)
+        else:
+            current += "\nRules: (none)"
+        if auto:
+            lines = [
+                f"  - auto-approve {r.label}"
+                + (f" ({r.tool_name})" if r.tool_name else "")
+                for r in auto
+            ]
+            current += "\nAuto-approve (never ask again):\n" + "\n".join(lines)
         return current
 
 

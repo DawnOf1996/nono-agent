@@ -1,12 +1,12 @@
 """工具执行上下文。
 
 ToolUseContext 携带工具执行所需的全部信息：
-工作目录、取消信号、权限检查器、权限策略、路径沙箱、拒绝追踪等。
+工作目录、取消信号、权限检查器、权限拦截链、路径沙箱、拒绝追踪等。
 使用 frozen dataclass 防止工具篡改共享状态。
 
 权限决策链路（fail-closed）：
-1. 若注入 ``policy``（PermissionPolicy）→ 三态决策 ALLOW/ASK/DENY
-2. ASK 或未注入 policy 时 → 回落到 ``permission_checker`` 交互回调（bool）
+1. 注入 ``gate``（PermissionGate）→ 跑有序拦截链，产出 ALLOW/ASK/DENY
+2. 未注入 gate 时 → 退回旧的布尔检查器语义
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from nono_agent.permissions.policy import PermissionDecision, PermissionPolicy
+from nono_agent.permissions.decision import PermissionDecision
+from nono_agent.permissions.policy import PermissionPolicy
 from nono_agent.permissions.sandbox import PathSandbox
 from nono_agent.utils.abort import AbortSignal
 
@@ -47,6 +48,10 @@ class ToolUseContext:
 
     # 权限策略（PermissionPolicy）—— 注入后启用三态规则决策
     policy: PermissionPolicy | None = None
+
+    # 权限拦截链（PermissionGate）—— 决策的唯一实现，顺序即优先级。
+    # 注入后执行器走这条链；未注入时退回旧的布尔检查器语义。
+    gate: Any | None = None  # PermissionGate
 
     # 路径沙箱 —— 注入后工具按此校验路径逃逸
     sandbox: PathSandbox | None = None
@@ -88,6 +93,10 @@ class ToolUseContext:
         """按策略做三态决策；未注入 policy 时回落到布尔检查器。
 
         返回 ALLOW / ASK / DENY。
+
+        .. deprecated::
+            完整决策走 :meth:`evaluate_permission`（权限拦截链）。
+            本方法只服务于没注入 gate 的旧路径。
         """
         if self.policy is not None:
             decision = self.policy.check(
@@ -104,6 +113,21 @@ class ToolUseContext:
         # 无 policy：沿用旧布尔语义
         allowed = await self.check_permission(tool_name, input_params)
         return PermissionDecision.ALLOW if allowed else PermissionDecision.DENY
+
+    async def evaluate_permission(
+        self,
+        tool: Any,
+        tool_name: str,
+        input_params: dict[str, Any],
+    ) -> Any | None:
+        """跑权限拦截链。
+
+        Returns:
+            ``GateOutcome``；未注入 gate 时返回 None（调用方走旧路径）。
+        """
+        if self.gate is None:
+            return None
+        return await self.gate.evaluate(tool, tool_name, input_params, self)
 
     async def check_permission(
         self,
@@ -130,12 +154,24 @@ class ToolUseContext:
         tool_name: str,
         reason: str,
         input_params: dict[str, Any] | None = None,
+        *,
+        step: str | None = None,
+        rule: str | None = None,
     ) -> None:
-        """记录一次权限拒绝（若注入了拒绝追踪器）。"""
+        """记录一次权限拒绝（若注入了拒绝追踪器）。
+
+        ``step`` / ``rule`` 记下"被哪一步、哪条规则拦的" —— 审计要能看出
+        原因，光有一句"权限被拒绝"没有用。
+        """
         if self.denial_tracker is not None:
             mode = self.policy.mode.value if self.policy is not None else "default"
             self.denial_tracker.record(
-                tool_name, reason, input_params, mode=mode
+                tool_name,
+                reason,
+                input_params,
+                mode=mode,
+                step=step,
+                rule=rule,
             )
 
     # ------------------------------------------------------------------
@@ -177,6 +213,7 @@ class ToolUseContext:
             session_id=self.session_id,
             permission_checker=self.permission_checker,
             policy=self.policy,
+            gate=self.gate,
             sandbox=self.sandbox,
             denial_tracker=self.denial_tracker,
             ignore=self.ignore,

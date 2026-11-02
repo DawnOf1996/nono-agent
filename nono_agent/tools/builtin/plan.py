@@ -46,15 +46,24 @@ class EnterPlanModeTool(ToolBase):
 
 
 class ExitPlanModeTool(ToolBase):
-    """退出计划模式，恢复 default 权限。"""
+    """退出计划模式，恢复进入 plan 之前的权限模式。
+
+    恢复的是"进来之前是什么模式"，而不是拍脑袋回 default —— 从 bypass
+    进 plan 再退出，应该还在 bypass，否则用户以为还在放行模式，
+    实际上被降级了。
+    """
 
     _name = "exit_plan_mode"
     _description = (
-        "Exit plan mode. Default permissions are restored from the next step."
+        "Exit plan mode. The permission mode in effect before plan mode is "
+        "restored from the next step."
     )
     _input_schema = {"type": "object", "properties": {}}
     _is_concurrent_safe = False
     _has_write_side_effects = False
+    # 退出计划模式必须有人点头 —— 否则模型可以自己把用户设下的只读限制解开，
+    # 那是它单方面给自己开权限。不可被任何模式或白名单跳过。
+    _always_requires_approval = True
 
     async def execute(self, input_params: dict[str, Any], context: Any) -> ToolResult:
         policy = getattr(context, "policy", None)
@@ -65,12 +74,13 @@ class ExitPlanModeTool(ToolBase):
                 is_error=True,
                 tool_name=self._name,
             )
-        policy.request_mode(PermissionMode.DEFAULT)
+        target = getattr(policy, "pre_plan_mode", PermissionMode.DEFAULT)
+        policy.request_mode(target)
         return ToolResult(
             tool_use_id="",
             content=(
-                "Exited plan mode. Default permissions will be restored "
-                "from the next step."
+                f"Exited plan mode. Permission mode will return to "
+                f"'{target.value}' from the next step."
             ),
             tool_name=self._name,
         )

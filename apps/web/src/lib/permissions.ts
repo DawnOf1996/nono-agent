@@ -19,7 +19,7 @@ export const PERMISSION_MODE_META: Record<
   },
   accept_edits: {
     label: "自动编辑",
-    hint: "工作区内改文件自动允许，其它写操作仍需确认",
+    hint: "当前与「每次确认」一致：写入和执行仍需批准",
   },
   plan: {
     label: "计划模式",

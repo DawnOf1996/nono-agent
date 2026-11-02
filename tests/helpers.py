@@ -420,6 +420,13 @@ def create_test_engine(
     )
 
     engine_kwargs.setdefault("auto_load_mcp", False)
+    # 权限链是 fail-closed 的：没有交互通道时，"需要人确认"一律按拒绝处理。
+    # 这些用例测的是别的东西（事件流、工具流、文件产物），不该被权限拦下 ——
+    # 所以默认显式放行，而不是靠"没有检查器"这个隐含前提。
+    # 要测拒绝行为就自己传 permission_checker。
+    engine_kwargs.setdefault(
+        "permission_checker", lambda tool_name, input_params: True
+    )
     return QueryEngine(
         config,
         provider_registry=registry,

@@ -26,7 +26,8 @@ from nono_agent.observability.metrics import (
     record_counter,
     record_histogram,
 )
-from nono_agent.permissions.policy import PermissionDecision
+from nono_agent.permissions.decision import PermissionDecision
+from nono_agent.permissions.gate import GateOutcome
 from nono_agent.tools.context import ToolUseContext
 from nono_agent.tools.registry import ToolNotFound, ToolRegistry
 
@@ -254,14 +255,17 @@ class StreamingToolExecutor:
                 tool_name=block.name,
             )
 
-        # 3. 检查权限（fail-closed：有策略时始终决策，否则仅写副作用工具询问）
+        # 3. 权限检查（fail-closed）
+        #    注入了 gate → 走有序拦截链（permissions/gate.py），顺序即优先级。
+        #    没注入 gate（测试 / 旧调用方）→ 退回旧的布尔语义。
+        outcome = None
+        decision = PermissionDecision.DENY
         try:
-            if context.policy is not None:
-                decision = await context.check_permission_decision(
-                    block.name,
-                    block.input,
-                    has_write_side_effects=tool.has_write_side_effects,
+            if context.gate is not None:
+                outcome = await context.gate.evaluate(
+                    tool, block.name, block.input, context
                 )
+                decision = outcome.decision
             elif tool.should_prompt_for_permission(block.input, context):
                 decision = await context.check_permission_decision(
                     block.name,
@@ -274,16 +278,47 @@ class StreamingToolExecutor:
             # 用户在权限提示中按了 Ctrl+C / Ctrl+D → 视为拒绝
             decision = PermissionDecision.DENY
 
+        # 3.1 ASK → 交给交互检查器（CLI 询问 / Server 弹窗）。
+        #     链只负责"该不该问"，问不问、答什么由产品层决定。
+        #
+        #     没有交互通道（无人值守 / 后台 agent）→ 没人能批准，
+        #     按 fail-closed 拒绝。要放行只能靠显式规则或 hook。
+        if decision is PermissionDecision.ASK:
+            if context.permission_checker is None:
+                decision = PermissionDecision.DENY
+                if outcome is not None:
+                    outcome = GateOutcome(
+                        PermissionDecision.DENY,
+                        outcome.step,
+                        f"{outcome.reason} (no approval channel available)",
+                        outcome.rule,
+                    )
+            else:
+                try:
+                    allowed = await context.check_permission(block.name, block.input)
+                    decision = (
+                        PermissionDecision.ALLOW if allowed else PermissionDecision.DENY
+                    )
+                except (EOFError, KeyboardInterrupt):
+                    decision = PermissionDecision.DENY
+
         if decision is not PermissionDecision.ALLOW:
+            reason = (
+                outcome.reason
+                if outcome is not None
+                else f"Permission denied for tool '{block.name}'."
+            )
             context.record_denial(
                 block.name,
-                f"Permission denied for tool '{block.name}'.",
+                reason,
                 block.input,
+                step=str(outcome.step) if outcome is not None else None,
+                rule=outcome.rule if outcome is not None else None,
             )
             return ToolExecutionResult(
                 result=ToolResult(
                     tool_use_id=block.id,
-                    content=f"Permission denied for tool '{block.name}'.",
+                    content=f"Permission denied for tool '{block.name}': {reason}",
                     is_error=True,
                     tool_name=block.name,
                 ),

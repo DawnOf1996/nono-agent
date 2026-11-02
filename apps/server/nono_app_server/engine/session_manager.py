@@ -10,7 +10,9 @@ from typing import Any
 
 from nono_agent.core.config import EngineConfig
 from nono_agent.core.engine import QueryEngine
+from nono_agent.hooks import load_user_hook_executor
 from nono_agent.paths import resolve_session_cwd
+from nono_agent.permissions.policy import policy_from_settings
 from nono_agent.providers.catalog import load_catalog
 from nono_agent.session.transcript import (
     LocalFileTranscriptWriter,
@@ -18,6 +20,7 @@ from nono_agent.session.transcript import (
     existing_transcript_path,
     peek_session_header,
 )
+from nono_agent.settings import load_settings_from_env
 from nono_agent.tools.builtin import create_builtin_tools
 from nono_agent.tools.context import PermissionChecker
 from nono_agent.tools.registry import ToolRegistry
@@ -49,6 +52,20 @@ def build_session_tool_registry(config: EngineConfig | None = None) -> ToolRegis
     for tool in create_builtin_tools(config):
         registry.register(tool)
     return registry
+
+
+def build_session_policy(cwd: str) -> Any:
+    """按工作区构建权限策略 —— 读落盘的 permissions 设置。
+
+    不读这些设置的话，用户写的 rules / mode / auto_approve 全是空转的：
+    引擎只会拿到一个空的默认策略，用户以为配了规则，其实一条都没生效。
+    """
+    try:
+        settings = load_settings_from_env(cwd)
+    except Exception:  # noqa: BLE001 —— 设置读不了不该让整个会话起不来
+        logger.warning("Failed to load permission settings for %s", cwd, exc_info=True)
+        return policy_from_settings({})
+    return policy_from_settings(settings)
 
 
 class SessionManager:
@@ -240,6 +257,8 @@ class SessionManager:
             engine = QueryEngine(
                 engine_config,
                 permission_checker=self.checker_for(session_id),
+                permission_policy=build_session_policy(engine_config.cwd),
+                permission_hooks=load_user_hook_executor(engine_config.cwd),
                 tool_registry=build_session_tool_registry(engine_config),
                 ask_user=self.make_ask_user(session_id),
             )
@@ -371,6 +390,8 @@ class SessionManager:
         engine = QueryEngine(
             engine_config,
             permission_checker=self.checker_for(session_id),
+            permission_policy=build_session_policy(engine_config.cwd),
+            permission_hooks=load_user_hook_executor(engine_config.cwd),
             tool_registry=build_session_tool_registry(engine_config),
             ask_user=self.make_ask_user(session_id),
         )

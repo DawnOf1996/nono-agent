@@ -25,6 +25,7 @@ from nono_agent.core.types import ToolResult
 from nono_agent.jobs.board import registry_for
 from nono_agent.jobs.context import jobs_parent, jobs_session
 from nono_agent.permissions.bash_classify import BashClassifier, BashRisk
+from nono_agent.permissions.decision import PermissionDecision
 from nono_agent.session.transcript import active_session_dir
 from nono_agent.shell.dialect import resolve_dialect
 from nono_agent.shell.jobs import (
@@ -171,14 +172,26 @@ class BashTool(ToolBase):
     def shell_config(self) -> ShellConfig:
         return self._config
 
-    def should_prompt_for_permission(
+    def evaluate_permission(
         self,
         input_params: dict[str, Any],
         context: Any,
-    ) -> bool:
-        """Bash 默认需要授权；纯读命令可免授权。"""
+    ) -> PermissionDecision:
+        """按命令风险分级自评。
+
+        - ``SAFE``      → ALLOW：``ls`` / ``cat`` 这类纯读命令不必打扰用户
+        - ``WRITE``     → ASK
+        - ``DANGEROUS`` → ASK：**不直接拒**。危险命令的具体后果由用户判断，
+          模型没有资格替用户决定 ``rm -rf`` 就不该跑。真正不可放行的边界
+          （密钥文件、数据目录 credentials）由安全底线兜底。
+
+        这是 ``BashClassifier`` 唯一真正起作用的地方 —— 它既是闸门，
+        也是输出里的 ``[dangerous]`` 标签。
+        """
         risk = self._classifier.classify(input_params.get("command", ""))
-        return risk in (BashRisk.WRITE, BashRisk.DANGEROUS)
+        if risk is BashRisk.SAFE:
+            return PermissionDecision.ALLOW
+        return PermissionDecision.ASK
 
     async def execute(self, input_params: dict[str, Any], context: Any) -> ToolResult:
         command = (input_params.get("command") or "").strip()

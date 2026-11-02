@@ -11,10 +11,13 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class RuleAction(StrEnum):
@@ -43,6 +46,24 @@ def _extract_command(params: dict[str, Any]) -> str | None:
     return None
 
 
+def extract_paths(params: dict[str, Any]) -> list[str]:
+    """提取入参里所有可能的路径 —— 供安全底线逐个检查。
+
+    比 ``_extract_path`` 多取 ``workdir``：bash 的 workdir 也是它会碰的路径。
+    """
+    found: list[str] = []
+    for key in ("path", "file_path", "target", "target_directory", "workdir"):
+        val = params.get(key)
+        if isinstance(val, str) and val and val not in found:
+            found.append(val)
+    return found
+
+
+def extract_command(params: dict[str, Any]) -> str | None:
+    """公开版命令提取 —— 供安全底线扫描命令内容。"""
+    return _extract_command(params)
+
+
 @dataclass
 class PermissionRule:
     """单条权限规则。
@@ -56,6 +77,8 @@ class PermissionRule:
     path: str | None = None
     bash_pattern: str | None = None
     description: str = ""
+    #: 规则标识 —— 写进审计事件的 ``rule`` 字段。留空则回落到 description。
+    id: str = ""
     # 编译缓存（不参与序列化）
     _bash_re: re.Pattern[str] | None = field(default=None, repr=False, compare=False)
 
@@ -64,7 +87,36 @@ class PermissionRule:
             try:
                 self._bash_re = re.compile(self.bash_pattern)
             except re.error:
+                # 正则写错会让这条规则**静默失效** —— 轴永远不命中，
+                # 用户以为规则生效了，其实没有。宁可响一声。
                 self._bash_re = None
+                logger.warning(
+                    "Permission rule has invalid bash_pattern %r — axis disabled",
+                    self.bash_pattern,
+                )
+
+    @property
+    def label(self) -> str:
+        """审计用的规则标识。"""
+        return self.id or self.description or self.action.value
+
+    @property
+    def is_tool_level(self) -> bool:
+        """是否「整个工具」级别的规则 —— 只声明了 tool_name 轴。
+
+        工具级与内容级在拦截链里的位置不同：工具级的 ask 无法被
+        「不再询问」白名单覆盖，内容级的可以。
+        """
+        return (
+            self.tool_name is not None
+            and self.path is None
+            and self.bash_pattern is None
+        )
+
+    @property
+    def is_content_level(self) -> bool:
+        """是否内容级规则 —— 声明了 path 或 bash_pattern 轴。"""
+        return self.path is not None or self.bash_pattern is not None
 
     # ------------------------------------------------------------------
     # 匹配
@@ -124,6 +176,7 @@ class PermissionRule:
             "path": self.path,
             "bash_pattern": self.bash_pattern,
             "description": self.description,
+            "id": self.id,
         }
 
     @classmethod
@@ -141,4 +194,5 @@ class PermissionRule:
             path=data.get("path"),
             bash_pattern=data.get("bash_pattern"),
             description=data.get("description", ""),
+            id=str(data.get("id", "") or ""),
         )

@@ -86,10 +86,10 @@ title: 工具与权限
 | `default` | 写/执行需确认（`ASK`），读自动允许 |
 | `accept_edits` | **与 `default` 同**：读允许，写仍需确认 |
 | `plan` | 禁止任何写副作用（只读） |
-| `bypass` | 显式危险模式，全部允许（**但显式 `deny` 规则仍生效**） |
+| `bypass` | 显式危险模式，全部允许（**但 `deny` 规则、安全底线、工具的绝对否决仍生效**） |
 
 !!! warning "`accept_edits` 目前不自动允许任何编辑"
-    `policy.py:174-187` 里 `ACCEPT_EDITS` 与 `DEFAULT` 两个分支返回值逐字相同，
+    `policy.py` 里 `ACCEPT_EDITS` 与 `DEFAULT` 两个分支返回值逐字相同，
     行内注释写明「编辑类工具在工作区内的自动允许由 rules 层表达」。
     也就是说这个模式名现在**没有比 `default` 更宽松的行为**。
     想要「工作区内编辑免确认」，用可落盘规则表达：
@@ -105,45 +105,149 @@ title: 工具与权限
 到下一个 turn / step 边界才 `commit_pending` 真正生效并写 `permission/changed`。这样
 「请求切换」和「切换已生效」在事件流里是两个可区分的事实。
 
-### 决策链路
+`exit_plan_mode` 恢复的是**进入 plan 之前的模式**，不是拍脑袋回 `default`。
+它声明了 `always_requires_approval` —— 模型不能自己解开用户设下的只读限制，
+退出计划模式要有人点头。
+
+### 权限拦截链
+
+模型说「我要执行这个命令」，从这句话到命令真的跑起来，中间隔着一道检查。
+这道检查就是**权限拦截链**（`nono_agent/permissions/gate.py`）——
+顺序写死在代码里，而不是散在各层或写在文档里。顺序只有一处定义，
+才谈得上"不可能被绕过"。
 
 ```text
-PermissionPolicy.check(tool_name, params, has_write_side_effects)
-    ↓
-  deny 规则命中？          → DENY
-  allow 规则命中？         → ALLOW
-  ask 规则命中？           → ASK
-  未命中 → 模式默认         → 按 default/accept_edits/plan/bypass
-    ↓
-ASK 或未注入 policy
-    ↓
-permission_checker 交互回调（CLI 询问 / Server 拒绝）→ ALLOW / DENY
+绝对收紧层    任何自动放行都越不过
+  0   hook_pre          PreToolUse hook 否决        → DENY
+  1a  rule_deny         显式禁止规则                 → DENY
+  1c  tool_verdict      工具的绝对否决               → DENY
+  1e  tool_always_ask   工具声明必须人工             → ASK
+  1g  safety_baseline   安全底线                     → DENY / ASK
+  1h  plan_mode         plan 模式只读                → DENY
+
+用户标记层    可被「不再询问」白名单部分覆盖
+  1b  rule_ask          「这个工具每次都问」         → ASK
+  2a  auto_approve      「这些命令不再问」           → ALLOW
+  1f  rule_ask_content  「这类操作要问」             → ASK
+
+放宽层
+  2b  mode_bypass       全部放行模式                 → ALLOW
+  2c  rule_allow        总是允许规则                 → ALLOW
+
+兜底层
+  3   default           没被声明就当要问             → ASK / ALLOW
 ```
 
-规则优先级固定为 **`deny > allow > ask > 模式默认`**。即使在 `bypass` 模式下，显式 `deny` 规则依然被尊重。
+从顺序里直接读出三条性质：
 
-权限规则格式：
+1. **禁止永远赢** —— `deny` 在最前，`bypass` 也绕不过。
+2. **人的显式配置高于省事模式** —— 用户明写的 `ask` 规则排在 `bypass` 之前。
+3. **有些边界连用户自己都不能放开** —— 安全底线与工具的绝对否决排在一切自动放行之前。
+
+「软 ASK / 硬 ASK」不靠标志位区分，**靠位置**：收紧层的 ASK 谁都动不了，
+兜底层的 ASK 可被 `bypass` 放宽。
+
+!!! note "hook 与检查链串联，不并联"
+    `before_tool` hook 说拒绝 → 拒绝；说允许 → **继续走完整条链**，
+    不能跳过安全检查。业务方能加规则，但不能拆规则。
+    hook 可以用退出码（非零 = 拒绝）或 stdout 的 JSON 表达三态判定：
+
+    ```json
+    {"decision": "ask", "reason": "这条命令需要人工确认", "rule": "my-rule"}
+    ```
+
+### 规则格式
 
 ```json
 {
   "mode": "default",
   "rules": [
     { "action": "allow", "tool_name": "read_file", "path": "src/**" },
-    { "action": "deny",  "tool_name": "bash", "bash_pattern": "rm -rf" }
+    { "action": "deny",  "tool_name": "bash", "bash_pattern": "rm -rf" },
+    { "action": "ask",   "tool_name": "bash", "bash_pattern": "npm publish" }
+  ],
+  "auto_approve": [
+    { "action": "allow", "tool_name": "bash", "bash_pattern": "^git status" }
   ]
 }
 ```
 
-### 路径沙箱
+两套清单，语义不同，不要混：
 
-`PathSandbox` 做词法路径校验，防止工具读写逃出工作区。注意它**不约束命令内容** ——
-`bash` 里跑什么命令由 `permissions/bash_classify.py` 的分类器把关（SAFE / WRITE / DANGEROUS 三档，
-按 POSIX 习惯命令匹配）。从正则黑名单升级到权限模式驱动是 P2 计划项，尚未实施。
+| 清单 | 作用 | 优先级 |
+|---|---|---|
+| `rules` | 「这个操作本身有多危险」 | `deny` > `ask` > `allow` |
+| `auto_approve` | 「不再询问」白名单 —— 用户显式授权过的操作 | 命中即放行，**可覆盖 `ask` 规则** |
+
+`auto_approve` 覆盖得了 `ask` 规则，但**覆盖不了** `deny`、工具的绝对否决、
+安全底线与 plan 模式 —— 用户授权过某条命令，不等于授权过读密钥。
+
+注意 `ask` 规则分两级，位置不同：
+
+- **工具级**（只声明 `tool_name`）= 「这个工具每次都问」→ `auto_approve` 覆盖不了
+- **内容级**（声明了 `path` 或 `bash_pattern`）= 「这类操作要问」→ `auto_approve` 能覆盖
+
+所以「bash 每次都问，但 `git status` 不要再问」要写成内容级的 `ask` 规则，
+而不是工具级的。
+
+### 安全底线
+
+安全底线是**连 `bypass` 模式都免疫**的边界，分两档：
+
+| 档 | 对象 | 行为 |
+|---|---|---|
+| `DENY` | 数据目录下的 `credentials` | 直接拒绝，不询问 |
+| `ASK` | `.git/`、`.nono-agent/`、`~/.ssh/`、`.env`、`*.pem` 等 | 走一次询问 |
+
+数据目录的 `credentials` 是密钥文件 —— 模型读一次就等于把密钥带进上下文，
+之后每次对话都在日志里躺着，所以这一档是硬拒。
+
+底线与沙箱的分工：`PathSandbox` 管**能不能访问**（越界即拒），
+底线管**能访问但要不要问**。两者都要 —— 沙箱管不到工作区内部的 `.git/`，
+底线管不到工作区之外的路径。
+
+清单在 `nono_agent/permissions/baseline.py`，后续按需扩充。
+
+### 工具侧协议
+
+工具不只是"被调用"，它还要对"这次调用能不能执行"表态：
+
+```python
+def evaluate_permission(self, input_params, context) -> PermissionDecision:
+    """本次调用的自评 —— 可看入参动态判断。"""
+
+@property
+def always_requires_approval(self) -> bool:
+    """本工具任何模式下都必须由人确认。"""
+```
+
+`BashTool` 按命令风险分级自评：`SAFE` → `ALLOW`（`ls` 不必打扰用户）、
+`WRITE` → `ASK`、`DANGEROUS` → `ASK`（**不直接拒** —— 危险命令的具体后果由用户判断，
+模型没资格替用户决定 `rm -rf` 就不该跑）。
+
+没被声明的按更危险的情况处理：`evaluate_permission` 拿不到就当有写副作用（要问），
+`always_requires_approval` 拿不到就当不需要。漏写规则的后果应该是"多问一次"，
+而不是"漏放一次"。
+
+### 无人值守（弹不出审批窗）
+
+链判出 `ASK` 之后，需要有人回答。没有交互通道时（后台 agent、无人值守服务），
+**没有人能批准 → 按拒绝处理**（fail-closed）。
+
+放行的口子只有一个：**用户 hook 明确放行**。`before_tool` hook 返回
+`{"decision": "allow"}` 时，这次调用不必再问 —— 但链上更靠前的判定
+（`deny` 规则、工具的绝对否决、安全底线、plan 模式）照常生效，hook 不能拆规则。
+
+另一种放行方式是落盘的 `allow` / `auto_approve` 规则 —— 那是显式配置，
+不是绕过。
 
 ### 拒绝追踪
 
 权限拒绝由 `DenialTracker` 记录，回灌到 `SDKResultMessage.permission_denials`，
-同时在事件流里留一条 `permission/denial` 审计事件。**`permission/denial` 本身是审计资产，完整保留不脱敏。**
+同时在事件流里留一条 `permission/denial` 审计事件。
+事件的 `rule` 字段记的是**真正命中的规则标识**，`step` 字段记的是
+拦截链上命中的是哪一步 —— 光有一句"权限被拒绝"没法复盘。
+**`permission/denial` 本身是审计资产，完整保留不脱敏。**
 
 ### 产品层的差异
 

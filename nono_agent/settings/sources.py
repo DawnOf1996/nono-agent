@@ -16,7 +16,16 @@ from nono_agent.settings.models import Settings
 
 # 默认引擎内置设置（后续可扩展）
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "permissions": {"mode": "default", "rules": []},
+    "permissions": {
+        "mode": "default",
+        # 主规则表：allow / deny / ask。匹配优先级 deny > ask > allow。
+        "rules": [],
+        # 「不再询问」白名单：命中即放行，可覆盖 ask 规则（但越不过 deny /
+        # 安全底线 / plan 模式）。
+        "auto_approve": [],
+        # 安全底线：连 bypass 模式都免疫的边界。
+        "baseline": {"enabled": True},
+    },
     "mcp": {"enabled": True, "servers": {}},
     # 工具插件：tools.<plugin-id>.{enabled,api_key_env,options}。
     # 未声明即不启用 —— 打开开关由产品层写入，引擎只读。

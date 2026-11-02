@@ -73,7 +73,9 @@ from nono_agent.observability.metrics import (
 )
 from nono_agent.observability.token_tracker import TokenTracker
 from nono_agent.paths import resolve_session_cwd
+from nono_agent.permissions.baseline import SafetyBaseline
 from nono_agent.permissions.denial import Denial, DenialTracker
+from nono_agent.permissions.gate import PermissionGate
 from nono_agent.permissions.policy import PermissionMode, PermissionPolicy
 from nono_agent.permissions.sandbox import IgnoreMatcher, PathSandbox
 from nono_agent.pipeline.auto_compact import AutoCompactStage
@@ -192,6 +194,9 @@ class QueryEngine:
         transcript_writer: TranscriptWriter | None = None,
         permission_checker: PermissionChecker | None = None,
         permission_policy: PermissionPolicy | None = None,
+        permission_gate: PermissionGate | None = None,
+        permission_hooks: Any | None = None,
+        baseline_enabled: bool = True,
         denial_tracker: DenialTracker | None = None,
         rule_loader: FileSystemRuleLoader | None = None,
         prompt_assembler: PromptAssembler | None = None,
@@ -235,6 +240,9 @@ class QueryEngine:
         self._permission_checker = permission_checker  # 权限检查器（CLI/Server 注入）
 
         # 权限体系（Phase 1）：策略 + 拒绝追踪 + 路径沙箱 + Ignore
+        # 策略可能是**注入**的（子 Agent 继承父会话的）—— 那就不是"我的"，
+        # 不能随手 set_mode，否则子会话恢复会把父会话的模式改掉。
+        self._owns_permission_policy = permission_policy is None
         self._permission_policy = permission_policy or PermissionPolicy()
         self._applying_header = False
         self._session_header: SessionHeader | None = None
@@ -244,6 +252,15 @@ class QueryEngine:
         self._denial_tracker = denial_tracker or DenialTracker()
         self._sandbox = PathSandbox(config.cwd)
         self._ignore = IgnoreMatcher.from_workspace(config.cwd)
+        # 权限拦截链 —— 决策的唯一实现，顺序即优先级。策略、底线、hook 三者
+        # 都在链里，谁先命中谁说了算。
+        self._permission_gate = permission_gate or PermissionGate(
+            policy=self._permission_policy,
+            baseline=SafetyBaseline(
+                enabled=bool(baseline_enabled),
+            ),
+            hooks=permission_hooks,
+        )
 
         # Prompt 组装 + Rules 发现（Phase 1）+ Skills（Phase 2）+ 子 Agent（Phase 3）
         self._rule_loader = rule_loader or FileSystemRuleLoader()
@@ -548,6 +565,7 @@ class QueryEngine:
             session_id=self._session_id,
             permission_checker=self._permission_checker,
             policy=self._permission_policy,
+            gate=self._permission_gate,
             sandbox=self._sandbox,
             denial_tracker=self._denial_tracker,
             ignore=self._ignore,
@@ -996,6 +1014,11 @@ class QueryEngine:
         return self._permission_policy
 
     @property
+    def permission_gate(self) -> PermissionGate:
+        """权限拦截链 —— 子 Agent 要继承它，否则整条链对子 Agent 无效。"""
+        return self._permission_gate
+
+    @property
     def skills(self) -> list[Skill]:
         return list(self._skills)
 
@@ -1057,7 +1080,10 @@ class QueryEngine:
             self._stage_event(
                 EVENT_PERMISSION_DENIAL,
                 tool=denial.tool_name,
-                rule=denial.reason,
+                # rule —— 真正命中的规则标识（不是那句通用文案）。
+                rule=denial.rule or denial.reason,
+                # step —— 拦截链上命中的是哪一步。
+                step=denial.step,
                 mode=denial.mode,
                 path=denial.input_params.get("path"),
             )
@@ -1377,7 +1403,12 @@ class QueryEngine:
         await self._backfill_session_summary()
 
     def _restore_permission_mode(self, raw: str) -> None:
-        """从 SessionHeader 恢复权限模式，不回写磁盘。"""
+        """从 SessionHeader 恢复权限模式，不回写磁盘。
+
+        策略是共享的（子 Agent 继承父会话）时不恢复 —— 模式归父会话管。
+        """
+        if not self._owns_permission_policy:
+            return
         try:
             mode = PermissionMode(normalize_permission_mode(raw))
         except ValueError:
@@ -1519,7 +1550,13 @@ class QueryEngine:
                 tool.bind_base_config(self._config)
             return
         runner = AgentRunner(
-            self._provider_registry, self._tool_registry, self._config
+            self._provider_registry,
+            self._tool_registry,
+            self._config,
+            permission_gate=self._permission_gate,
+            permission_policy=self._permission_policy,
+            permission_checker=self._permission_checker,
+            denial_tracker=self._denial_tracker,
         )
         self._tool_registry.register(AgentTool(definitions, runner))
 

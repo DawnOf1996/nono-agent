@@ -6,6 +6,7 @@ from nono_agent.hooks.user_hooks import (
     UserHook,
     UserHookExecutor,
     UserHooksConfig,
+    load_user_hook_executor,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "UserHook",
     "UserHookExecutor",
     "UserHooksConfig",
+    "load_user_hook_executor",
 ]

@@ -31,17 +31,32 @@ class AgentRunResult:
 
 
 class AgentRunner:
-    """子 Agent 运行器 —— 独立引擎 + 受限工具集 + 预算封顶（可选）。"""
+    """子 Agent 运行器 —— 独立引擎 + 受限工具集 + 预算封顶（可选）。
+
+    **权限继承**：子 Agent 拿的是父的完整工具表，权限面等于父会话 ——
+    那检查器也必须是父的。不继承的话，子 Agent 就是一个后门：父在 plan
+    模式下它照样写文件，父的 deny 规则对它无效，它写的操作也不进父会话
+    的审计流。
+    """
 
     def __init__(
         self,
         provider_registry: Any,
         tool_registry: ToolRegistry,
         base_config: EngineConfig,
+        *,
+        permission_gate: Any | None = None,
+        permission_policy: Any | None = None,
+        permission_checker: Any | None = None,
+        denial_tracker: Any | None = None,
     ) -> None:
         self._provider_registry = provider_registry
         self._tool_registry = tool_registry
         self._base_config = base_config
+        self._permission_gate = permission_gate
+        self._permission_policy = permission_policy
+        self._permission_checker = permission_checker
+        self._denial_tracker = denial_tracker
 
     def build_sub_tool_registry(self, definition: AgentDefinition) -> ToolRegistry:
         """按定义的工具白名单构建子工具注册表（空白名单=继承全部）。"""
@@ -82,6 +97,11 @@ class AgentRunner:
             provider_registry=self._provider_registry,
             tool_registry=sub_registry,
             register_agent_tool=False,  # 防止子 Agent 无界嵌套派发
+            # 权限继承 —— 与父会话同一条链、同一个检查器、同一份审计。
+            permission_checker=self._permission_checker,
+            permission_policy=self._permission_policy,
+            permission_gate=self._permission_gate,
+            denial_tracker=self._denial_tracker,
         )
         root_session = jobs_session.get() or session_id
         job_id = open_job(

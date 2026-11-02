@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from nono_agent.permissions.decision import PermissionDecision
 from nono_agent.utils.process import hidden_kwargs
 
 
@@ -73,7 +74,6 @@ class UserHooksConfig:
 
     def for_event(self, event: str) -> list[UserHook]:
         return [h for h in self.hooks if h.event == event]
-
     @classmethod
     def from_file(cls, path: str | Path) -> UserHooksConfig:
         p = Path(path)
@@ -106,11 +106,25 @@ class HookRunResult:
 
 @dataclass
 class BeforeToolVerdict:
-    """before_tool 钩子的汇总判定。"""
+    """before_tool 钩子的汇总判定。
 
-    allowed: bool = True
+    三态：ALLOW（不否决）/ ASK（必须问）/ DENY（拒绝）。
+
+    .. important::
+       这里的 ALLOW 语义是"**不否决**"，不是"直接放行"。hook 与权限检查链
+       是**串联**的：hook 说允许，请求仍要继续走完整条链（安全底线、用户规则、
+       权限模式都在后面）。业务方能加规则，但不能拆规则。
+    """
+
+    decision: PermissionDecision = PermissionDecision.ALLOW
     reason: str | None = None
+    rule: str | None = None
     results: list[HookRunResult] = field(default_factory=list)
+
+    @property
+    def allowed(self) -> bool:
+        """兼容旧接口 —— 只有 ALLOW 才算"没被否决"。"""
+        return self.decision is PermissionDecision.ALLOW
 
 
 class UserHookExecutor:
@@ -118,7 +132,6 @@ class UserHookExecutor:
 
     def __init__(self, config: UserHooksConfig) -> None:
         self._config = config
-
     async def run(
         self,
         hook: UserHook,
@@ -167,7 +180,15 @@ class UserHookExecutor:
         tool_input: dict[str, Any],
         context: dict[str, Any],
     ) -> BeforeToolVerdict:
-        """运行 before_tool 钩子；任一非零退出码即否决。"""
+        """运行 before_tool 钩子。
+
+        判定规则：
+
+        - 退出码非零 → **DENY**（不可否决的硬拒）
+        - 退出码为零且 stdout 是 JSON 且带 ``decision`` → 按它来
+          （``ask`` 表示"必须问"，``deny`` 表示"拒绝"）
+        - 退出码为零、无结构化输出 → **ALLOW**（不否决，继续走权限检查链）
+        """
         results: list[HookRunResult] = []
         ctx = {**context, "tool_name": tool_name, "tool_input": tool_input}
         for hook in self._config.for_event("before_tool"):
@@ -177,5 +198,58 @@ class UserHookExecutor:
             results.append(result)
             if result.exit_code != 0:
                 reason = result.stderr.strip() or result.stdout.strip() or "vetoed by hook"
-                return BeforeToolVerdict(allowed=False, reason=reason, results=results)
-        return BeforeToolVerdict(allowed=True, results=results)
+                return BeforeToolVerdict(
+                    decision=PermissionDecision.DENY,
+                    reason=reason,
+                    results=results,
+                )
+            verdict = _parse_verdict(result.stdout)
+            if verdict is not None and verdict.decision is not PermissionDecision.ALLOW:
+                verdict.results = results
+                return verdict
+        return BeforeToolVerdict(
+            decision=PermissionDecision.ALLOW,
+            results=results,
+        )
+
+
+def _parse_verdict(stdout: str) -> BeforeToolVerdict | None:
+    """从 hook 的 stdout 解析结构化判定。
+
+    约定：stdout 是一个 JSON 对象，可带 ``decision``（``allow`` / ``deny`` /
+    ``ask``）、``reason``、``rule``。解析不出来当作"没有意见"。
+    """
+    text = (stdout or "").strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("decision")
+    if not isinstance(raw, str):
+        return None
+    try:
+        decision = PermissionDecision(raw.strip().lower())
+    except ValueError:
+        return None
+    reason = data.get("reason")
+    rule = data.get("rule")
+    return BeforeToolVerdict(
+        decision=decision,
+        reason=reason if isinstance(reason, str) else None,
+        rule=rule if isinstance(rule, str) else None,
+    )
+
+
+def load_user_hook_executor(cwd: str | Path) -> UserHookExecutor:
+    """按工作区加载 ``hooks.json``，返回执行器。
+
+    没有配置文件就返回空执行器 —— 链上那一步直接跳过，不影响其它检查。
+    """
+    from nono_agent.paths import project_dir
+
+    config = UserHooksConfig.from_file(project_dir(cwd) / "hooks.json")
+    return UserHookExecutor(config)

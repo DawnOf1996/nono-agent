@@ -20,6 +20,10 @@ class Denial:
     reason: str
     input_params: dict[str, Any] = field(default_factory=dict)
     mode: str = "default"
+    #: 拦截链上命中的是哪一步（如 ``rule_deny`` / ``safety_baseline``）。
+    step: str | None = None
+    #: 命中的规则标识 —— 审计要能看出"被哪条规则拦的"。
+    rule: str | None = None
     timestamp: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
@@ -28,6 +32,8 @@ class Denial:
             "reason": self.reason,
             "input_params": self.input_params,
             "mode": self.mode,
+            "step": self.step,
+            "rule": self.rule,
             "timestamp": self.timestamp,
         }
 
@@ -64,6 +70,9 @@ class DenialTracker:
         reason: str,
         input_params: dict[str, Any] | None = None,
         mode: str = "default",
+        *,
+        step: str | None = None,
+        rule: str | None = None,
     ) -> None:
         """记录一次拒绝并通知观察者。"""
         denial = Denial(
@@ -71,6 +80,8 @@ class DenialTracker:
             reason=reason,
             input_params=input_params or {},
             mode=mode,
+            step=step,
+            rule=rule,
         )
         self._denials.append(denial)
         for observer in self._observers:

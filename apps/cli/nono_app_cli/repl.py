@@ -58,6 +58,16 @@ async def run_cli(
 
     permission_checker = make_cli_permission_checker(console)
 
+    # 权限策略 —— 从落盘设置读（permissions.mode / rules / auto_approve）。
+    # 不读的话这些配置就是空转的：引擎只会拿到一个空的默认策略。
+    from nono_agent.hooks import load_user_hook_executor
+    from nono_agent.permissions.policy import policy_from_settings
+    from nono_agent.settings import load_settings_from_env
+
+    settings = load_settings_from_env(config.cwd)
+    permission_policy = policy_from_settings(settings)
+    permission_hooks = load_user_hook_executor(config.cwd)
+
     from nono_agent.tools.builtin import create_builtin_tools
     from nono_agent.tools.registry import ToolRegistry
 
@@ -84,6 +94,8 @@ async def run_cli(
     async with QueryEngine(
         config,
         permission_checker=permission_checker,
+        permission_policy=permission_policy,
+        permission_hooks=permission_hooks,
         tool_registry=tool_registry,
         ask_user=make_cli_ask_user(console),
     ) as engine:
