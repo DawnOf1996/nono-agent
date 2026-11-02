@@ -20,6 +20,10 @@ dependencies = [
     # 上下文占用的 token 估算。缺了会退回 len//4，对工具 JSON schema 低估 ~40%，
     # 面板上的「上下文已用」会明显偏小。见 nono_agent/utils/tokens.py。
     "tiktoken>=0.7",
+    # HTML → Markdown 转换。Rust 核心 + Python 绑定（cp310-abi3 平台 wheel，
+    # 零 Python 依赖）：网页动辄几百 KB，纯 Python 解析太慢。
+    # 见 nono_agent/utils/html_to_markdown.py。
+    "html-to-markdown>=3.19",
 ]
 
 [project.optional-dependencies]

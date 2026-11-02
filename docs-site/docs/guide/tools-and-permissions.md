@@ -26,6 +26,8 @@ title: 工具与权限
     `web_fetch` 是例外说明：它是**原语**不是厂商能力 —— 给个 URL 就能读，零配置、本机直连。
     它与 `tavily_extract` 不等价：后者要密钥、会重整正文，而且 **URL 会发给第三方**。
 
+    `web_fetch` 的 HTML 会先转成 Markdown 再给模型，超长内容落盘 —— 见下方「共同约定」。
+
 ### 工具默认值是 fail-closed
 
 | 属性 | 默认 | 含义 |
@@ -43,6 +45,17 @@ title: 工具与权限
 - **编码**：读文本 UTF-8 优先，失败回退本机默认编码与 gb18030；`edit_file` 写回 UTF-8。
 - **出网**：`web_fetch` 与工具插件的 HTTP 执行器共用 SSRF 闸门 `nono_agent/utils/net_guard.py`
   （拒绝私网 / 回环 / 链路本地 / 云元数据地址）。
+- **HTML → Markdown**：`web_fetch` 抓到的 HTML 经 `nono_agent/utils/html_to_markdown.py`
+  转换（底层是 Rust 核心的 `html-to-markdown`），去掉 script/style、站点导航与表单，
+  保留正文、标题层级、列表、代码块与表格；JSON / 纯文本原样返回。
+- **超限落资产**：`web_fetch` 没有长度参数。转换后超过 20000 字符就写进**资产目录**
+  （数据目录下的 `assets/YYYY/MM/DD/`，与截图同目录、同命名规则、同 sidecar 与当天索引），
+  模型只拿到开头 2000 字符预览 + 资产路径，剩下的用 `read_file` 取。
+  资产在数据目录里、不在工作区沙箱内，所以 `read_file` 额外认三种路径：
+  资产 ID（`asset_20261102-121917-864_<hash>_<rand>`）、`assets/` 前缀的相对路径、
+  以及资产目录里的绝对路径 —— 与 `read_image` 同一套规则。
+  **顺序是工作区优先、资产兜底**：工作区里若有名为 `assets/` 的目录，读的是工作区里的文件。
+  不是资产路径时仍走工作区沙箱，资产解析不会变成绕过沙箱的后门。
 - **MCP 工具**：命名为 `mcp__<server>__<tool>`，沿用全局权限模式。
 
 ### bash 的执行语义

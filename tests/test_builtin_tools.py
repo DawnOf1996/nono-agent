@@ -201,7 +201,6 @@ class TestWriteAndRead:
         w = WriteFileTool()
         await w.execute({"path": "sub/dir/x.txt", "content": "hi"}, ctx)
         assert (tmp_path / "sub/dir/x.txt").read_text() == "hi"
-
     async def test_write_new_file_is_marked(self, ctx, tmp_path):
         """新建：整篇都是新增，结果标 created，UI 自己就能算出来，不必再附差异。"""
         w = WriteFileTool()
@@ -574,6 +573,79 @@ class TestTodoWrite:
         )
         assert result.is_error
         assert "invalid status" in result.content
+
+
+class TestReadAsset:
+    """read_file 能读资产目录里的文件 —— 它在工作区沙箱之外。
+
+    资产在数据目录（与截图同处），所以得走资产 ID / ``assets/`` 相对路径，
+    不能走工作区沙箱那条路。
+    """
+
+    async def test_reads_by_assets_relative_path(self, ctx, tmp_path):
+        from nono_agent.assets import AssetStore
+
+        store = AssetStore(tmp_path / "assets")
+        ref = store.save_text("# 标题\n\n正文内容\n", file_name="page.md")
+        r = ReadFileTool(store=store)
+        result = await r.execute({"path": f"assets/{ref.relative_path}"}, ctx)
+        assert not result.is_error
+        assert "正文内容" in result.content
+
+    async def test_reads_by_asset_id(self, ctx, tmp_path):
+        from nono_agent.assets import AssetStore
+
+        store = AssetStore(tmp_path / "assets")
+        ref = store.save_text("资产正文", file_name="page.md")
+        r = ReadFileTool(store=store)
+        result = await r.execute({"path": ref.asset_id}, ctx)
+        assert not result.is_error
+        assert "资产正文" in result.content
+
+    async def test_missing_asset_reports_not_found(self, ctx, tmp_path):
+        from nono_agent.assets import AssetStore
+
+        store = AssetStore(tmp_path / "assets")
+        r = ReadFileTool(store=store)
+        result = await r.execute({"path": "assets/2026/01/01/nope.md"}, ctx)
+        assert result.is_error
+        assert "not found" in result.content
+
+    async def test_workspace_path_still_goes_through_sandbox(self, ctx, tmp_path):
+        """不是资产路径时仍走工作区沙箱 —— 资产解析不能变成绕过沙箱的后门。"""
+        from nono_agent.assets import AssetStore
+
+        store = AssetStore(tmp_path / "assets")
+        r = ReadFileTool(store=store)
+        result = await r.execute({"path": "../secret.txt"}, ctx)
+        assert result.is_error
+        assert "escapes" in result.content
+
+    async def test_workspace_assets_dir_wins(self, ctx, tmp_path):
+        """工作区里有名为 assets/ 的目录时，读的应该是工作区里的文件。"""
+        from nono_agent.assets import AssetStore
+
+        store = AssetStore(tmp_path / "store-assets")
+        store.save_text("资产里的内容", file_name="page.md")
+
+        workspace_file = tmp_path / "assets" / "2026" / "01" / "01"
+        workspace_file.mkdir(parents=True)
+        (workspace_file / "x.md").write_text("工作区里的内容", encoding="utf-8")
+
+        r = ReadFileTool(store=store)
+        result = await r.execute({"path": "assets/2026/01/01/x.md"}, ctx)
+        assert not result.is_error
+        assert "工作区里的内容" in result.content
+
+    async def test_reads_asset_by_absolute_path(self, ctx, tmp_path):
+        from nono_agent.assets import AssetStore
+
+        store = AssetStore(tmp_path / "assets")
+        ref = store.save_text("绝对路径内容", file_name="page.md")
+        r = ReadFileTool(store=store)
+        result = await r.execute({"path": ref.absolute_path}, ctx)
+        assert not result.is_error
+        assert "绝对路径内容" in result.content
 
 
 class TestPathEscapeBlocked:

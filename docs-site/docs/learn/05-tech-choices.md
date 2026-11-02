@@ -146,6 +146,8 @@ gzip 是流式但**不能随机续写独立帧**；zstd 独立帧可增量追加
 | 正则做 bash 模式匹配 | 危险命令分类需要子串级判断 |
 | 默认 fail-closed | 见下 |
 | SSRF 闸门 `net_guard.py` | `web_fetch` 和工具插件 HTTP 执行器共用一份实现 |
+| HTML → Markdown 用 Rust 的 `html-to-markdown` | 网页动辄几百 KB，纯 Python 解析太慢；Rust 核心跨 16 种语言输出逐字节一致 |
+| `web_fetch` 超限内容落资产目录 | 与截图同处（数据目录 `assets/YYYY/MM/DD/`），不污染用户仓库；`read_file` 认资产 ID / `assets/` 前缀，所以读得回来 |
 | 事件流按 `0600`/目录 `0700` 落盘 | 事件流逐字含提示词和密钥 |
 
 ### fail-closed 是一整套连贯的选择

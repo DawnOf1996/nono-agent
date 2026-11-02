@@ -102,6 +102,41 @@ class TestAssetStore:
         with pytest.raises(ValueError, match="不是可识别的图片格式"):
             store.save_bytes(b"just text", file_name="a.txt")
 
+    def test_saves_text_under_same_layout(self, tmp_path):
+        """文本资产与图片资产同目录、同命名规则 —— 工具产出的长文本走这条。"""
+        store = AssetStore(tmp_path / "assets")
+        ref = store.save_text("# 标题\n\n正文\n", file_name="page.md")
+
+        assert ref.kind == "text"
+        assert ref.media_type == "text/markdown"
+        assert ref.file_name.endswith(".md")
+        parts = ref.relative_path.split("/")
+        assert len(parts) == 4  # YYYY/MM/DD/<文件名>
+        assert store.path_for(ref.asset_id).read_text(encoding="utf-8") == "# 标题\n\n正文\n"
+
+    def test_text_writes_sidecar_and_daily_index(self, tmp_path):
+        store = AssetStore(tmp_path / "assets")
+        ref = store.save_text("正文", file_name="page.md")
+
+        path = store.path_for(ref.asset_id)
+        sidecar = path.with_name(path.name + ".asset.json")
+        record = json.loads(sidecar.read_text(encoding="utf-8"))
+        assert record["assetId"] == ref.asset_id
+        assert record["mimeType"] == "text/markdown"
+
+        index = store.day_dir() / "assets.jsonl"
+        lines = [line for line in index.read_text(encoding="utf-8").splitlines() if line]
+        assert any(json.loads(line)["assetId"] == ref.asset_id for line in lines)
+
+    def test_text_defaults_to_markdown_suffix(self, tmp_path):
+        store = AssetStore(tmp_path / "assets")
+        assert store.save_text("x").file_name.endswith(".md")
+
+    def test_rejects_empty_text(self, tmp_path):
+        store = AssetStore(tmp_path / "assets")
+        with pytest.raises(ValueError, match="文本为空"):
+            store.save_text("")
+
     def test_rejects_oversized(self, tmp_path):
         store = AssetStore(tmp_path / "assets")
         with pytest.raises(ValueError, match="上限"):

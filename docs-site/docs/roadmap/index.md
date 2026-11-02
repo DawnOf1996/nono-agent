@@ -146,7 +146,7 @@ title: Nono Agent —— 后续规划 Roadmap
 | Write / Edit         | 原子写、diff/patch、权限门控                | P0    | 可用需打磨 |
 | Glob / Grep          | 工作区匹配与内容搜索                         | P0    | 已完成 |
 | LS / Tree            | 目录列举 + Ignore                      | P1    | 已完成 |
-| WebFetch | 网络抓取 + SSRF/安全策略（闸门见 `utils/net_guard.py`） | P1    | 已完成 |
+| WebFetch | 网络抓取 + HTML 转 Markdown + 超限落资产（闸门见 `utils/net_guard.py`） | P1    | 已完成 |
 | ~~WebSearch~~ | 配置门控的空壳，已下线 → 工具插件（Tavily） | —    | 已下线 |
 | AskUserQuestion      | 结构化提问；CLI 交互 / Server 回调或 SSE      | P0/P1 | 可用需打磨 |
 | LSP                  | 定义跳转/引用/诊断（对标 `LSPTool`）           | P1    | 已完成 |

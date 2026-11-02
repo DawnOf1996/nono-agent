@@ -397,6 +397,8 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 - `read_file` / `grep` / `edit_file` 读文本时 UTF-8 优先，失败则回退本机默认编码与 gb18030；`edit_file` 写回 UTF-8。
 - **内置只保留零配置即用的原语。** 搜索、图像生成这类要密钥、要开关的厂商能力一律走工具插件（Tavily / MiniMax，见 3.5），默认关闭——内置工具表里不该塞一堆不配置就报错的东西。
 - `web_fetch` 是**原语**不是厂商能力：给一个 URL 就能读，零配置、本机直连。它与 `tavily_extract` 不等价 —— 后者要密钥、会重整正文，而且**URL 会发给第三方**。
+- `web_fetch` 拿到 HTML 会先转成 **Markdown** 再交给模型（`nono_agent/utils/html_to_markdown.py`，底层是 Rust 核心的 `html-to-markdown`）：去掉 script/style、站点导航与表单，保留正文、标题层级、列表、代码块语言标注与表格；JSON / 纯文本原样返回。
+- `web_fetch` **没有长度参数**：转换后超过 20000 字符就落成**资产**（数据目录的 `assets/YYYY/MM/DD/`，与截图同一套目录与命名规则），模型只拿到开头 2000 字符预览 + 资产路径，剩下的用 `read_file` 读回（`read_file` 认资产 ID 与 `assets/` 前缀）。
 - 出网统一过 SSRF 闸门 `nono_agent/utils/net_guard.py`（拒绝私网/回环/链路本地/云元数据，`web_fetch` 与工具插件的 HTTP 执行器共用同一份实现）。
 - MCP 工具以 `mcp__<server>__<tool>` 命名；沿用全局权限模式。自定义连接清单只写用户级 `~/.nono-agent/mcp.json`；工作区默认不启用，启停与部分工具禁用写在项目 `settings.mcp.servers.<id>`。
 

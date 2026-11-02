@@ -1,5 +1,8 @@
 """资产存储 —— 用户粘贴的图、程序自动截的图统一落在这里。
 
+文本资产（工具产出的长文，如抓回来的网页正文）也走同一条路径：
+``save_bytes`` 存图片，``save_text`` 存文本，目录、命名、sidecar、索引全一致。
+
 布局（与 ``sessions/`` 同级，都在数据目录下）::
 
     <数据目录>/
@@ -69,6 +72,15 @@ INDEX_FILE_NAME = "assets.jsonl"
 
 #: 单个资产元数据 sidecar 的后缀。
 SIDECAR_SUFFIX = ".asset.json"
+
+#: 文本资产的扩展名（按媒体类型取）。
+_TEXT_SUFFIXES = {
+    "text/markdown": ".md",
+    "text/plain": ".txt",
+    "text/html": ".html",
+    "text/csv": ".csv",
+    "application/json": ".json",
+}
 
 
 def default_assets_root() -> Path:
@@ -225,6 +237,82 @@ class AssetStore:
         if media_type is None or media_type not in SUPPORTED_MEDIA_TYPES:
             raise ValueError("不是可识别的图片格式（支持 PNG / JPEG / GIF / WebP / BMP）")
 
+        size = probe_size(data, media_type)
+        return self._store(
+            data,
+            kind="image",
+            media_type=media_type,
+            suffix=suffix_for(media_type),
+            source_kind=source_kind,
+            session_id=session_id,
+            turn_id=turn_id,
+            file_name=file_name or f"image{suffix_for(media_type)}",
+            width=size[0] if size else None,
+            height=size[1] if size else None,
+        )
+
+    def save_text(
+        self,
+        text: str,
+        *,
+        media_type: str = "text/markdown",
+        source_kind: str = "tool-output",
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        file_name: str | None = None,
+    ) -> AssetRef:
+        """把文本落盘成资产，返回引用。
+
+        与图片资产同目录、同命名规则、同索引 —— 区别只是 ``kind`` 是 ``text``、
+        媒体类型是文本类。给「工具产出一份长文本、正文太长进不了上下文」这类
+        场景用（见 :class:`nono_agent.tools.builtin.web_fetch.WebFetchTool`）。
+
+        Args:
+            text: 文本内容（按 UTF-8 编码落盘）。
+            media_type: 媒体类型，决定扩展名。
+            source_kind: 来源标记（``web-fetch`` / ``tool-output`` / …）。
+            session_id: 所属会话，写进元数据便于排查。
+            turn_id: 所属轮次。
+            file_name: 文件名（只取名字部分）。
+
+        Raises:
+            ValueError: 文本为空，或超过体积上限。
+        """
+        if not text:
+            raise ValueError("文本为空")
+        data = text.encode("utf-8")
+        if len(data) > MAX_ASSET_BYTES:
+            raise ValueError(
+                f"文本超过 {MAX_ASSET_BYTES // (1024 * 1024)}MB 上限"
+                f"（当前 {len(data) // 1024}KB）"
+            )
+        suffix = _TEXT_SUFFIXES.get(media_type, ".txt")
+        return self._store(
+            data,
+            kind="text",
+            media_type=media_type,
+            suffix=suffix,
+            source_kind=source_kind,
+            session_id=session_id,
+            turn_id=turn_id,
+            file_name=file_name or f"asset{suffix}",
+        )
+
+    def _store(
+        self,
+        data: bytes,
+        *,
+        kind: str,
+        media_type: str,
+        suffix: str,
+        source_kind: str,
+        session_id: str | None,
+        turn_id: str | None,
+        file_name: str,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> AssetRef:
+        """落盘 + 写 sidecar + 追加当天索引。图片与文本共用这一条路径。"""
         digest = hashlib.sha256(data).hexdigest()
         now = time.time()
         local = time.localtime(now)
@@ -238,10 +326,10 @@ class AssetStore:
         day_dir = self.day_dir(now)
         day_dir.mkdir(parents=True, exist_ok=True)
 
-        safe_name = _safe_file_name(file_name) or f"image{suffix_for(media_type)}"
+        safe_name = _safe_file_name(file_name) or f"asset{suffix}"
         # 原名的扩展名可能与实际类型不符（``.png`` 里装着 JPEG）——按嗅探结果修正。
         base_name = safe_name.rsplit(".", 1)[0] if "." in safe_name else safe_name
-        final_name = f"{base_name}{suffix_for(media_type)}"
+        final_name = f"{base_name}{suffix}"
 
         stamp = f"{local.tm_hour:02d}-{local.tm_min:02d}-{local.tm_sec:02d}-{millis:03d}"
         stored_name = f"{stamp}-{asset_id}-{final_name}"
@@ -251,10 +339,9 @@ class AssetStore:
         except OSError as exc:
             raise ValueError(f"写入资产目录失败：{exc}") from exc
 
-        size = probe_size(data, media_type)
         ref = AssetRef(
             asset_id=asset_id,
-            kind="image",
+            kind=kind,
             source_kind=source_kind,
             file_name=final_name,
             media_type=media_type,
@@ -263,8 +350,8 @@ class AssetStore:
             relative_path=_relative_to(self.root, target),
             absolute_path=str(target.resolve()),
             created_at_ms=int(now * 1000),
-            width=size[0] if size else None,
-            height=size[1] if size else None,
+            width=width,
+            height=height,
             session_id=session_id,
             turn_id=turn_id,
         )

@@ -5,12 +5,16 @@
 - 大文件分段（offset/limit 控制，避免一次性读爆）
 - 二进制检测（含 NUL 字节时拒绝或摘要）
 - 编码：UTF-8 优先，失败则回退本机默认编码 / gb18030
+- 资产路径：资产 ID 或 ``assets/...`` 相对路径（资产在数据目录里，不在工作区）
 """
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
+from nono_agent.assets import ASSET_ID_RE, AssetStore, get_asset_store
 from nono_agent.core.types import ToolResult
 from nono_agent.tools.builtin._common import (
     decode_text,
@@ -34,14 +38,20 @@ class ReadFileTool(ToolBase):
         "Read a file from the workspace. "
         "Returns content with line numbers. "
         "For large files, use 'offset' (1-based start line) and 'limit' (max lines) "
-        "to read a specific range. Binary files are detected and rejected."
+        "to read a specific range. Binary files are detected and rejected. "
+        "Also accepts an asset id or a path under the assets directory "
+        "(assets/2026/01/01/xxx.md) -- that is where tool outputs that are too "
+        "long for the conversation are stored."
     )
     _input_schema = {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "File path (relative to working directory or absolute).",
+                "description": (
+                    "File path (relative to working directory or absolute), "
+                    "or an asset id / assets-relative path."
+                ),
             },
             "offset": {
                 "type": "integer",
@@ -57,20 +67,19 @@ class ReadFileTool(ToolBase):
     _is_concurrent_safe = True
     _has_write_side_effects = False
 
+    def __init__(self, store: AssetStore | None = None) -> None:
+        self._store = store
+
     async def execute(self, input_params: dict[str, Any], context: Any) -> ToolResult:
         raw_path = input_params.get("path", "")
         if not raw_path:
             return error_result(self._name, "No file path provided.")
 
         try:
-            file_path = resolve_path(context, raw_path)
+            file_path = self._resolve(str(raw_path), context)
         except ValueError as exc:
             return error_result(self._name, str(exc))
 
-        import os
-
-        if not os.path.exists(file_path):
-            return error_result(self._name, f"File not found: {file_path}")
         if os.path.isdir(file_path):
             return error_result(self._name, f"Path is a directory, not a file: {file_path}")
 
@@ -116,3 +125,66 @@ class ReadFileTool(ToolBase):
             result += f"\n... [showing lines {offset}-{offset + len(selected) - 1} of {len(lines)}]"
 
         return ok_result(self._name, result)
+
+    def _resolve(self, raw: str, context: Any) -> str:
+        """解析入参路径，返回一个真实存在的文件路径。
+
+        **工作区优先，资产兜底。** 工作区里可能有同名目录（``assets/``），
+        那种情况下读的应该是工作区里的文件 —— 所以先按沙箱解析，文件确实存在
+        就用它；只有工作区里没有（或路径直接逃出了沙箱）才去资产目录里找。
+
+        Raises:
+            ValueError: 路径非法、逃出沙箱、或文件不存在。
+        """
+        sandbox_error: str | None = None
+        workspace_path: str | None = None
+        try:
+            workspace_path = resolve_path(context, raw)
+        except ValueError as exc:
+            # 逃出工作区 —— 可能是资产路径，留给下面那条路。
+            sandbox_error = str(exc)
+
+        if workspace_path is not None and os.path.exists(workspace_path):
+            return workspace_path
+
+        asset_path = self._resolve_asset(raw)
+        if asset_path is not None:
+            return asset_path
+
+        if workspace_path is None:
+            raise ValueError(sandbox_error or f"Invalid path: {raw}")
+        raise ValueError(f"File not found: {workspace_path}")
+
+    def _resolve_asset(self, raw: str) -> str | None:
+        """把入参解析成资产目录里的文件。
+
+        与 :meth:`nono_agent.tools.builtin.read_image.ReadImageTool._resolve`
+        同一套规则：资产 ID、``assets/`` 相对路径，外加资产目录里的绝对路径。
+
+        Returns:
+            命中的文件路径；入参不像资产路径时返回 None（交给工作区那条路）。
+
+        Raises:
+            ValueError: 看起来是资产路径却找不到 —— 别让模型以为是自己路径写错了。
+        """
+        store = self._store or get_asset_store()
+        candidate = raw.strip()
+        if ASSET_ID_RE.match(candidate):
+            try:
+                return str(store.path_for(candidate))
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"Asset not found: {candidate} ({exc})") from exc
+
+        normalized = candidate.replace("\\", "/")
+        if normalized.startswith("assets/"):
+            path = store.resolve_relative(normalized)
+            if path is None:
+                raise ValueError(f"Asset not found: {candidate}")
+            return str(path)
+
+        # 资产目录里的绝对路径
+        absolute = Path(candidate)
+        if absolute.is_absolute() and store.contains(absolute):
+            return str(absolute)
+
+        return None
