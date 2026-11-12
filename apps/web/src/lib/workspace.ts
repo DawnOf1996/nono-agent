@@ -78,11 +78,17 @@ export function mergeWorkspaces(paths: Array<string | null | undefined>): string
   return result;
 }
 
-/** 拼进输入框的 @文件 引用。路径相对工作区，含空格时加引号。 */
-export function mentionToken(root: string, target: string): string {
+/**
+ * 拼进输入框的 @文件 引用。
+ *
+ * 路径相对工作区；含空格时加引号；文件夹结尾带一个 / —— 目录没有预览页，
+ * 靠这个斜杠才能把它认成目录（见 lib/mentions.ts 的解析）。
+ */
+export function mentionToken(root: string, target: string, isDir = false): string {
   const relative = relativeTo(root, target).replace(/\\/g, "/");
-  const body = /[\s"]/.test(relative) ? `"${relative.replace(/"/g, '\\"')}"` : relative;
-  return `@${body} `;
+  const body = relative + (isDir ? "/" : "");
+  const quoted = /[\s"]/.test(body) ? `"${body.replace(/"/g, '\\"')}"` : body;
+  return `@${quoted} `;
 }
 
 /** 把搜索返回的正斜杠相对路径接回工作区绝对路径。 */

@@ -1,6 +1,9 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { memo, useCallback, useLayoutEffect, useRef, useState } from "react";
 
+import { MentionText } from "@/features/chat/Mention";
+import { useChatStore } from "@/store/chat";
+
 /**
  * 用户消息的正文气泡。
  *
@@ -86,6 +89,7 @@ export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   const terminal = looksLikeTerminal(text);
   const [expanded, setExpanded] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const workspace = useChatStore((state) => state.workspace);
   const overflowing = useOverflowing(bodyRef, expanded);
   const collapsedHeight = collapseHeight(terminal ? MONO_LINE_HEIGHT : PLAIN_LINE_HEIGHT);
   // 渐隐只在真的裁掉了东西时画。收起状态下无条件铺这层 mask 的话，一行消息也要中招：
@@ -113,7 +117,8 @@ export const UserBubble = memo(function UserBubble({ text }: { text: string }) {
             terminal ? MONO_BODY : PLAIN_BODY
           }`}
         >
-          {text}
+          {/* @引用 高亮成可点的标签：点一下就在侧边文件树里打开那个文件。 */}
+          <MentionText text={text} root={workspace} />
         </div>
       </div>
       {overflowing ? (

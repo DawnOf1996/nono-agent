@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ClipboardEvent,
@@ -14,6 +15,8 @@ import { ImageLightbox } from "@/components/ImageLightbox";
 import { Textarea } from "@/components/ui/textarea";
 import { CommandPalette } from "@/features/chat/CommandPalette";
 import { ComposerMenu } from "@/features/chat/ComposerMenu";
+import { MENTION_CLASS, MENTION_SHADOW } from "@/features/chat/Mention";
+import { MentionPicker, type MentionItem, type MentionPickerHandle } from "@/features/chat/MentionPicker";
 import { ModelSelect } from "@/features/chat/ModelSelect";
 import { PermissionModeSelect } from "@/features/chat/PermissionModeSelect";
 import { QuoteChip } from "@/features/chat/QuoteCard";
@@ -25,7 +28,15 @@ import {
   filesFromClipboard,
   filesFromList,
 } from "@/lib/images";
+import {
+  findMentionQuery,
+  mentionCutRange,
+  mentionSpanAfterCaret,
+  mentionSpanBeforeCaret,
+  parseMentions,
+} from "@/lib/mentions";
 import { toast } from "@/lib/toast";
+import { mentionToken } from "@/lib/workspace";
 import { useChatStore } from "@/store/chat";
 
 export function Composer() {
@@ -50,15 +61,29 @@ export function Composer() {
   const [menuOpen, setMenuOpen] = useState<"plus" | "connectors" | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
+  /** 光标位置：@ 选择器要知道用户正在敲哪一段。 */
+  const [caret, setCaret] = useState(0);
+  /** 用户按了 Esc：这一段 @ 先不弹选择器了，再动一下文字才重新弹。 */
+  const [dismissed, setDismissed] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  /** 高亮层：跟输入框里的文字叠在一起，给 @引用 染色。 */
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const pickerRef = useRef<MentionPickerHandle>(null);
   const slashQuery = input.startsWith("/") ? input.slice(1).split(/\s/)[0] ?? "" : "";
   const slashOpen = input.startsWith("/");
   const canSend = Boolean(input.trim() || attachments.length || quotes.length);
   const quoteCount = quotes.length;
   const quoteFocus = useRef(quoteCount);
+  const workspace = useChatStore((state) => state.workspace);
+  const root = workspace.trim();
+  /** 正在输入的 @引用：光标前最近的那个 @。 */
+  const mention = useMemo(() => findMentionQuery(input, caret), [input, caret]);
+  const mentionOpen = Boolean(mention) && !dismissed && Boolean(root);
+  /** 输入框里的 @引用 片段，用来画高亮层。 */
+  const segments = useMemo(() => parseMentions(input), [input]);
 
   // 输入区随内容增高：默认保持 rows={2} 的高度，超出上限（CSS max-height）后改为框内滚动。
   const resizeArea = useCallback(() => {
@@ -68,6 +93,10 @@ export function Composer() {
     const cap = parseFloat(getComputedStyle(area).maxHeight) || Number.POSITIVE_INFINITY;
     area.style.height = `${Math.min(area.scrollHeight, cap)}px`;
     area.style.overflowY = area.scrollHeight > cap ? "auto" : "hidden";
+    // 高亮层要跟输入框的文字逐字对齐：宽度按输入框的实际内容宽算
+    // （输入框一旦出现滚动条，文字就比盒子窄一截）。
+    const backdrop = backdropRef.current;
+    if (backdrop) backdrop.style.width = `${area.clientWidth}px`;
   }, []);
 
   useLayoutEffect(resizeArea, [input, resizeArea]);
@@ -87,6 +116,9 @@ export function Composer() {
       event.preventDefault();
       event.stopPropagation();
       setMenuOpen(null);
+      // @ 选择器开着时，Esc 是收起它 —— 输入框那边已经处理过了，
+      // 这里要是再把正文清掉就等于把用户刚写的东西删了。
+      if (mentionOpen) return;
       if (input.startsWith("/")) setInput("");
     }
     document.addEventListener("pointerdown", onPointer);
@@ -95,7 +127,7 @@ export function Composer() {
       document.removeEventListener("pointerdown", onPointer);
       window.removeEventListener("keydown", onKey);
     };
-  }, [menuOpen, slashOpen, input, setInput]);
+  }, [menuOpen, slashOpen, mentionOpen, input, setInput]);
 
   async function ingestFiles(files: File[]) {
     if (!files.length || streaming) return;
@@ -122,10 +154,14 @@ export function Composer() {
       const inserted = gap + text;
       setInput(prefix + inserted + current.slice(end));
       const caret = start + inserted.length;
+      setCaret(caret);
+      setDismissed(false);
       window.requestAnimationFrame(() => {
         area?.focus();
         area?.setSelectionRange(caret, caret);
       });
+      // 提示放在这里而不是发起方：输入框不在场的时候，就不该有一条“已插入”。
+      toast("已插入到输入框");
     }
     window.addEventListener("nono-insert-input", onInsert);
     return () => window.removeEventListener("nono-insert-input", onInsert);
@@ -163,8 +199,95 @@ export function Composer() {
     void ingestFiles(filesFromList(event.dataTransfer.files));
   }
 
+  function insertMention(item: MentionItem) {
+    if (!mention) return;
+    const token = mentionToken(root, item.path, item.isDir);
+    const next = input.slice(0, mention.start) + token + input.slice(mention.end);
+    setInput(next);
+    const at = mention.start + token.length;
+    setCaret(at);
+    setDismissed(false);
+    window.requestAnimationFrame(() => {
+      areaRef.current?.focus();
+      areaRef.current?.setSelectionRange(at, at);
+    });
+  }
+
   function onKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    // 整块删掉一个 @引用 —— 像微信那样按一次退格就把整个引用抹掉，
+    // 不是一个字符一个字符地退（那样 @文件名 要按十几次才删得干净）。
+    //
+    // 选择器还开着的时候不走这条路：那说明用户正在手打路径，
+    // 这时候退格就该逐字删，不然打一半的路径会被整段吞掉。
+    if (!mentionOpen) {
+      if (event.key === "Backspace") {
+        const span = mentionSpanBeforeCaret(input, caret);
+        if (span) {
+          event.preventDefault();
+          // 选出来的 token 末尾自带一个空格，一起删掉，别留个孤零零的空格。
+          const cut = mentionCutRange(input, span);
+          const at = cut.start;
+          setInput(input.slice(0, at) + input.slice(cut.end));
+          setCaret(at);
+          setDismissed(false);
+          window.requestAnimationFrame(() => {
+            areaRef.current?.focus();
+            areaRef.current?.setSelectionRange(at, at);
+          });
+          return;
+        }
+      }
+      if (event.key === "Delete") {
+        const span = mentionSpanAfterCaret(input, caret);
+        if (span) {
+          event.preventDefault();
+          const cut = mentionCutRange(input, span);
+          const at = cut.start;
+          setInput(input.slice(0, at) + input.slice(cut.end));
+          setCaret(at);
+          setDismissed(false);
+          window.requestAnimationFrame(() => {
+            areaRef.current?.focus();
+            areaRef.current?.setSelectionRange(at, at);
+          });
+          return;
+        }
+      }
+    }
+    // @ 选择器开着的时候，上下、回车、Tab 都是它的 —— 回车是「选中这个文件」，
+    // 不是「把这条消息发出去」。
+    if (mentionOpen) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        pickerRef.current?.move(1);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        pickerRef.current?.move(-1);
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        // 一个都没匹配到时，别把回车吞掉：用户可能是想直接发出去。
+        if (pickerRef.current?.pick()) {
+          event.preventDefault();
+          return;
+        }
+      }
+      if (event.key === "Tab") {
+        // 只有选中的确实是文件夹才拦住 Tab，不然用户就出不去了。
+        if (pickerRef.current?.enter()) {
+          event.preventDefault();
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDismissed(true);
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (event.repeat || streaming || !canSend) return;
@@ -238,19 +361,60 @@ export function Composer() {
               ))}
             </div>
           ) : null}
-          <Textarea
-            ref={areaRef}
-            rows={2}
-            value={input}
-            className="max-h-[min(40vh,18rem)]"
-            placeholder="描述你想做的事，可粘贴截图或添加图片"
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={onKeyDown}
-          />
+          <div className="relative">
+            {/*
+              高亮层：跟输入框里的文字一模一样，只有 @引用 那几段上了色。
+              输入框自己的文字是透明的，露出来的是这层 —— 两层必须逐字对齐，
+              所以这里的字号、行高、换行规则都跟输入框一致，宽度也按输入框的
+              实际内容宽算（输入框出现滚动条时文字会窄一截）。
+            */}
+            <div
+              ref={backdropRef}
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-[length:var(--content-font-size,14px)] leading-6 text-ink"
+            >
+              {segments.map((segment, index) =>
+                segment.kind === "text" ? (
+                  <span key={index}>{segment.text}</span>
+                ) : (
+                  <span key={index} className={MENTION_CLASS} style={{ boxShadow: MENTION_SHADOW }}>
+                    {segment.text}
+                  </span>
+                ),
+              )}
+            </div>
+            <Textarea
+              ref={areaRef}
+              rows={2}
+              value={input}
+              // 关掉拼写检查：正文由高亮层画，而浏览器的拼写波浪线画在输入框自己身上，
+              // 盖在 @引用 的高亮上，看着像报错 —— 而文件路径本来就不该被拼写检查管。
+              spellCheck={false}
+              className="relative max-h-[min(40vh,18rem)] text-transparent caret-ink"
+              placeholder="描述你想做的事，可粘贴截图或添加图片"
+              onChange={(event) => {
+                setInput(event.target.value);
+                setCaret(event.target.selectionStart ?? event.target.value.length);
+                setDismissed(false);
+              }}
+              onKeyDown={onKeyDown}
+              onKeyUp={(event) => setCaret(event.currentTarget.selectionStart ?? 0)}
+              onClick={(event) => setCaret(event.currentTarget.selectionStart ?? 0)}
+              onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? 0)}
+              onScroll={(event) => {
+                // 输入框滚动时，高亮层跟着挪，否则两层会错开。
+                const backdrop = backdropRef.current;
+                if (backdrop) backdrop.style.transform = `translateY(-${event.currentTarget.scrollTop}px)`;
+              }}
+            />
+            {mentionOpen ? (
+              <MentionPicker ref={pickerRef} root={root} onPick={(item) => insertMention(item)} />
+            ) : null}
+          </div>
           <div className="mt-2 flex items-center justify-between gap-2">
             <div ref={menuRef} className="relative flex min-w-0 items-center gap-1">
               <CommandPalette
-                open={slashOpen}
+                open={slashOpen && !mentionOpen}
                 query={slashQuery}
                 commands={commands.length ? commands : FALLBACK_COMMANDS}
                 onPick={(command) => {
