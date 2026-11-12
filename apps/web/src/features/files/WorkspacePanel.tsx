@@ -1,5 +1,5 @@
 import { FileDiff, FileText, FolderTree, GitCompare, Globe, ListTodo, MessagesSquare, PanelRightClose, Plus, TerminalSquare, X } from "lucide-react";
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import type { FsEntry } from "@nono/protocol";
 
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -23,6 +23,57 @@ import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chat";
 
 const DiffTab = lazy(() => import("@/features/files/diff/DiffTab").then((module) => ({ default: module.DiffTab })));
+
+type PortalId = PanelPin | "sidechat" | "terminal" | "browser";
+
+type PortalItem = {
+  id: PortalId;
+  label: string;
+  detail: string;
+  icon: ReactNode;
+  hidden?: boolean;
+  disabled?: boolean;
+};
+
+type PortalPrefs = {
+  files: boolean;
+  changes: boolean;
+  tasks: boolean;
+  sidechat: boolean;
+  terminal: boolean;
+  browser: boolean;
+};
+
+/**
+ * 右侧栏能打开的面板入口。
+ *
+ * 「+」菜单和空栏那一页共用这一份清单 —— 两处显示的东西必须一致，
+ * 不然用户会以为菜单里有的入口，空页上却打不开。
+ */
+function buildPortalItems(prefs: PortalPrefs, canSideChat: boolean, canTerminal: boolean): PortalItem[] {
+  return [
+    { id: "files", label: "文件", detail: "资源管理器和文件预览", icon: <FolderTree className="size-3.5" />, hidden: !prefs.files },
+    { id: "changes", label: "文件变动", detail: "Git 状态和本轮改动", icon: <GitCompare className="size-3.5" />, hidden: !prefs.changes },
+    { id: "tasks", label: "任务管理", detail: "子代理和正在执行的命令", icon: <ListTodo className="size-3.5" />, hidden: !prefs.tasks },
+    {
+      id: "sidechat",
+      label: "侧边对话",
+      detail: canSideChat ? "继承主会话的独立线程" : "先开始一段对话",
+      icon: <MessagesSquare className="size-3.5" />,
+      hidden: !prefs.sidechat,
+      disabled: !canSideChat,
+    },
+    {
+      id: "terminal",
+      label: "终端",
+      detail: canTerminal ? "工作区里的 shell" : "先打开一个工作区",
+      icon: <TerminalSquare className="size-3.5" />,
+      hidden: !prefs.terminal,
+      disabled: !canTerminal,
+    },
+    { id: "browser", label: "浏览器", detail: "内嵌网页标签", icon: <Globe className="size-3.5" />, hidden: !prefs.browser },
+  ];
+}
 
 function TreeResize({
   label,
@@ -101,6 +152,12 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   const parentSession = sessions.find((item) => item.engine_session_id === sessionId) ?? null;
   // 面板按会话分桶：已落库的用引擎会话 id，还没发第一句的用它的草稿键。
   const scope = sessionId ?? draftRunKey;
+  // 「+」菜单和空栏那一页共用这一份清单。
+  const portalItems = useMemo(
+    () => buildPortalItems(prefs, Boolean(parentSession), Boolean(root)),
+    [prefs, parentSession, root],
+  );
+  const launcherItems = portalItems.filter((item) => !item.hidden);
   const [pendingClose, setPendingClose] = useState<PanelTab | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [treeWidth, setTreeWidth] = useState(240);
@@ -176,6 +233,18 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
 
   const activeTab = tabs.find((tab) => tab.id === active) ?? null;
   const activeFile = activeTab?.kind === "file" ? activeTab : null;
+  /**
+   * 这一页现在是不是空的？
+   *
+   * 空了就该摆出「+」菜单里的那些入口，而不是留一片白：
+   * 想看文件树本来要点开「+」再挑一项，少一次点击。
+   * 停在底部工作台里的标签不在这页显示，也不算它占了位置。
+   */
+  const tabHere = activeTab ? !docked.has(activeTab.id) : false;
+  const showsTree = active === TREE_TAB && Boolean(root) && pins.files;
+  const showsChanges = active === CHANGES_TAB && Boolean(root) && pins.changes;
+  const showsTasks = active === TASKS_TAB;
+  const blank = !tabHere && !showsTree && !showsChanges && !showsTasks;
 
   useLayoutEffect(() => {
     const list = tablistRef.current;
@@ -365,9 +434,7 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
             <AddTabMenu
               pinned={false}
               plusRef={plusRef}
-              prefs={prefs}
-              canSideChat={Boolean(parentSession)}
-              canTerminal={Boolean(root)}
+              items={portalItems}
               onOpen={(id) => void openPortalItem(id)}
             />
           )}
@@ -376,9 +443,7 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
           <AddTabMenu
             pinned
             plusRef={plusRef}
-            prefs={prefs}
-            canSideChat={Boolean(parentSession)}
-            canTerminal={Boolean(root)}
+            items={portalItems}
             onOpen={(id) => void openPortalItem(id)}
           />
         ) : null}
@@ -466,7 +531,7 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
               ),
             )}
           </>
-        ) : active === START_TAB || activeTab?.kind === "browser" ? null : (
+        ) : active === START_TAB || activeTab?.kind === "browser" || blank ? null : (
           <p className="px-4 py-6 text-[13px] leading-6 text-muted">先打开一个工作区，这里会列出其中的文件和改动。</p>
         )}
         {tabs.map((tab) =>
@@ -491,6 +556,10 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
             </div>
           ) : null,
         )}
+        {/* 空的这一页：把「+」菜单里的入口直接摊在这儿，少点一次。 */}
+        {blank ? (
+          <PanelLauncher items={launcherItems} onOpen={(id) => void openPortalItem(id)} />
+        ) : null}
       </div>
       <ConfirmDialog
         open={pendingClose !== null}
@@ -508,53 +577,18 @@ export function WorkspacePanel({ onCollapse }: { onCollapse: () => void }) {
   );
 }
 
-type PortalId = PanelPin | "sidechat" | "terminal" | "browser";
-
 function AddTabMenu({
   pinned,
   plusRef,
-  prefs,
-  canSideChat,
-  canTerminal,
+  items,
   onOpen,
 }: {
   pinned: boolean;
   plusRef: RefObject<HTMLButtonElement | null>;
-  prefs: { files: boolean; changes: boolean; tasks: boolean; sidechat: boolean; terminal: boolean; browser: boolean };
-  canSideChat: boolean;
-  canTerminal: boolean;
+  items: PortalItem[];
   onOpen: (id: PortalId) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const items: Array<{
-    id: PortalId;
-    label: string;
-    detail: string;
-    icon: ReactNode;
-    hidden?: boolean;
-    disabled?: boolean;
-  }> = [
-    { id: "files", label: "文件", detail: "资源管理器和文件预览", icon: <FolderTree className="size-3.5" />, hidden: !prefs.files },
-    { id: "changes", label: "文件变动", detail: "Git 状态和本轮改动", icon: <GitCompare className="size-3.5" />, hidden: !prefs.changes },
-    { id: "tasks", label: "任务管理", detail: "子代理和正在执行的命令", icon: <ListTodo className="size-3.5" />, hidden: !prefs.tasks },
-    {
-      id: "sidechat",
-      label: "侧边对话",
-      detail: canSideChat ? "继承主会话的独立线程" : "先开始一段对话",
-      icon: <MessagesSquare className="size-3.5" />,
-      hidden: !prefs.sidechat,
-      disabled: !canSideChat,
-    },
-    {
-      id: "terminal",
-      label: "终端",
-      detail: canTerminal ? "工作区里的 shell" : "先打开一个工作区",
-      icon: <TerminalSquare className="size-3.5" />,
-      hidden: !prefs.terminal,
-      disabled: !canTerminal,
-    },
-    { id: "browser", label: "浏览器", detail: "内嵌网页标签", icon: <Globe className="size-3.5" />, hidden: !prefs.browser },
-  ];
   const visible = items.filter((item) => !item.hidden);
 
   return (
@@ -601,6 +635,41 @@ function AddTabMenu({
         ))
       )}
     </Dropdown>
+  );
+}
+
+/**
+ * 右侧栏空着的时候，这一页上摆的入口。
+ *
+ * 内容就是「+」菜单里那一份清单，只是摊开了铺在整页上：
+ * 侧栏刚打开时一片白不好看，想看文件树还得再点一次「+」再挑一项。
+ * 现在点一项就开对应的面板，少一次点击。
+ */
+function PanelLauncher({ items, onOpen }: { items: PortalItem[]; onOpen: (id: PortalId) => void }) {
+  if (!items.length) {
+    return <p className="px-4 py-6 text-[13px] leading-6 text-muted">没有可打开的面板。</p>;
+  }
+  return (
+    // 整块摆在中间：右上角贴着边像一串附注，居中才像这一页的主内容。
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
+      <div className="w-full max-w-[260px]">
+        <p className="px-2.5 pb-1.5 text-[11px] text-faint">打开一个面板</p>
+        {items.map((item) => (
+          <DropdownItem
+            key={item.id}
+            disabled={item.disabled}
+            className="disabled:pointer-events-none disabled:opacity-40"
+            onClick={() => onOpen(item.id)}
+          >
+            <span className="mt-0.5 shrink-0 text-muted">{item.icon}</span>
+            <span className="min-w-0">
+              <span className="block truncate text-[12px] text-ink">{item.label}</span>
+              <span className="mt-0.5 block truncate text-[11px] leading-4 text-faint">{item.detail}</span>
+            </span>
+          </DropdownItem>
+        ))}
+      </div>
+    </div>
   );
 }
 
