@@ -70,6 +70,8 @@ pythonpath = ["apps/server", "apps/cli"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# 打包产物（PyInstaller 收进来的第三方库）不是本仓源码，不参与 lint
+extend-exclude = ["apps/desktop/release", "apps/desktop/resources"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
