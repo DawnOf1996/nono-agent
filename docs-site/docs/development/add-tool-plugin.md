@@ -94,7 +94,33 @@ title: 新增工具插件
 ### 两种映射器
 
 - **`result: {"kind": "save_images"}`** —— 响应侧，把 base64 / URL 两种返回都落盘到 `output_dir` 并给 UI 附图片卡片。工具结果里直接塞 base64 图对当前 provider 链路没意义（OpenAI 的 tool role 只收字符串）；要让模型看见图，工具得把图片放进 `ToolResult.images`，由引擎作为一条带 image 块的 user 消息发出。
-- **`inputs: {"kind": "image_data_urls"}`** —— 请求侧，把**本地文件**读成 data URL。图生图这类接口要公网 URL 或 base64，而模型手里只有工作区路径，这一层就是那座桥。它是声明式的替代方案：模板层刻意不提供 `${file:...}`，否则任意 `plugin.json` 都能变成任意文件读。读取一律过沙箱，按**魔数**（不按扩展名）校验 JPG/PNG，并卡体积上限。
+  响应有两种形状，都支持：
+  - `items_path` —— OpenAI 风格的数组（`data` 是数组，每项一张图）。配 `url_key` / `base64_key` 指明每项里链接和 base64 的键名；每项上的 `error` 会被当作该张图的失败原因报给模型（部分失败不能被吞掉）。
+  - `urls_path` / `base64_path` —— 旧的扁平数组，点分路径（如 `data.image_base64`）。
+- **`inputs: {"kind": "image_data_urls"}`** —— 请求侧，把**本地文件**读成 data URL。图生图这类接口要公网 URL 或 base64，而模型手里只有工作区路径，这一层就是那座桥。它是声明式的替代方案：模板层刻意不提供 `${file:...}`，否则任意 `plugin.json` 都能变成任意文件读。读取一律过沙箱，按**魔数**（不按扩展名）校验格式，并卡体积上限。
+  每条参考图在请求体里的形状由 `object_key` 决定：给了就包成 `{"image_url": "<url>"}`（OpenAI 风格），不给则是旧的 `{"type": ..., "image_file": ...}`。`max_count` 是**厂商**的限制（照抄文档，别自造）；`max_bytes` 卡单张、`max_total_bytes` 卡整批原图字节 —— 注意 base64 编码要膨胀约 4/3，而厂商卡的是**请求体**大小。
+
+### `background`：长请求转后台
+
+```json
+"background": {
+  "wait_s": "${options.image_wait_s}",
+  "kind": "image",
+  "title": "图片生成"
+}
+```
+
+**为什么需要**：一次工具调用会占着**对话那一条 HTTP 连接**直到它返回。浏览器对同一 origin 的并发连接有上限（Chromium 是 6），而应用本身常驻着好几条长连接（control / browser 走 WebSocket，stats / fs-watch / git / jobs 走 SSE）。名额占满之后，文件树这类普通请求只能排队 —— 用户看到的就是「一调某个工具，整个界面全卡住」。
+
+> 常驻的 control / browser 两条流已经改走 WebSocket：Chromium 给 WebSocket 单独开了一个 socket pool（每组上限 255），不再跟普通请求抢那 6 条 HTTP 名额。帧的写法没变（`event: x` / `data: {...}`），换的只是承载它的连接 —— 见 `apps/server/nono_app_server/common/ws_stream.py` 与 `apps/web/src/api/ws.ts`。
+
+声明了 `background` 之后：
+
+- 请求在后台跑；**等 `wait_s` 还没回来就放这一轮走**，连接名额立刻还给别的请求。
+- 请求**不取消**（厂商那边已经在生成并计费了，取消只是白花钱），而是登记成作业：模型用 `job_output` 跟进，用户在任务板看得到进度。
+- `wait_s` 之内就回来的，照旧直接给结果（图片工具会把图片卡片直接挂上）。
+- `wait_s` 可以写成 `${options.x}` 模板，好让配置面板能调；**配置项被清空时回落到工具声明里的默认值** —— 不能因为清了一格就把后台化整个关掉。
+- `kind` 决定任务板上的标签（`command` / `agent` / `image` …），`title` 是作业标题。
 
 ### `mcp` 声明
 

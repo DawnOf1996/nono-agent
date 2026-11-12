@@ -13,6 +13,17 @@ const STATUS_LABEL: Record<string, string> = {
   killed: "已停止",
 };
 
+/** 作业类型 → 徽标文字。后台跑的不只是命令 —— 图片生成之类也走作业板。 */
+const KIND_LABEL: Record<string, string> = {
+  agent: "子代理",
+  command: "命令",
+  image: "图片",
+};
+
+function kindLabel(kind: string): string {
+  return KIND_LABEL[kind] ?? "命令";
+}
+
 function JobRow({ job, sessionId, nested }: { job: WorkspaceJob; sessionId: string; nested?: boolean }) {
   const [stopping, setStopping] = useState(false);
   return (
@@ -24,7 +35,7 @@ function JobRow({ job, sessionId, nested }: { job: WorkspaceJob; sessionId: stri
             job.kind === "agent" ? "bg-info-soft text-info" : "bg-card text-muted",
           )}
         >
-          {job.kind === "agent" ? "子代理" : "命令"}
+          {kindLabel(job.kind)}
         </span>
         <span
           className={cn(
@@ -155,7 +166,7 @@ export function TasksPanel({ sessionId }: { sessionId: string | null }) {
             {live.map((job) => (
               <div key={job.id} className="min-w-0 rounded-lg border border-line">
                 <p className="truncate border-b border-line px-2 py-1 text-[12px] font-medium" title={job.title}>
-                  {job.kind === "agent" ? "子代理" : "命令"} · {job.title}
+                  {kindLabel(job.kind)} · {job.title}
                 </p>
                 <pre className="max-h-28 overflow-auto px-2 py-1.5 font-mono text-[11px] leading-5 whitespace-pre-wrap text-ink/80">
                   {job.output.trim() ? job.output.slice(-800) : "等待输出"}

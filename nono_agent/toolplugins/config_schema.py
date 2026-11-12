@@ -42,8 +42,13 @@ class ConfigField:
         if self.type == "boolean":
             return bool(raw)
         if self.type == "number":
+            text = str(raw if raw is not None else "").strip()
+            if not text:
+                # 清空 = 不设。写 None 而不是报错：模板层把 None 当"没填"，
+                # 于是这一项回落到工具声明里的默认值。
+                return None
             try:
-                return int(str(raw).strip())
+                return int(text)
             except (TypeError, ValueError) as exc:
                 raise ConfigSchemaError(f"'{self.label}' 需要是一个整数") from exc
         text = str(raw if raw is not None else "").strip()

@@ -301,8 +301,8 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
 | 插件 | 工具 | 密钥变量 | 说明 |
 |------|------|----------|------|
-| `minimax-image` | `minimax__generate_image` | `NONO_MINIMAX_IMAGE_API_KEY` | MiniMax 文生图，产物落盘后回传路径 |
-| `minimax-image` | `minimax__edit_image` | 同上 | MiniMax 图生图（`subject_reference`），参考图支持工作区本地路径 |
+| `minimax-image` | `minimax__generate_image` | `NONO_MINIMAX_IMAGE_API_KEY` | MiniMax H3-Image 文生图（`/v1/images/generations`），产物落盘后回传路径 |
+| `minimax-image` | `minimax__edit_image` | 同上 | MiniMax H3-Image 图片编辑（`/v1/images/edits`），参考图 1~16 张，支持工作区本地路径 |
 | `tavily` | `mcp__tavily__*` | `NONO_TAVILY_API_KEY` | Tavily 官方 MCP server 的内置预设（`search`/`extract`） |
 
 启用方式（**用户级** `~/.nono-agent/settings.json`，设置面板写的就是这里；与 `mcp.servers.<id>` 同构；**未声明即不启用**）：
@@ -314,7 +314,10 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
       "enabled": true,
       "api_key_env": "NONO_MINIMAX_IMAGE_API_KEY",
       "options": {
-        "model": "image-01",
+        "model": "MiniMax-H3-Image",
+        "area": "2K",
+        "output_format": "jpeg",
+        "response_format": "url",
         "base_url": "https://api.minimax.cn",
         "output_dir": ".nono-agent/images"
       }
@@ -330,7 +333,15 @@ YAML 已存在但缺少对应密钥时**不会**覆盖目录，只补问 API Key
 
 密钥**不写 settings.json**：把值存进 `~/.nono-agent/credentials`（`NONO_MINIMAX_IMAGE_API_KEY=...`）或同名环境变量，配置里只留 `api_key_env` 指针。HTTP 端点（`options.base_url`）可改，因此每次请求都过 SSRF 判定；错误信息里的密钥一律脱敏。
 
-> 上面的 `options.model` 只是示意，具体取值以各插件清单为准（`minimax-image` 实际是 `enum`：`image-01` / `image-01-live`）。
+> 上面的 `options.model` 只是示意，具体取值以各插件清单为准（`minimax-image` 实际是 `enum`：`MiniMax-H3-Image` / `MiniMax-H3-Image-Highspeed`）。
+>
+> ⚠️ **旧配置需要改一处**：`minimax-image` 已从 `image-01` 切到 H3-Image。老的 `~/.nono-agent/settings.json` 里若还留着 `"model": "image-01"`（或 `image-01-live`），厂商会回 400 —— 去设置面板把模型改成 `MiniMax-H3-Image` 即可。其余键（`base_url` / `output_dir`）不用动。
+>
+> `minimax-image` 的 `area` 决定输出面积档位（`1K` / `2K` / `4K`），`response_format` 决定厂商回链接还是回 base64（回链接时插件会先下载再落盘）。两者都是**用户级配置**，每次调用都带上；单次调用的可变项只有 `prompt` / `aspect_ratio` / `n` / `output_compression`（编辑工具另有 `images`）。
+>
+> **前台等待秒数（`image_wait_s`，默认 15）**：厂商最长等 600 秒。超过这个秒数，这次调用就**转后台** —— 对话那条连接立刻释放，界面不会被占住；图片在后台继续生成，完成后照样落到 `output_dir`，并在任务板上显示成一个「图片」作业（模型也能用 `job_output` 取结果）。想让它一直等到底，把这个值调大即可（但界面会相应地被占着）。
+>
+> 厂商侧最长等 600 秒，所以插件把超时设到 660 秒；这个接口**不支持幂等** —— 客户端超时后重试会重新出图并重新计费，别把它当可重试的普通接口。
 >
 > 引擎读取走合并后的 Settings，所以工作区 `.nono-agent/settings.json` 里的同名 `tools.<id>` 块**仍会生效**并覆盖用户级设置 —— 那是逃生舱，不是主路径。覆盖发生时面板会把这个插件标成 `project_owned`，用它来排查「面板开关像没反应」。
 

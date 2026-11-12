@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -25,6 +26,8 @@ from typing import Any
 import httpx
 
 from nono_agent.core.types import ToolResult
+from nono_agent.shell.jobs import STATUS_COMPLETED, STATUS_FAILED
+from nono_agent.shell.spill import OutputDelta
 from nono_agent.toolplugins.auth import append_query_auth, header_auth, redact
 from nono_agent.toolplugins.spec import HttpToolSpec
 from nono_agent.toolplugins.template import MISSING, TemplateError, render
@@ -35,17 +38,25 @@ from nono_agent.utils.net_guard import http_proxy_enabled, is_url_blocked
 logger = logging.getLogger(__name__)
 
 _MAX_TEXT_CHARS = 30_000
-# 单张参考图的字节上限：MiniMax 要求 JPG/PNG 且 <10MB，超了对方直接拒收。
-_MAX_REFERENCE_BYTES = 10 * 1024 * 1024
+# 单张参考图的字节上限。MiniMax H3-Image 允许单文件到 64 MiB，但 base64 编码
+# 要膨胀约 4/3，而请求体总大小上限就是 64 MiB —— 按原图 48 MiB 卡，编码后
+# 正好落在上限内。
+_MAX_REFERENCE_BYTES = 48 * 1024 * 1024
 _IMAGE_SUFFIXES = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
     "image/jpg": ".jpg",
     "image/webp": ".webp",
     "image/gif": ".gif",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
 }
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _JPEG_MAGIC = b"\xff\xd8\xff"
+# HEIC/HEIF 容器：第 4-8 字节是 "ftyp"，紧跟着的是 brand。
+_HEIC_BRANDS = frozenset(
+    {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1"}
+)
 
 # 测试替换这个工厂函数来打桩网络层（httpx.MockTransport）。
 ClientFactory = Callable[[float], httpx.AsyncClient]
@@ -75,14 +86,18 @@ def _sniff_image_mime(data: bytes) -> str | None:
     看内容不看扩展名：`.png` 结尾的文本文件会让对方 400，而报错会指向
     一个看起来完全无辜的参数。
 
-    **只认 PNG/JPEG** —— 入参侧要照 MiniMax 的收件标准（JPG/PNG）拒收，
-    webp/gif 落到下面的 ``not a JPG or PNG file`` 上才是对的。落盘侧要看
-    更宽的类型集合，用 :func:`_sniff_suffix`。
+    **只认 MiniMax H3-Image 收的那几种**：JPG/PNG/WEBP/HEIC(HEIF)。收件
+    标准由厂商定，认不出的类型落到下面的报错上才是对的。落盘侧要看更宽的
+    类型集合，用 :func:`_sniff_suffix`。
     """
     if data.startswith(_PNG_MAGIC):
         return "image/png"
     if data.startswith(_JPEG_MAGIC):
         return "image/jpeg"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in _HEIC_BRANDS:
+        return "image/heic"
     return None
 
 
@@ -101,6 +116,8 @@ def _sniff_suffix(data: bytes) -> str:
         return ".gif"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return ".webp"
+    if len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in _HEIC_BRANDS:
+        return ".heic"
     return ".png"
 
 
@@ -173,11 +190,31 @@ class HttpJsonTool(ToolBase):
                 f"(${self._spec.auth.api_key_env}). Set it in the settings panel.",
             )
 
-        if is_url_blocked(url, skip_dns=http_proxy_enabled()):
+        # SSRF 判定里含 DNS 解析 —— 那是**同步阻塞**调用，留在事件循环里会把整个
+        # sidecar 冻住（DNS 慢的时候能到好几秒，那期间任何接口都不响应，症状就是
+        # 「一动某个工具，别的请求全卡」）。挪到线程里做。
+        blocked = await asyncio.to_thread(
+            is_url_blocked, url, skip_dns=http_proxy_enabled()
+        )
+        if blocked:
             return error_result(
                 self._name, f"Request to {url} is blocked by the SSRF guard."
             )
 
+        background = self._spec.background
+        if background.enabled:
+            return await self._run_background(url, headers, query, body, context, background)
+        return await self._send_and_handle(url, headers, query, body, context)
+
+    async def _send_and_handle(
+        self,
+        url: str,
+        headers: dict[str, Any],
+        query: dict[str, Any],
+        body: Any,
+        context: Any,
+    ) -> ToolResult:
+        """发请求并把响应映射成工具结果。"""
         try:
             async with self._client_factory(self._spec.timeout_s) as client:
                 response = await self._send(client, url, headers, query, body)
@@ -189,6 +226,142 @@ class HttpJsonTool(ToolBase):
             return payload
         assert isinstance(payload, dict)
         return await self._handle_payload(payload, context)
+
+    # ------------------------------------------------------------------
+    # 后台化
+    # ------------------------------------------------------------------
+
+    async def _run_background(
+        self,
+        url: str,
+        headers: dict[str, Any],
+        query: dict[str, Any],
+        body: Any,
+        context: Any,
+        background: Any,
+    ) -> ToolResult:
+        """长请求转后台：这一轮立刻放行。
+
+        等 ``wait_s`` 还没回来，就把请求**留在后台**继续跑（不取消 —— 厂商那边
+        已经在生成并计费了，取消只是白花钱），同时登记成一个作业：模型可以用
+        ``job_output`` 跟进，用户在任务板看得到进度。
+
+        立刻放行的意义不在于"请求变快了"，而在于**对话那条连接被还回去了**：
+        浏览器对同源并发连接有上限，长连接占满时文件树这类普通请求只能排队。
+        """
+        wait_s = self._resolve_wait_s(background)
+        if wait_s <= 0:
+            return await self._send_and_handle(url, headers, query, body, context)
+
+        registry = _job_registry(context)
+        process = _BackgroundProcess()
+        job = None
+        if registry is not None:
+            job = registry.start(
+                kind=background.kind, title=background.title or self._name
+            )
+            registry.adopt(job.id, process)
+
+        task = asyncio.create_task(
+            self._background_run(url, headers, query, body, context, registry, job, process),
+            name=f"tool-bg:{self._name}",
+        )
+        process.attach(task)
+
+        # 注意用 wait 而不是 wait_for：wait_for 超时会把 task **取消**掉，
+        # 而这里的请求必须继续跑下去。
+        done, _pending = await asyncio.wait({task}, timeout=wait_s)
+        if task in done:
+            return task.result()
+
+        # 还没回来 —— 放这一轮走，把连接名额还给别的请求。
+        signal = getattr(context, "signal", None)
+        if registry is not None and job is not None and signal is not None:
+            registry.attach_abort_watch(job.id, signal)
+        return ok_result(self._name, self._pending_text(job, background))
+
+    async def _background_run(
+        self,
+        url: str,
+        headers: dict[str, Any],
+        query: dict[str, Any],
+        body: Any,
+        context: Any,
+        registry: Any,
+        job: Any,
+        process: _BackgroundProcess,
+    ) -> ToolResult:
+        """后台请求的收尾：拿到结果，落盘，写回作业。"""
+        try:
+            result = await self._send_and_handle(url, headers, query, body, context)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 —— 后台失败不该外溢
+            result = error_result(
+                self._name, self._redact(f"Background request failed: {exc}")
+            )
+        text = result.content if isinstance(result.content, str) else str(result.content)
+        process.write(text)
+        if registry is not None and job is not None:
+            registry.set_preview(job.id, text)
+            await registry.finish(
+                job.id,
+                status=STATUS_FAILED if result.is_error else STATUS_COMPLETED,
+            )
+        return result
+
+    def _resolve_wait_s(self, background: Any) -> float:
+        """把 ``wait_s`` 解析成秒数。允许写模板（如 ``${options.image_wait_s}``）。
+
+        解析不出来（配置项被清空、模板写错）时回落到工具声明里的默认值 ——
+        **不能因为配置面板清了一格就把后台化整个关掉**，那等于把「占着对话
+        连接」的老毛病又放回来。
+        """
+        raw = background.wait_s
+        if isinstance(raw, str):
+            try:
+                resolved = render(raw, {}, self._options)
+            except TemplateError:
+                return self._fallback_wait_s(background)
+            if resolved is MISSING:
+                return self._fallback_wait_s(background)
+            raw = resolved
+        if isinstance(raw, str) and not raw.strip():
+            return self._fallback_wait_s(background)
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return self._fallback_wait_s(background)
+
+    def _fallback_wait_s(self, background: Any) -> float:
+        """兜底：取工具声明里那个 option 的默认值。"""
+        key = str(getattr(background, "option_key", "") or "").strip()
+        if not key:
+            return 0.0
+        raw = self._spec.defaults.get(key)
+        if raw is None:
+            return 0.0
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _pending_text(self, job: Any, background: Any) -> str:
+        """转后台时给模型的话 —— 说清三件事：还在跑、去哪看、结果落在哪。"""
+        title = background.title or self._name
+        target = self._render_text(
+            str(self._spec.result.get("dir", "") or ""), self._options
+        )
+        lines = [f"{title} 还在后台进行中。"]
+        if job is not None:
+            lines.append(
+                f"它是作业 {job.id}；用 job_output 读该作业的最终结果"
+                f"（读一次即可，结束后仍会返回）。"
+            )
+        if target:
+            lines.append(f"生成结果会保存到 {target}。")
+        lines.append("这一轮不必等它 —— 先把能做的事做完，需要时再取结果。")
+        return "\n".join(lines)
 
     async def _send(
         self,
@@ -208,7 +381,7 @@ class HttpJsonTool(ToolBase):
 
     def _parse(self, response: httpx.Response) -> Any:
         if response.status_code >= 400:
-            detail = self._redact(response.text[:500])
+            detail = self._error_detail(response)
             return error_result(
                 self._name,
                 f"HTTP {response.status_code} from {self._spec.plugin_id}: {detail}",
@@ -221,6 +394,26 @@ class HttpJsonTool(ToolBase):
                 self._redact(f"Non-JSON response: {response.text[:500]}"),
             )
 
+    def _error_detail(self, response: httpx.Response) -> str:
+        """把厂商的错误体压成一行人能看的话。
+
+        MiniMax 的错误体是 ``{"type": "error", "error": {"type", "message",
+        "http_code"}}`` —— 直接回显整段 JSON，模型得自己从里面挑出那句话。
+        """
+        try:
+            payload = response.json()
+        except (json.JSONDecodeError, ValueError):
+            return self._redact(response.text[:500])
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                kind = str(error.get("type", "")).strip()
+                message = str(error.get("message", "")).strip()
+                detail = " — ".join(part for part in (kind, message) if part)
+                if detail:
+                    return self._redact(detail)
+        return self._redact(response.text[:500])
+
     # ------------------------------------------------------------------
     # 入参映射
     # ------------------------------------------------------------------
@@ -232,11 +425,14 @@ class HttpJsonTool(ToolBase):
         口子。需要读文件的工具用这里这个显式声明的映射器，读哪个入参、
         读多大、走不走沙箱，全部写在清单里。
 
-        ``max_count`` 是**厂商**的限制，不是本地取舍：MiniMax 的
-        ``subject_reference`` 虽是数组类型，文档正文明确写了
-        "Only a single reference image is supported per request"，所以
-        minimax-image 清单里写死 1。本地提前拦下来，模型拿到的是一句
-        "怎么改"的提示，而不是对方一个语焉不详的 2013。
+        ``max_count`` 是**厂商**的限制，不是本地取舍：清单里写死多少就以
+        厂商为准（MiniMax 的图片编辑收 1~16 张）。本地提前拦下来，模型
+        拿到的是一句"怎么改"的提示，而不是对方一个语焉不详的 2013。
+
+        ``object_key`` 决定每条参考图在请求体里的形状：
+
+        - 有值 → ``{"image_url": "<url>"}``（OpenAI 风格，H3-Image 编辑接口）
+        - 无值 → ``{"type": ..., "image_file": ...}``（旧式主体参考）
         """
         spec = self._spec.inputs
         kind = str(spec.get("kind", ""))
@@ -253,6 +449,8 @@ class HttpJsonTool(ToolBase):
         items = _as_list(raw)
         max_count = int(spec.get("max_count", 1))
         max_bytes = int(spec.get("max_bytes", _MAX_REFERENCE_BYTES))
+        max_total_bytes = int(spec.get("max_total_bytes", 0)) or None
+        object_key = str(spec.get("object_key", "")).strip()
         subject_type = str(args.get(spec.get("type_arg", "subject_type")) or "character")
 
         if len(items) > max_count:
@@ -260,25 +458,35 @@ class HttpJsonTool(ToolBase):
                 f"at most {max_count} reference image(s) are accepted, got {len(items)}"
             )
 
-        refs: list[dict[str, str]] = []
+        refs: list[Any] = []
+        total = 0
         for item in items:
-            refs.append(
-                {
-                    "type": subject_type,
-                    "image_file": await self._as_image_reference(item, context, max_bytes),
-                }
-            )
+            reference, size = await self._as_image_reference(item, context, max_bytes)
+            total += size
+            if max_total_bytes is not None and total > max_total_bytes:
+                raise InputError(
+                    f"reference images total {total // (1024 * 1024)}MB, "
+                    f"over the {max_total_bytes // (1024 * 1024)}MB limit"
+                )
+            if object_key:
+                refs.append({object_key: reference})
+            else:
+                refs.append({"type": subject_type, "image_file": reference})
         return {**args, arg_name: refs}
 
     async def _as_image_reference(
         self, item: str, context: Any, max_bytes: int
-    ) -> str:
-        """把一条参考图入参变成公网 URL / data URL；本地文件读成 data URL。"""
+    ) -> tuple[str, int]:
+        """把一条参考图入参变成公网 URL / data URL。
+
+        返回 ``(引用, 本地字节数)`` —— 字节数只对本地文件有意义（远端 URL
+        拿不到也管不着），用来累加总大小。
+        """
         value = str(item).strip()
         if not value:
             raise InputError("empty reference image")
         if value.startswith("data:image/") or value.startswith(("http://", "https://")):
-            return value
+            return value, 0
 
         # 本地文件：必须过沙箱，否则模型可以把工作区外的文件塞进请求体。
         try:
@@ -298,9 +506,9 @@ class HttpJsonTool(ToolBase):
         mime = _sniff_image_mime(data)
         if mime is None:
             raise InputError(
-                f"reference image '{value}' is not a JPG or PNG file"
+                f"reference image '{value}' is not a JPG, PNG, WEBP or HEIC file"
             )
-        return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+        return f"data:{mime};base64,{base64.b64encode(data).decode()}", len(data)
 
     # ------------------------------------------------------------------
     # 结果映射
@@ -330,12 +538,12 @@ class HttpJsonTool(ToolBase):
         except Exception as exc:  # 沙箱拒绝 / 无权限
             return error_result(self._name, f"Cannot write images to '{target}': {exc}")
 
-        urls = _dig(payload, str(spec.get("urls_path", "")))
-        blobs = _dig(payload, str(spec.get("base64_path", "")))
-        urls = [str(u) for u in urls] if isinstance(urls, list) else []
-        blobs = [str(b) for b in blobs] if isinstance(blobs, list) else []
-
+        urls, blobs, failures = self._collect_images(payload)
         if not urls and not blobs:
+            if failures:
+                return error_result(
+                    self._name, "No image was generated:\n" + "\n".join(failures)
+                )
             return ok_result(self._name, "The service returned no images.")
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -355,9 +563,60 @@ class HttpJsonTool(ToolBase):
 
         lines = [f"Saved {len(written)} image(s) to {base_dir}:"]
         lines.extend(f"- {path}" for path in written)
+        if failures:
+            # 部分失败是常态（一张没过内容安全检查，其余照常出图）——
+            # 藏起来等于骗模型说"都好了"。
+            lines.append("")
+            lines.append(f"{len(failures)} image(s) failed:")
+            lines.extend(f"- {item}" for item in failures)
         result = ok_result(self._name, "\n".join(lines))
         result.ui = {"kind": "image", "images": [{"path": path} for path in written]}
         return result
+
+    def _collect_images(
+        self, payload: dict[str, Any]
+    ) -> tuple[list[str], list[str], list[str]]:
+        """从响应里挑出图片链接、base64 和失败原因。
+
+        两种响应形状：
+
+        - ``items_path`` —— OpenAI 风格的数组，每项一张图，成功给
+          ``url`` 或 ``b64_json``，失败给 ``error``。
+        - ``urls_path`` / ``base64_path`` —— 旧的扁平数组。
+        """
+        spec = self._spec.result
+        urls: list[str] = []
+        blobs: list[str] = []
+        failures: list[str] = []
+
+        items_path = str(spec.get("items_path", "")).strip()
+        if items_path:
+            items = _dig(payload, items_path)
+            items = items if isinstance(items, list) else []
+            url_key = str(spec.get("url_key", "url")) or "url"
+            b64_key = str(spec.get("base64_key", "b64_json")) or "b64_json"
+            for index, item in enumerate(items):
+                if not isinstance(item, dict):
+                    continue
+                error = item.get("error")
+                if isinstance(error, dict):
+                    failures.append(_describe_failure(index, error))
+                    continue
+                url = item.get(url_key)
+                if isinstance(url, str) and url:
+                    urls.append(url)
+                blob = item.get(b64_key)
+                if isinstance(blob, str) and blob:
+                    blobs.append(blob)
+            return urls, blobs, failures
+
+        raw_urls = _dig(payload, str(spec.get("urls_path", "")))
+        raw_blobs = _dig(payload, str(spec.get("base64_path", "")))
+        if isinstance(raw_urls, list):
+            urls = [str(u) for u in raw_urls if u]
+        if isinstance(raw_blobs, list):
+            blobs = [str(b) for b in raw_blobs if b]
+        return urls, blobs, failures
 
     async def _download(self, url: str) -> tuple[str, bytes]:
         if is_url_blocked(url, skip_dns=http_proxy_enabled()):
@@ -431,7 +690,16 @@ class HttpJsonTool(ToolBase):
 
 
 def _api_failure(payload: dict[str, Any]) -> str | None:
-    """翻译厂商返回的业务错误码（MiniMax 走 ``base_resp.status_code``）。"""
+    """翻译厂商返回的业务错误码。"""
+    # OpenAI 风格错误体：{"type": "error", "error": {"type", "message", ...}}
+    if str(payload.get("type", "")) == "error":
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message", "")).strip() or "unknown error"
+            kind = str(error.get("type", "")).strip()
+            return f"API error: {kind}: {message}" if kind else f"API error: {message}"
+
+    # 旧版 MiniMax 体：{"base_resp": {"status_code": N, "status_msg": ...}}
     base = payload.get("base_resp")
     if not isinstance(base, dict):
         return None
@@ -452,6 +720,107 @@ def _api_failure(payload: dict[str, Any]) -> str | None:
     }
     hint = hints.get(code, "")
     return f"API error {code}: {message}" + (f" ({hint})" if hint else "")
+
+
+def _describe_failure(index: int, error: dict[str, Any]) -> str:
+    """把单张图片的失败原因压成一行。"""
+    code = str(error.get("code", "")).strip()
+    message = str(error.get("message", "")).strip()
+    detail = " — ".join(part for part in (code, message) if part)
+    return f"image {index + 1}: {detail}" if detail else f"image {index + 1}: failed"
+
+
+# ---------------------------------------------------------------------------
+# 后台作业适配
+# ---------------------------------------------------------------------------
+
+
+class _EmptyStream:
+    """恒空的输出流（后台 HTTP 请求没有 stderr）。"""
+
+    def read_from(self, offset: int = 0) -> OutputDelta:
+        return OutputDelta(
+            text="",
+            next_offset=0,
+            start_offset=offset,
+            lossy=False,
+            spill_path=None,
+            truncated=False,
+        )
+
+
+class _MemoryStreams:
+    """作业注册表要的「两条流」：stdout 是真的，stderr 恒空。"""
+
+    def __init__(self, stdout: _BackgroundProcess) -> None:
+        self.stdout = stdout
+        self.stderr = _EmptyStream()
+
+    def deltas(self) -> tuple[OutputDelta, OutputDelta]:
+        return (self.stdout.read_from(0), _EmptyStream().read_from(0))
+
+
+class _BackgroundProcess:
+    """把一个 HTTP 请求伪装成「进程」，好让作业注册表与 job_output 认得它。
+
+    作业注册表与 ``job_output`` 都按「进程 + stdout/stderr 两条流」取数据；HTTP
+    请求没有进程，于是用一段内存文本冒充 stdout —— 模型轮询 ``job_output`` 时
+    读到的就是这次请求的最终结果。
+    """
+
+    def __init__(self) -> None:
+        self._text = ""
+        self._task: asyncio.Task[Any] | None = None
+        self.killed = False
+
+    def attach(self, task: asyncio.Task[Any]) -> None:
+        self._task = task
+
+    @property
+    def streams(self) -> _MemoryStreams:
+        return _MemoryStreams(self)
+
+    def write(self, text: str) -> None:
+        self._text = text
+
+    def read_from(self, offset: int = 0) -> OutputDelta:
+        data = self._text.encode("utf-8")
+        chunk = data[offset:].decode("utf-8", errors="replace")
+        return OutputDelta(
+            text=chunk,
+            next_offset=len(data),
+            start_offset=offset,
+            lossy=False,
+            spill_path=None,
+            truncated=False,
+        )
+
+    async def kill(self) -> None:
+        """中止后台请求 —— 用户在任务板上按停止，或这一轮被中断。"""
+        self.killed = True
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+
+    def watch_abort(self, signal: Any) -> asyncio.Task[None]:
+        async def _watch() -> None:
+            await signal.wait()
+            await self.kill()
+
+        return asyncio.create_task(_watch())
+
+
+def _job_registry(context: Any) -> Any:
+    """取会话的作业注册表。没有就返回 None —— 登记不了也不影响主流程。"""
+    registry = getattr(context, "shell_jobs", None)
+    if registry is not None:
+        return registry
+    try:
+        from nono_agent.jobs.board import registry_for
+    except Exception:  # pragma: no cover —— 作业板不可用不该拖垮工具
+        return None
+    session_id = str(getattr(context, "session_id", "") or "")
+    return registry_for(session_id or None)
 
 
 def _dig(payload: Any, path: str) -> Any:

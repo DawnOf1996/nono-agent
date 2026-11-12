@@ -16,8 +16,12 @@ PLUGIN_MANAGED_TOOL_FACTORIES` 里那张白名单表取工厂，清单点名不�
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+#: ``${options.<key>}`` —— 后台等待秒数允许写成模板，好让配置面板能调。
+_OPTION_TEMPLATE = re.compile(r"\$\{options\.([a-zA-Z_][A-Za-z0-9_.]*)\}")
 
 
 class ToolSpecError(ValueError):
@@ -59,6 +63,54 @@ class AuthSpec:
 
 
 @dataclass(frozen=True)
+class BackgroundSpec:
+    """后台化声明 —— 请求超过 ``wait_s`` 还没回来就转后台。
+
+    **为什么需要它**：这类请求（图像生成最长 600 秒）会把**对话那一条连接**一直
+    占着。浏览器对同一 origin 的并发连接有上限（Chromium 是 6），而应用本身
+    常驻着好几条 SSE（control / browser / stats / fs-watch…）。名额占满之后，
+    文件树这类普通请求只能排队 —— 表现就是「图片生成期间界面全卡住」。
+
+    转后台后这一轮立刻放行，连接名额还给别的请求；请求本身**不取消**（厂商那边
+    已经在生成并计费了，取消只是白花钱），而是登记成作业继续跑。
+    """
+
+    wait_s: Any = 0.0            # 数字，或 "${options.x}" 模板
+    kind: str = "task"           # 作业类型（任务板上用来选标签）
+    title: str = ""              # 作业标题
+    option_key: str = ""         # wait_s 是模板时，模板里引用的 option 键
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.wait_s)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> BackgroundSpec:
+        if not isinstance(data, dict):
+            return cls()
+        wait_s: Any = data.get("wait_s", 0.0)
+        option_key = ""
+        if isinstance(wait_s, str):
+            # 模板：留到运行时按 options 解析（配置面板的数值项是字符串）
+            wait_s = wait_s.strip()
+            match = _OPTION_TEMPLATE.fullmatch(wait_s)
+            if match is not None:
+                option_key = match.group(1)
+        else:
+            try:
+                wait_s = float(wait_s)
+            except (TypeError, ValueError):
+                wait_s = 0.0
+            wait_s = max(0.0, wait_s)
+        return cls(
+            wait_s=wait_s,
+            kind=str(data.get("kind", "task")).strip() or "task",
+            title=str(data.get("title", "")).strip(),
+            option_key=option_key,
+        )
+
+
+@dataclass(frozen=True)
 class HttpToolSpec:
     """``kind: "http_json"`` —— 一个 HTTP JSON 端点即一个工具。"""
 
@@ -79,6 +131,7 @@ class HttpToolSpec:
     defaults: dict[str, Any]     # options 的默认值
     concurrent_safe: bool
     write_side_effects: bool
+    background: BackgroundSpec = field(default_factory=BackgroundSpec)
 
     @property
     def tool_name(self) -> str:
@@ -223,6 +276,7 @@ def _parse_http(
         defaults=defaults,
         concurrent_safe=bool(data.get("is_concurrent_safe", False)),
         write_side_effects=bool(data.get("has_write_side_effects", True)),
+        background=BackgroundSpec.from_dict(data.get("background")),
     )
 
 
