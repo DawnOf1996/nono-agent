@@ -1082,6 +1082,24 @@ if (gotLock) app.whenReady().then(async () => {
     const error = await shell.openPath(target);
     return { ok: !error, error: error || undefined };
   });
+  // 「在文件夹中显示」：打开系统文件管理器并定位到目标。
+  //
+  // 文件夹直接打开它自己；文件则让资源管理器打开它所在的目录并选中它
+  // （showItemInFolder 就是这个语义）。定位不到就报错，别静悄悄地什么都不发生。
+  ipcMain.handle("show-in-folder", async (_event, target) => {
+    if (typeof target !== "string" || !target.trim()) return { ok: false, error: "缺少路径" };
+    try {
+      const stats = await fs.promises.stat(target);
+      if (stats.isDirectory()) {
+        const error = await shell.openPath(target);
+        return { ok: !error, error: error || undefined };
+      }
+      shell.showItemInFolder(target);
+      return { ok: true };
+    } catch (cause) {
+      return { ok: false, error: cause instanceof Error ? cause.message : "找不到这个路径" };
+    }
+  });
   // iframe 装不下禁止嵌入的站点，只能交给系统浏览器。渲染进程能把任意字符串递进来，
   // 所以这里只放行 http/https：file:// 与自定义协议（ms-msdt: 之类）会让 shell
   // 执行注册过的本地程序，不是「打开一个网页」该有的能力。

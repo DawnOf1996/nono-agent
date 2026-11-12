@@ -48,6 +48,7 @@ from nono_app_server.features.files.service import (
     _list_entries,
     _list_workspace_entries,
     _parent_path,
+    _resolve_existing,
     _resolve_under_root,
     _search_names,
     _windows_drives,
@@ -389,3 +390,30 @@ async def open_directory(body: OpenPathBody) -> dict[str, Any]:
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"path": str(target), "opened": True}
+
+
+@router.post("/fs/reveal")
+async def reveal_path(body: OpenPathBody) -> dict[str, Any]:
+    """在系统文件管理器里定位一个文件或文件夹。
+
+    文件夹直接打开它自己；文件则打开它所在的目录并选中它 —— 这就是资源管理器里
+    「在文件夹中显示」的语义。桌面端走 Electron 的 shell.showItemInFolder，
+    纯 web（浏览器打开本机服务）走这里。
+    """
+    target = _resolve_existing(body.path)
+    try:
+        if os.name == "nt":
+            if target.is_dir():
+                os.startfile(target)  # type: ignore[attr-defined]
+            else:
+                # explorer 的 /select 跟路径必须写在同一个参数里，拆开就不认。
+                # 它成功时退出码也是 1，所以不看返回值。
+                subprocess.Popen(["explorer", f"/select,{target}"])
+        elif sys.platform == "darwin":
+            args = ["open"] if target.is_dir() else ["open", "-R"]
+            subprocess.Popen([*args, str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target if target.is_dir() else target.parent)])
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"path": str(target), "revealed": True}

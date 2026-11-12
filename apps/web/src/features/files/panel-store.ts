@@ -110,6 +110,12 @@ type PanelState = ScopeSnapshot & {
   revision: number;
   /** 请求 Workbench 展开右侧栏的计数。 */
   revealRequest: number;
+  /**
+   * 请求文件树定位到某个文件：展开它的上级目录、选中它、打开它。
+   *
+   * nonce 每次自增 —— 同一个路径被点两次也算两次请求，不然第二次就没动静了。
+   */
+  reveal: { path: string; isDir: boolean; nonce: number } | null;
   /** 用户点开一段对话的次数。用来在工作区重置之后再决定要不要展开文件树。 */
   conversationOpen: number;
   /** 请求展开底部工作台的计数。 */
@@ -153,6 +159,8 @@ type PanelState = ScopeSnapshot & {
   setGitCount: (count: number) => void;
   setTaskCount: (count: number) => void;
   showTasks: () => void;
+  /** 在侧边文件树里定位一个文件。 */
+  revealFile: (path: string, isDir?: boolean) => void;
   openBeside: (path: string, title?: string) => void;
   clearSide: () => void;
   openBrowser: (url?: string) => string;
@@ -235,6 +243,7 @@ export const usePanelStore = create<PanelState>((set, get) => ({
   lens: "git",
   revision: 0,
   revealRequest: 0,
+  reveal: null,
   conversationOpen: 0,
   bottomRequest: 0,
   bottom: emptySplit(),
@@ -410,6 +419,14 @@ export const usePanelStore = create<PanelState>((set, get) => ({
       pins: { ...state.pins, files: true },
       sideFile: { path, title: title || baseName(path) },
       active: TREE_TAB,
+      revealRequest: state.revealRequest + 1,
+    })),
+  // 对话区里的 @引用 点一下就落到文件树里：展开它的上级目录、选中它、打开它。
+  revealFile: (path, isDir = false) =>
+    set((state) => ({
+      pins: { ...state.pins, files: true },
+      active: TREE_TAB,
+      reveal: { path, isDir, nonce: (state.reveal?.nonce ?? 0) + 1 },
       revealRequest: state.revealRequest + 1,
     })),
   clearSide: () => set({ sideFile: null }),

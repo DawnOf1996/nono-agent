@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -202,6 +203,50 @@ def test_mkdir_conflict(tmp_path: Path) -> None:
     assert resp.status_code == 409
 
 
+def test_reveal_path_locates_file_and_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """「在文件夹中显示」：文件是打开所在目录并选中它，文件夹是打开它自己。"""
+    import nono_app_server.features.files.api as filesystem
+
+    target = tmp_path / "note.md"
+    target.write_text("x", encoding="utf-8")
+    calls: list[list[str]] = []
+    opened: list[str] = []
+
+    def fake_popen(args, *rest, **kwargs):
+        calls.append(list(args))
+        return None
+
+    monkeypatch.setattr(filesystem.subprocess, "Popen", fake_popen)
+    # Windows 打开文件夹走 os.startfile，替掉它才不会真的弹出一个资源管理器窗口。
+    monkeypatch.setattr(filesystem.os, "startfile", opened.append, raising=False)
+
+    with _client(tmp_path) as client:
+        file_resp = client.post("/app/fs/reveal", json={"path": str(target)})
+        folder_resp = client.post("/app/fs/reveal", json={"path": str(tmp_path)})
+        missing = client.post("/app/fs/reveal", json={"path": str(tmp_path / "nope.md")})
+        blank = client.post("/app/fs/reveal", json={"path": "  "})
+
+    assert file_resp.status_code == 200
+    assert file_resp.json()["revealed"] is True
+    assert folder_resp.status_code == 200
+    assert missing.status_code == 404
+    assert blank.status_code == 400
+    if os.name == "nt":
+        assert calls[0][0] == "explorer"
+        # /select 跟路径必须写在同一个参数里，拆开 explorer 就不认。
+        assert calls[0][1] == f"/select,{target}"
+        assert opened == [tmp_path]
+    elif sys.platform == "darwin":
+        assert calls[0][:2] == ["open", "-R"]
+        assert calls[1][:2] == ["open"]
+    else:
+        assert calls[0][0] == "xdg-open"
+        assert calls[0][1] == str(target.parent)
+        assert calls[1][1] == str(tmp_path)
+
+
 def _symlink(link: Path, target: Path, *, directory: bool) -> None:
     try:
         link.symlink_to(target, target_is_directory=directory)
@@ -318,6 +363,11 @@ async def test_watch_reports_directory_change(
     chunks = response.body_iterator
     assert await anext(chunks) == ": ok\n\n"
     (root / "created.txt").write_text("hi", encoding="utf-8")
+    # 目录的 mtime 只在系统时钟走到下一个刻度时才变，而建文件和取指纹只隔着
+    # 几微秒 —— 落在同一个刻度里的话，这个测试就会一直等不到变化而超时。
+    # 显式把 mtime 往前拨一点，让「目录项变了」这件事变成确定的事实。
+    stat = root.stat()
+    os.utime(root, (stat.st_atime, stat.st_mtime + 2))
     change = await anext(chunks)
     await chunks.aclose()
     assert "event: change" in change

@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld("nonoDesktop", {
   version: appVersion(),
   selectWorkspace: () => ipcRenderer.invoke("select-workspace"),
   openPath: (target) => ipcRenderer.invoke("open-path", target),
+  // 「在文件夹中显示」：打开系统文件管理器并定位到目标。
+  showInFolder: (target) => ipcRenderer.invoke("show-in-folder", target),
   openExternal: (target) => ipcRenderer.invoke("open-external", target),
   // 截内部浏览器当前可见区域，回 base64 PNG。像素只在主进程手里拿得到，
   // 纯 web 下没有这个桥。

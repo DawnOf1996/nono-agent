@@ -3,6 +3,7 @@ import {
   AtSign,
   ChevronRight,
   Copy,
+  ExternalLink,
   File,
   FileText,
   Folder,
@@ -19,11 +20,13 @@ import {
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import { fetchWorkspaceEntries, searchWorkspaceFiles, uploadWorkspaceFiles } from "@/api/client";
+import { fetchWorkspaceEntries, revealInFolder, searchWorkspaceFiles, uploadWorkspaceFiles } from "@/api/client";
 import { usePanelStore } from "@/features/files/panel-store";
 import { useDirectoryWatch } from "@/features/files/use-dir-watch";
 import { getSidebarPrefs, subscribeSidebarPrefs } from "@/features/settings/sidebar-prefs";
-import { joinWorkspace, mentionToken, normalizeWorkspace, parentPath, relativeTo, sameWorkspace, workspaceLabel } from "@/lib/workspace";
+import { writeClipboardText } from "@/lib/clipboard";
+import { toast } from "@/lib/toast";
+import { baseName, joinWorkspace, mentionToken, normalizeWorkspace, parentPath, relativeTo, sameWorkspace, workspaceLabel } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
 
 function fileIcon(name: string) {
@@ -133,6 +136,7 @@ function DirectoryList({
             <div
               role="button"
               tabIndex={0}
+              data-path={entry.path}
               className={cn(
                 "group flex w-full min-w-0 items-center gap-1 rounded-lg py-1.5 pr-1 text-left text-[13px]",
                 entry.broken ? "text-danger" : entry.hidden ? "text-faint" : "text-ink/80",
@@ -174,18 +178,6 @@ function DirectoryList({
               )}
               <span className={cn("min-w-0 flex-1 truncate", entry.broken && "line-through")}>{entry.name}</span>
               {entry.is_symlink ? <Link2 className="size-3 shrink-0 text-faint" aria-label="软链接" /> : null}
-              <button
-                type="button"
-                className="flex size-5 shrink-0 items-center justify-center rounded text-faint opacity-0 hover:bg-bg hover:text-ink group-hover:opacity-100"
-                title="引用到输入框"
-                aria-label={`引用 ${entry.name}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  window.dispatchEvent(new CustomEvent("nono-insert-input", { detail: mentionToken(root, entry.path) }));
-                }}
-              >
-                <AtSign className="size-3" />
-              </button>
             </div>
             {entry.is_dir && open && !entry.broken ? (
               <DirectoryList
@@ -225,32 +217,68 @@ function EntryMenu({
   onOpenBeside: (entry: FsEntry) => void;
 }) {
   const file = !menu.entry.is_dir && !menu.entry.broken;
+  const menuRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
-    function close() {
+    // 点在菜单外面才收起。之前用的是「菜单上拦掉 pointerdown」，结果连点外面
+    // 都收不起来 —— 事件在菜单这层就被拦住了，window 上的监听根本收不到。
+    function onPointer(event: PointerEvent) {
+      if (menuRef.current?.contains(event.target as Node)) return;
       onClose();
     }
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") onClose();
     }
-    window.addEventListener("pointerdown", close);
+    window.addEventListener("pointerdown", onPointer);
     window.addEventListener("keydown", onKey);
-    window.addEventListener("blur", close);
+    window.addEventListener("blur", onClose);
     return () => {
-      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("pointerdown", onPointer);
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("blur", close);
+      window.removeEventListener("blur", onClose);
     };
   }, [onClose]);
 
+  async function reveal() {
+    onClose();
+    try {
+      await revealInFolder(menu.entry.path);
+    } catch (cause) {
+      toast(`无法在文件夹中显示：${cause instanceof Error ? cause.message : String(cause)}`, {
+        duration: 5000,
+      });
+    }
+  }
+
+  async function copyPath() {
+    onClose();
+    try {
+      await writeClipboardText(menu.entry.path);
+      toast("路径已复制");
+    } catch (cause) {
+      toast(`复制失败：${cause instanceof Error ? cause.message : String(cause)}`, { duration: 5000 });
+    }
+  }
+
+  function quote() {
+    onClose();
+    // 插入由输入框那边完成，提示也由它给 —— 输入框不在场时不该有一条“已插入”。
+    window.dispatchEvent(
+      new CustomEvent("nono-insert-input", {
+        detail: mentionToken(root, menu.entry.path, menu.entry.is_dir),
+      }),
+    );
+  }
+
   const left = Math.min(menu.x, window.innerWidth - 180);
-  const top = Math.min(menu.y, window.innerHeight - 160);
+  const top = Math.min(menu.y, window.innerHeight - 200);
 
   return createPortal(
     <div
+      ref={menuRef}
       role="menu"
       className="fixed z-50 min-w-[168px] rounded-lg border border-line bg-bg py-1 text-[13px] shadow-lg"
       style={{ left, top }}
-      onPointerDown={(event) => event.stopPropagation()}
     >
       {file ? (
         <>
@@ -259,17 +287,12 @@ function EntryMenu({
         </>
       ) : null}
       <MenuItem
-        label="复制路径"
-        icon={<Copy className="size-3.5" />}
-        onClick={() => void navigator.clipboard.writeText(menu.entry.path)}
+        label="在文件夹中显示"
+        icon={<ExternalLink className="size-3.5" />}
+        onClick={() => void reveal()}
       />
-      <MenuItem
-        label="引用到输入框"
-        icon={<AtSign className="size-3.5" />}
-        onClick={() =>
-          window.dispatchEvent(new CustomEvent("nono-insert-input", { detail: mentionToken(root, menu.entry.path) }))
-        }
-      />
+      <MenuItem label="复制路径" icon={<Copy className="size-3.5" />} onClick={() => void copyPath()} />
+      <MenuItem label="引用到输入框" icon={<AtSign className="size-3.5" />} onClick={quote} />
     </div>,
     document.body,
   );
@@ -317,9 +340,54 @@ export function FileTree({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  /** 对话区里点 @引用 带来的定位请求。 */
+  const revealTarget = usePanelStore((state) => state.reveal);
   const needle = query.trim();
   const watched = useMemo(() => [root, ...expanded], [root, expanded]);
   const previewRefresh = useRef<number | null>(null);
+
+  // 对话区里点了某个 @引用：展开它的上级目录，把它打开，顺便滚到它那一行。
+  //
+  // 目录本身没有预览页，所以目录只展开；文件才打开预览。
+  //
+  // 依赖里只有 reveal.nonce：onOpenFile 是调用方每次渲染新建的函数，
+  // 放进依赖会让这个效果每渲染一次就重跑一遍（展开 → 打开 → 再展开）。
+  const openFileRef = useRef(onOpenFile);
+  openFileRef.current = onOpenFile;
+  useEffect(() => {
+    if (!revealTarget) return;
+    const target = revealTarget.path;
+    const rootKey = pathKey(root);
+    const targetKey = pathKey(target);
+    if (targetKey !== rootKey && !targetKey.startsWith(`${rootKey}\\`)) return;
+    setExpanded((current) => {
+      const chain = new Set(current);
+      if (revealTarget.isDir) chain.add(target);
+      let cursor = parentPath(target);
+      while (cursor && pathKey(cursor).startsWith(`${rootKey}\\`)) {
+        chain.add(cursor);
+        const parent = parentPath(cursor);
+        if (!parent || parent === cursor) break;
+        cursor = parent;
+      }
+      return chain;
+    });
+    if (!revealTarget.isDir) {
+      openFileRef.current({ name: baseName(target), path: target, is_dir: false });
+    }
+    // 行是异步加载出来的，滚过去要等几拍。
+    let tries = 0;
+    const scroll = () => {
+      const node = scrollerRef.current?.querySelector(`[data-path="${CSS.escape(target)}"]`);
+      if (node) {
+        node.scrollIntoView({ block: "nearest" });
+        return;
+      }
+      if (tries++ < 12) window.setTimeout(scroll, 80);
+    };
+    scroll();
+  }, [revealTarget?.nonce, root]);
 
   useDirectoryWatch(root, watched, (dir) => {
     const key = pathKey(dir);
@@ -479,7 +547,7 @@ export function FileTree({
         {workspaceLabel(root)}
       </div>
       {uploadError ? <p className="px-3 pb-1 text-[12px] text-danger">{uploadError}</p> : null}
-      <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-3">
+      <div ref={scrollerRef} className="min-h-0 flex-1 overflow-auto px-1.5 pb-3">
         {needle ? (
           <SearchResults
             root={root}

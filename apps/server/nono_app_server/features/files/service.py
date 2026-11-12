@@ -73,6 +73,28 @@ def _resolve_under_root(root_raw: str, path_raw: str | None) -> tuple[Path, Path
     return root, target
 
 
+def _resolve_existing(raw: str) -> Path:
+    """把路径解析到磁盘上真实存在的文件或文件夹。
+
+    和 _resolve_dir 的区别：那个只认目录，而这个文件、文件夹都要 —— 「在文件夹中
+    显示」既可能指向一个文件，也可能指向一个文件夹。
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="缺少路径")
+    try:
+        target = Path(text).expanduser()
+        if not target.is_absolute():
+            target = (Path.home() / target).resolve()
+        else:
+            target = target.resolve()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="路径无效") from exc
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="找不到这个路径")
+    return target
+
+
 def _list_workspace_entries(root: Path, directory: Path) -> tuple[list[dict[str, Any]], bool]:
     """列出一层。软链接按目标类型展示，失效链接保留并标 broken，不因指向区外而隐藏。"""
     try:
