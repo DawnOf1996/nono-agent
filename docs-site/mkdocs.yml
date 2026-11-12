@@ -143,6 +143,7 @@ nav:
       - 架构总览: architecture/nono-agent-architecture.md
       - 会话事件溯源: architecture/session-observability.md
       - 会话事件目录: architecture/session-event-catalog.md
+      - 会话切换下的流式输出: architecture/session-switch-streaming.html
       - 记忆系统: architecture/memory-system.md
       - 上下文压缩: architecture/context-compression.md
       - 图片资产管线: architecture/asset-pipeline.md
