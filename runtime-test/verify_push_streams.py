@@ -1,8 +1,17 @@
 """起一个真的 uvicorn，验证「不再轮询」：客户端不主动请求，服务端一变就推。
 
 浏览器端的 ``setInterval`` 都已经拿掉了，这段脚本盯住剩下的问题 ——
-改完之后，数据到底还来不来？做法是**只读那条 SSE，绝不再发一次查询请求**：
+改完之后，数据到底还来不来？做法是**只读那条流，绝不再发一次查询请求**：
 连上、拿到当前值，然后在磁盘上动一下，等服务端自己把新状态推过来。
+
+注意两条流的承载方式不一样了：
+
+- **控制流**走 WebSocket（``/app/control/ws``）—— 常驻长连接改走 WS，落到浏览器
+  独立的 socket pool，不再抢同一 origin 的 HTTP/1.1 名额（Chromium 每 host
+  只有 6 条）。
+- **git 流**仍是 SSE（``/app/git/stream``）—— 它按需开，不是常驻。
+
+帧的写法两者一样（``event: x`` / ``data: {...}``），换的只是承载它的连接。
 
 跑法：``python runtime-test/verify_push_streams.py``。
 """
@@ -18,6 +27,7 @@ import time
 from pathlib import Path
 
 import httpx
+import websockets
 
 HOST = "127.0.0.1"
 PORT = 8791
@@ -69,17 +79,27 @@ def check(label: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
-async def verify_control(client: httpx.AsyncClient) -> bool:
-    async with client.stream("GET", f"{BASE}/app/control/stream") as resp:
-        if not check(
-            "控制流是 SSE",
-            resp.headers.get("content-type", "").startswith("text/event-stream"),
-            resp.headers.get("content-type", ""),
-        ):
-            return False
-        frames = sse_frames(resp)
-        health_event, health_raw = await next_frame(frames)
-        perms_event, perms_raw = await next_frame(frames)
+def parse_frame(text: str) -> tuple[str, str]:
+    """拆一帧（WebSocket 文本帧 / SSE 帧的写法一样）。"""
+    event = ""
+    data: list[str] = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].strip())
+    return event, "\n".join(data)
+
+
+async def verify_control() -> bool:
+    """控制流走 WebSocket —— 常驻连接不占 HTTP/1.1 的名额。"""
+    async with websockets.connect(f"ws://{HOST}:{PORT}/app/control/ws") as socket:
+        health_event, health_raw = parse_frame(
+            await asyncio.wait_for(socket.recv(), timeout=20)
+        )
+        perms_event, perms_raw = parse_frame(
+            await asyncio.wait_for(socket.recv(), timeout=20)
+        )
         if not check(
             "控制流连上即得两帧",
             [health_event, perms_event] == ["health", "permissions"],
@@ -163,7 +183,7 @@ async def main() -> int:
 
         ok = True
         async with httpx.AsyncClient(timeout=None) as client:
-            ok = await verify_control(client) and ok
+            ok = await verify_control() and ok
             ok = await verify_git_push(client, work) and ok
         print("\n" + ("全部通过：前端不再轮询，数据由服务端推过来。" if ok else "有检查没过。"))
         return 0 if ok else 1

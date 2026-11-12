@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
-from fastapi import Request
+from typing import cast
+
+from fastapi import Request, WebSocket
 
 from nono_agent.commands import CommandRegistry
 from nono_app_server.engine.session_manager import SessionManager
 
 
 def get_session_manager(request: Request) -> SessionManager:
-    return request.app.state.engine_sessions
+    return cast(SessionManager, request.app.state.engine_sessions)
+
+
+def get_session_manager_ws(websocket: WebSocket) -> SessionManager:
+    """WebSocket 路由专用的取法。
+
+    WebSocket 作用域里**没有** ``Request`` —— FastAPI 不会给 WS 路由注入它，
+    写 ``Depends(get_session_manager)`` 会在握手时报「缺参数」。只能从
+    ``websocket.app.state`` 自己取。
+    """
+    return cast(SessionManager, websocket.app.state.engine_sessions)
 
 
 def get_command_registry(request: Request) -> CommandRegistry:
-    return request.app.state.command_registry
+    return cast(CommandRegistry, request.app.state.command_registry)

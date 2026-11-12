@@ -37,7 +37,7 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 | 子 Agent 三件套 | 可用需打磨 | AgentTool + Definition + run；§2.8 |
 | 权限模式 / Rule / denial / Hooks / Slash | 可用需打磨 | §2.6–§2.7 |
 | 会话持久化（`TranscriptWriter`） | 事件溯源 | 落盘只有 `SessionEvent`；默认本地文件（新会话为 zstd 压缩的 `.jsonl.zst`），另有 SQLite；请求前一致性门禁默认开启；DB/Redis 等后端见 Roadmap |
-| CLI / Server（`apps/`） | 可用需打磨 | Server 目前仅 SSE（WebSocket 为规划能力）；含鉴权/TTL/AskUser 回调与会话事件流通道 |
+| CLI / Server（`apps/`） | 可用需打磨 | Server 以 SSE 为主，**常驻的 control / browser 流走 WebSocket**（浏览器对同 origin 的 HTTP/1.1 连接只有 6 条）；含鉴权/TTL/AskUser 回调与会话事件流通道 |
 | 可观测性 | 可用 | TokenTracker + structlog + Metrics（内存实现，事件流自动投影为指标）；脱敏导出与回放已具备 |
 
 ---
@@ -49,7 +49,7 @@ Nono Agent 是一个 Python AI Agent 引擎，灵感来源于 Claude Code 的 Ty
 引擎只暴露一个**流式入口** —— `submit_message()`，返回 `AsyncGenerator[SDKMessage]`。会话治理类方法（`resume_session` / `fork_session` / `compact` / `clear_session` / `abort` / `session_stats`）另见 §5。CLI 适配器和服务端适配器消费同一个生成器，区别仅在于交付方式：
 
 - **CLI**：本地 `async for` 消费，Rich 直接渲染到终端
-- **Server**：通过 SSE 推送给远程 Web 客户端（WebSocket 为规划能力，见 Roadmap）
+- **Server**：通过 SSE 推送给远程 Web 客户端；**常驻的两条流（control / browser）改走 WebSocket** —— 浏览器对同一 origin 的 HTTP/1.1 并发连接有上限（Chromium 写死 6 条），常驻流占满名额后普通请求只能排队。帧格式不变，换的只是承载它的连接。
 
 ```
                     ┌──────────────┐

@@ -35,6 +35,7 @@ import type {
 } from "@nono/protocol";
 
 import { parseSse } from "@/api/sse";
+import { openEventSocket, sidecarWsUrl } from "@/api/ws";
 
 function errorMessage(text: string, fallback: string): string {
   try {
@@ -546,10 +547,13 @@ export type ControlHealth = { status: string; sessions: number };
 /**
  * 订阅全局控制流：服务端的健康与待授权请求。
  *
- * 连接时先各推一帧，之后只在变化时推，客户端不必轮询。断线后由这里自己重连，
+ * 连接时先各推一帧，之后只在变化时推，客户端不必轮询。断线后由通道自己重连，
  * ``onOpen``/``onClose`` 报的是「这一条连接」的状态：每次重连成功再开一次。
+ *
+ * 走 WebSocket 而不是 SSE：常驻连接占着浏览器同一 origin 的 HTTP/1.1 名额
+ * （Chromium 每 host 只有 6 条），普通请求会排队。见 ``api/ws.ts``。
  */
-export async function watchControl(
+export function watchControl(
   signal: AbortSignal,
   handlers: {
     onHealth: (health: ControlHealth) => void;
@@ -557,17 +561,14 @@ export async function watchControl(
     onOpen?: () => void;
     onClose?: () => void;
   },
-): Promise<void> {
-  while (!signal.aborted) {
-    try {
-      const response = await fetch("/app/control/stream", {
-        headers: { Accept: "text/event-stream" },
-        signal,
-      });
-      if (!response.ok || !response.body) throw new Error("控制流连接失败");
-      handlers.onOpen?.();
-      for await (const frame of parseSse(response)) {
-        if (!frame.data) continue;
+): void {
+  openEventSocket(
+    sidecarWsUrl("/app/control/ws"),
+    {
+      onOpen: handlers.onOpen,
+      onClose: handlers.onClose,
+      onFrame: (frame) => {
+        if (!frame.data) return;
         if (frame.event === "health") {
           const health = readFrame<ControlHealth>(frame.data);
           if (health) handlers.onHealth(health);
@@ -576,14 +577,10 @@ export async function watchControl(
           const payload = readFrame<{ permissions?: PermissionRequest[] }>(frame.data);
           if (payload) handlers.onPermissions(payload.permissions ?? []);
         }
-      }
-    } catch {
-      // 断线（含 abort）都走下面的重连
-    }
-    handlers.onClose?.();
-    if (signal.aborted) return;
-    await reconnectDelay();
-  }
+      },
+    },
+    signal,
+  );
 }
 
 export type BrowserCommand = {
@@ -621,37 +618,33 @@ export async function sendBrowserReply(body: BrowserReplyBody): Promise<{ ok: bo
 /**
  * 订阅引擎下发给内置浏览器的命令。
  *
- * 连上这条流本身就是一个信号：说明桌面端在场，引擎的 browser_* 工具才可用。
+ * 连上这条连接本身就是一个信号：说明桌面端在场，引擎的 browser_* 工具才可用。
  * web 版不连，于是工具会在几百毫秒内给出明确提示而不是干等超时。
+ *
+ * 走 WebSocket 而不是 SSE：常驻连接占着浏览器同一 origin 的 HTTP/1.1 名额
+ * （Chromium 每 host 只有 6 条）。见 ``api/ws.ts``。
  */
-export async function watchBrowser(
+export function watchBrowser(
   signal: AbortSignal,
   handlers: {
     onCommand: (command: BrowserCommand) => void | Promise<void>;
     onOpen?: () => void;
     onClose?: () => void;
   },
-): Promise<void> {
-  while (!signal.aborted) {
-    try {
-      const response = await fetch("/app/browser/stream", {
-        headers: { Accept: "text/event-stream" },
-        signal,
-      });
-      if (!response.ok || !response.body) throw new Error("浏览器通道连接失败");
-      handlers.onOpen?.();
-      for await (const frame of parseSse(response)) {
-        if (!frame.data || frame.event !== "command") continue;
+): void {
+  openEventSocket(
+    sidecarWsUrl("/app/browser/ws"),
+    {
+      onOpen: handlers.onOpen,
+      onClose: handlers.onClose,
+      onFrame: (frame) => {
+        if (!frame.data || frame.event !== "command") return;
         const command = readFrame<BrowserCommand>(frame.data);
-        if (command) await handlers.onCommand(command);
-      }
-    } catch {
-      // 断线（含 abort）都走下面的重连
-    }
-    handlers.onClose?.();
-    if (signal.aborted) return;
-    await reconnectDelay();
-  }
+        if (command) return handlers.onCommand(command);
+      },
+    },
+    signal,
+  );
 }
 
 export async function fetchDirectory(path?: string | null): Promise<FsListing> {
@@ -1023,6 +1016,27 @@ export async function openWorkspaceFolder(path: string): Promise<void> {
   }
   await readJson(
     await fetch("/app/fs/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  );
+}
+
+/**
+ * 在本机资源管理器里定位一个文件或文件夹。
+ *
+ * 桌面端走 preload 桥（shell.showItemInFolder），浏览器里退回服务端同名的接口 ——
+ * 两条路做的事一样：在文件管理器里打开它所在的目录并选中它。
+ */
+export async function revealInFolder(path: string): Promise<void> {
+  if (window.nonoDesktop?.showInFolder) {
+    const result = await window.nonoDesktop.showInFolder(path);
+    if (!result.ok) throw new Error(result.error || "无法在文件夹中显示");
+    return;
+  }
+  await readJson(
+    await fetch("/app/fs/reveal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path }),

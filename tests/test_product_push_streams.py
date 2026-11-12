@@ -13,12 +13,13 @@ import pytest
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 
 from starlette.requests import Request  # noqa: E402
+from starlette.testclient import TestClient  # noqa: E402
 
 from nono_agent.core.config import EngineConfig  # noqa: E402
 from nono_app_server.common.gitcmd import path_identity  # noqa: E402
 from nono_app_server.config import SidecarSettings  # noqa: E402
 from nono_app_server.engine import create_server_app  # noqa: E402
-from nono_app_server.features.control.api import control_stream  # noqa: E402
+from nono_app_server.features.control.api import control_events  # noqa: E402
 from nono_app_server.features.git import service as git_module  # noqa: E402
 from nono_app_server.features.git.api import stream_git  # noqa: E402
 from nono_app_server.features.git.service import workspace_signature  # noqa: E402
@@ -106,7 +107,7 @@ def _clear_pending() -> None:
 
 
 @pytest.fixture
-def manager(tmp_path: Path):
+def server_app(tmp_path: Path):
     app = create_server_app(EngineConfig(cwd=str(tmp_path)))
     mount_product_routes(
         app,
@@ -122,7 +123,12 @@ def manager(tmp_path: Path):
         db_path=tmp_path / "app.db",
         import_engine_index=False,
     )
-    return app.state.engine_sessions
+    return app
+
+
+@pytest.fixture
+def manager(server_app):
+    return server_app.state.engine_sessions
 
 
 # ── 控制通道 ───────────────────────────────────────────────────────────
@@ -130,8 +136,7 @@ def manager(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_control_stream_opens_with_current_values(manager) -> None:
-    response = await control_stream(_request("/app/control/stream"), manager)
-    chunks = response.body_iterator
+    chunks = control_events(manager)
     try:
         first = _frames(await anext(chunks))
         assert first == [("health", json.dumps({"status": "ok", "sessions": 0}))]
@@ -145,8 +150,7 @@ async def test_control_stream_opens_with_current_values(manager) -> None:
 @pytest.mark.asyncio
 async def test_control_stream_pushes_permission_without_polling(manager) -> None:
     """挂起一条授权后应当立刻收到一帧 —— 客户端没有发起任何请求。"""
-    response = await control_stream(_request("/app/control/stream"), manager)
-    chunks = response.body_iterator
+    chunks = control_events(manager)
     try:
         await anext(chunks)  # health
         assert _frames(await anext(chunks))[0][0] == "permissions"
@@ -168,8 +172,7 @@ async def test_control_stream_pushes_permission_without_polling(manager) -> None
 
 @pytest.mark.asyncio
 async def test_control_stream_pushes_empty_list_after_answer(manager) -> None:
-    response = await control_stream(_request("/app/control/stream"), manager)
-    chunks = response.body_iterator
+    chunks = control_events(manager)
     try:
         await anext(chunks)
         await anext(chunks)
@@ -183,6 +186,57 @@ async def test_control_stream_pushes_empty_list_after_answer(manager) -> None:
         assert json.loads(cleared[0][1]) == {"permissions": []}
     finally:
         await chunks.aclose()
+
+
+# ── WebSocket 端点 ────────────────────────────────────────────────────
+#
+# 常驻流改走 WebSocket 之后，帧的形状必须一模一样 —— 换的只是承载它的连接。
+# 这两个测试就是钉住这件事的。
+
+
+def test_control_ws_opens_with_current_values(server_app) -> None:
+    with TestClient(server_app) as client:
+        with client.websocket_connect("/app/control/ws") as socket:
+            first = _frames(socket.receive_text())
+            assert first == [("health", json.dumps({"status": "ok", "sessions": 0}))]
+            second = _frames(socket.receive_text())
+            assert second[0][0] == "permissions"
+            assert json.loads(second[0][1]) == {"permissions": []}
+
+
+def test_browser_ws_announces_ready(server_app) -> None:
+    """浏览器通道连上先补一帧 ready —— 连接本身就是「桌面端在场」的信号。"""
+    with TestClient(server_app) as client:
+        with client.websocket_connect("/app/browser/ws") as socket:
+            opening = _frames(socket.receive_text())
+            assert opening == [("ready", json.dumps({"ok": True}))]
+
+
+def test_control_ws_pushes_permission(server_app) -> None:
+    """挂起一条授权后应当立刻收到一帧 —— 客户端没有发起任何请求。"""
+
+    def spawn() -> None:
+        # 授权请求要挂在**应用那条事件循环**上：它 await 的是一个 future，
+        # 而 future 属于创建它时的那条循环。
+        asyncio.get_running_loop().create_task(
+            permissions.request_permission("s1", "edit_file", {"p": 1})
+        )
+
+    with TestClient(server_app) as client:
+        with client.websocket_connect("/app/control/ws") as socket:
+            socket.receive_text()  # health
+            socket.receive_text()  # permissions
+
+            client.portal.call(spawn)
+
+            pushed = _frames(socket.receive_text())
+            assert pushed[0][0] == "permissions"
+            payload = json.loads(pushed[0][1])["permissions"]
+            assert [item["tool_name"] for item in payload] == ["edit_file"]
+            assert payload[0]["session_id"] == "s1"
+
+            # 回执也得在同一条循环上回答：future.set_result 不是线程安全的。
+            client.portal.call(permissions.answer_permission, payload[0]["request_id"], True)
 
 
 # ── git 推送流 ─────────────────────────────────────────────────────────

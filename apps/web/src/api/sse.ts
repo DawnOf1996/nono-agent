@@ -33,6 +33,28 @@ export async function* parseSse(response: Response): AsyncGenerator<SseFrame> {
   }
 }
 
+/**
+ * 解析**一整块**文本里的 SSE 帧。
+ *
+ * WebSocket 文本帧已经把消息边界定死了，但服务端仍按 SSE 的写法发帧
+ * （``event: x\ndata: {...}\n\n``）—— 帧格式没变，换的只是承载它的连接。
+ * 所以这里复用同一套解析规则，只是把「流式切块」换成「整块切帧」。
+ */
+export function parseSseText(raw: string): SseFrame[] {
+  const frames: SseFrame[] = [];
+  let rest = raw.replace(/\r\n/g, "\n");
+  let split = rest.indexOf("\n\n");
+  while (split >= 0) {
+    frames.push(parseFrame(rest.slice(0, split)));
+    rest = rest.slice(split + 2);
+    split = rest.indexOf("\n\n");
+  }
+  if (rest.trim()) {
+    frames.push(parseFrame(rest));
+  }
+  return frames;
+}
+
 function parseFrame(raw: string): SseFrame {
   let event = "message";
   const data: string[] = [];

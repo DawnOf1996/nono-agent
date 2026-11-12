@@ -14,6 +14,7 @@ import { createPortal } from "react-dom";
 import "@xterm/xterm/css/xterm.css";
 
 import { fetchTerminalShells, startTerminal, stopTerminal, type TerminalShell } from "@/api/client";
+import { sidecarWsUrl } from "@/api/ws";
 import { usePanelStore } from "@/features/files/panel-store";
 import { getSidebarPrefs, subscribeSidebarPrefs } from "@/features/settings/sidebar-prefs";
 import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
@@ -21,17 +22,7 @@ import { useResolvedTheme } from "@/lib/theme";
 import { useChatStore } from "@/store/chat";
 
 function terminalWsUrl(id: string): string {
-  let base = window.location.origin;
-  if (import.meta.env.DEV) {
-    try {
-      base = __NONO_SIDECAR_HTTP__;
-    } catch {
-      base = "http://127.0.0.1:8000";
-    }
-  }
-  const url = new URL(`/app/terminal/${id}/ws`, base);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
+  return sidecarWsUrl(`/app/terminal/${id}/ws`);
 }
 
 /**

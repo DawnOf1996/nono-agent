@@ -6,6 +6,11 @@ type NonoDesktop = {
   version?: string;
   selectWorkspace?: () => Promise<string | null>;
   openPath?: (target: string) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * 打开系统文件管理器并定位到目标：文件是「打开所在目录并选中」，文件夹是「打开它自己」。
+   * 纯 web 下没有这个桥，退回服务端的 /app/fs/reveal。
+   */
+  showInFolder?: (target: string) => Promise<{ ok: boolean; error?: string }>;
   /** 交给系统默认浏览器打开。iframe 装不下禁止嵌入的站点时用。 */
   openExternal?: (target: string) => Promise<{ ok: boolean; error?: string }>;
   /**

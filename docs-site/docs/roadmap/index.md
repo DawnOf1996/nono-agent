@@ -42,7 +42,7 @@ title: Nono Agent —— 后续规划 Roadmap
 | Agent Teams / Coordinator                       | 未开始   | **P2 / 可选**；见 §6                                  |
 | Bridge / Remote / Cron                          | 未开始   | **默认非目标**；见 §6                                    |
 | CLI 适配器                                         | 可用需打磨 | REPL / resume / 流式渲染可用                            |
-| Server 适配器（SSE）                                 | 可用需打磨 | 多会话 + SSE + 鉴权 + TTL + AskUser 回调 + 事件流通道；无 WebSocket |
+| Server 适配器（SSE + WebSocket）                      | 可用需打磨 | 多会话 + SSE + 鉴权 + TTL + AskUser 回调 + 事件流通道；常驻的 control / browser 流已改走 WebSocket |
 | 会话持久化（事件流 Transcript）                          | 可用需打磨 | 事件溯源 + 请求前一致性门禁 + 脱敏/回放；JSONL(zstd) + SQLite；缺 Redis/Postgres |
 | TokenTracker / 日志 / 指标                          | 可用需打磨 | 内存 counter/histogram/gauge + 标签约定 + 事件流投影；structlog 未绑关联键 |
 | 文档 / README                                     | 进行中   | 本文档与 README 对齐中                                   |
@@ -351,7 +351,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 | 项                        | 现状    | 计划                 |
 | ------------------------ | ----- | ------------------ |
 | Responses Provider             | 已实现   | 待真实 API 验证 |
-| Server WebSocket         | 仅 SSE | 按需                 |
+| Server WebSocket         | 已用于常驻流（control / browser）；其余按需 | 按需                 |
 | Metrics                  | 可用需打磨 | 内存 counter/histogram/gauge + 标签约定 + 事件流投影；无持久化后端 |
 | ContextCollapse 默认启用     | 可配置   | `context_collapse_enabled` 开关 |
 | `json_schema` 闭环         | 可用需打磨 | response_format + structured_output 解析；深度 schema 校验待做 |
@@ -503,7 +503,7 @@ Protocol：`MemoryStore` / `CheckpointStore`。
 ### Phase 3 —— 多 Agent 与服务化（P1）
 
 1. [x] **子 Agent 三件套**（AgentTool + Definition + run）+ Worktree 工具
-2. [x] Server：鉴权、会话治理（TTL）、AskUser 回调/SSE（WebSocket 按需待做）
+2. [x] Server：鉴权、会话治理（TTL）、AskUser 回调/SSE；常驻流已改走 WebSocket（其余 WebSocket 化按需待做）
 3. [ ] Transcript 生产后端；Plugin/Slash 管理 API
 4. [x] ~~`responses_compatible`~~（后移除；结构化输出已可用需打磨，深度 schema 校验待做）
 5. [x] SDK 契约含 `permission_denials`
