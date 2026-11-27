@@ -1,0 +1,47 @@
+{
+  "name": "tavily",
+  "version": "0.1.0",
+  "description": "Tavily 网页搜索与正文抽取（官方 MCP server 的内置预设）。",
+  "config": {
+    "api_key": {
+      "label": "Tavily API Key",
+      "hint": "在 app.tavily.com 创建，保存在本机凭据文件里，不会写进项目配置。",
+      "placeholder": "tvly-..."
+    },
+    "fields": [
+      {
+        "key": "server.transport",
+        "label": "连接方式",
+        "type": "enum",
+        "hint": "http 直连官方远程服务；stdio 需要本机有 Node.js。",
+        "choices": [
+          { "value": "http", "label": "远程 HTTP（推荐）" },
+          { "value": "stdio", "label": "本地 npx" }
+        ]
+      }
+    ]
+  },
+  "mcp": {
+    "tavily": {
+      "type": "http",
+      "url": "https://mcp.tavily.com/mcp/"
+    }
+  },
+  "tools": {
+    "search": {
+      "kind": "mcp",
+      "server": "tavily",
+      "description": "Tavily web search and page extraction, bridged as MCP tools.",
+      "allowed_tools": ["tavily_search", "tavily_extract"],
+      "auth": {
+        "type": "bearer",
+        "api_key_env": "NONO_TAVILY_API_KEY"
+      },
+      "defaults": {
+        "server": {
+          "transport": "http"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,186 @@
+# 打 Windows 安装包。两条路，同一套构建：
+#
+#   合并进 main / 提 PR  → 只打包，产物作为 Actions artifact 存着，不发 Release。
+#                          用途是「这次合并还能不能打出能用的安装包」，不影响任何用户。
+#   打 tag v*            → 打包 + 发成 GitHub Release，装机用户的「检查更新」靠它。
+#
+# 为什么不并进 ci.yml：CI 挂在每个 push 和 PR 上，而打包要十几分钟（PyInstaller 冻
+# sidecar 约 5~10 分钟，electron-builder 打 NSIS 约 3~5 分钟）。
+#
+# 为什么「合并」和「发版」要分开：自动更新是拿本地版本号和 latest.yml 里的版本比，
+# 谁大才提示。每一次合并都发一条 Release，等于每次合并都给所有已安装的用户弹一次
+# 更新，版本号也会一天涨二十个（semver 也就没意义了）。发版是一个决定，不是一次合并。
+#
+# 发版动作:
+#   git tag v0.3.1
+#   git push origin v0.3.1
+# tag 就是版本号，会被写进 apps/desktop/package.json 后再打包，装机后
+# window.nonoDesktop.version 和自动更新比较用的都是它。
+#
+# 版本号一旦切到 tag 方案就别退回时间戳方案。你现在发出去的本地包是
+# 0.2.2026101022 这种格式，以后发 0.3.0 能正常提示更新（0.3.0 > 0.2.2026101022）；
+# 但反过来发 0.2.5 会被老用户判成「不需要更新」而静默跳过 —— 这种坑不会报错。
+name: Build & Release
+
+on:
+  push:
+    # 合并进 main 就自动打包（只出产物，不发 Release）。
+    branches:
+      - "main"
+    # 打 tag 才发 Release。tag 优先于 branch 判断：打 tag 时 github.ref 是 refs/tags/*。
+    tags:
+      - "v*"
+  # PR 上也打一遍，早点发现「代码合并前桌面端已经打不出来了」。嫌慢可以删掉这段，
+  # 删掉后首次发现构建坏会推迟到合并之后。
+  pull_request:
+    branches:
+      - "main"
+  # 手动重跑，不受上面任何触发条件限制。
+  workflow_dispatch:
+
+# 发 Release 要往仓库里写。默认的只读权限不够，electron-builder 会在最后一步失败。
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    # 必须是 Windows：sidecar 是 PyInstaller 冻出来的 Windows 可执行文件，
+    # NSIS 也只能在 Windows 上打。Linux runner 跑出来的包在 Windows 上装不了。
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    # runner 默认代码页是 cp1252，Python 的 stdout 会跟着用它，于是 print 一个
+    # 中文字面量就抛 UnicodeEncodeError（本地中文系统是 cp936，所以只有 CI 炸）。
+    # 打开 UTF-8 模式（PEP 540），Python 全程按 UTF-8 处理 —— 包括 PyInstaller
+    # 派生的子进程。scripts/build_sidecar.py 里也自己做了一次 stdout 重配，
+    # 那是给本地在非中文 Windows 上跑的人兜底，两边不互相依赖。
+    env:
+      PYTHONUTF8: "1"
+
+    steps:
+      # fetch-depth: 0 —— 浅克隆看不到 git tag。发版本身走 GITHUB_REF_NAME，不受影响；
+      # 但单独重跑某一步、或在 runner 上排查时还要靠 git tag，浅克隆会让这些判断
+      # 悄悄走进兜底分支。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 显式钉版本。仓库里没有 packageManager 字段，不钉的话 action-setup 会用它
+      # 自己的默认值，可能和 apps/pnpm-lock.yaml（lockfileVersion 9.0）对不上，
+      # 表现是 --frozen-lockfile 报「lockfile 与 package.json 不一致」。
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/pnpm-lock.yaml
+
+      # 和 ci.yml 保持一致，Python 依赖走 uv。
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装前端依赖
+        working-directory: apps
+        run: pnpm install --frozen-lockfile
+
+      # 合并进 main / PR：只打包。版本号走 pack-desktop 的时间戳方案（x.y.yyyyMMddHH），
+      # 反正不会发出去，没有比较的对象。不给 -Publish，也就不需要 GH_TOKEN。
+      - name: 打包（不发布）
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        shell: pwsh
+        run: .\scripts\pack-desktop.cmd
+
+      # 打 tag：按 tag 里的版本号打包。ref_name 就是 tag 名（v0.3.1），
+      # pack-desktop 会剥掉 v 前缀写进 package.json。
+      # 这一步故意不带 -Publish：它要跑十几分钟，PyInstaller 的输出早把日志
+      # 撑爆被 GitHub 截断，发版的事挤在里面等于什么都看不见。发布交给下一步。
+      - name: 打包（按 tag 版本号）
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        shell: pwsh
+        run: .\scripts\pack-desktop.cmd -Version "${{ github.ref_name }}"
+
+      # 自动更新只认 latest.yml。它没生成，客户端就永远查不到新版，
+      # 而且全程不会有人报错 —— 只能等到用户投诉才发现。这种坏法必须在这里拦。
+      # 放在发布之前：本地产物不齐就别去建 Release，省得又留一条半成品在那儿。
+      - name: 校验更新所需产物齐全
+        shell: pwsh
+        run: |
+          $out = "apps\desktop\release"
+          $need = @("*.exe", "*.exe.blockmap", "latest.yml")
+          $missing = @()
+          foreach ($pattern in $need) {
+            if (-not (Get-ChildItem -Path $out -Filter $pattern -ErrorAction SilentlyContinue)) {
+              $missing += $pattern
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error "本地产物缺少: $($missing -join ', ')。latest.yml 没了自动更新就是哑的。"
+            exit 1
+          }
+          Get-ChildItem $out -File | Select-Object Name, Length | Format-Table -AutoSize
+
+      # 发版单独一步，日志只有几行。失败时能一眼看出是 gh 哪条命令挂在哪，
+      # 不用去十几分钟的打包日志里翻。
+      - name: 发布 GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        env:
+          # gh CLI 认 GH_TOKEN。GITHUB_TOKEN 是仓库自动带的令牌，不需要另外配 secret。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: .\scripts\pack-desktop.cmd -PublishOnly
+
+      # 只打包的那些跑次，把安装包留成 Actions artifact，方便直接下载试装。
+      # 这是「合并后能拿到包」这件事的落点，不是发版 —— 发版仍然只认 tag。
+      - name: 上传安装包供下载
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoNo-setup-${{ github.run_number }}
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+          retention-days: 14
+
+      # 上一条只证明了「发布命令跑完了」，这一条才证明「东西真的在 GitHub 上了」——
+      # 上传有可能被静默跳过（比如令牌权限不够）。用 gh CLI 直接问 GitHub。
+      - name: 确认 Release 资产已上传
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        # 这步要用 gh CLI 问 GitHub，令牌得单独再挂一次 —— env 是按 step 生效的，
+        # 不会从上面「打包并发布 Release」那步继承过来。少了它 gh 直接拒跑。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          # 必须是已发布状态。draft 对匿名用户不存在，releases/latest/download/latest.yml
+          # 直接 404，而 electron-builder 建完 draft 后并不会再发一次 —— 这个坑不会
+          # 抛错，只会安静地把自动更新废掉，所以在这里显式断言。
+          $draft = gh release view $tag --json isDraft --jq '.isDraft'
+          if ($draft -eq "true") {
+            Write-Error "Release $tag 还是 draft，匿名用户拉不到，自动更新会 404。发版走的是 gh release create，检查它有没有被带上了 --draft。"
+            exit 1
+          }
+          $raw = gh release view $tag --json assets --jq '.assets[].name'
+          # gh 输出是换行分隔的一列，先摊成数组再做精确匹配。
+          # 不能用 -match：PowerShell 的 -match 默认不是多行模式，^latest\.yml$
+          # 匹配不到夹在中间的「latest.yml」这一行。
+          $assets = @($raw -split "`r?`n" | Where-Object { $_ })
+          if ($assets.Count -eq 0) {
+            Write-Error "Release $tag 没有任何资产，说明 --publish 没生效。"
+            exit 1
+          }
+          Write-Output "Release $tag 的资产:"
+          $assets | ForEach-Object { "  $_" }
+          if ($assets -notcontains 'latest.yml') {
+            Write-Error "Release 上没有 latest.yml，客户端将无法发现更新。"
+            exit 1
+          }

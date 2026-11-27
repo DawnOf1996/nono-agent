@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -80,7 +80,7 @@ def get_logger(name: str = "nono_agent") -> structlog.stdlib.BoundLogger:
         logger = get_logger("engine")
         logger.info("query_started", model="claude-sonnet-4-20250514", turn=1)
     """
-    return structlog.get_logger(name)
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))
 
 
 # ---------------------------------------------------------------------------

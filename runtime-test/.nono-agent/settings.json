@@ -1,0 +1,16 @@
+{
+  "mcp": {
+    "enabled": true,
+    "servers": {
+      "calculator": {
+        "enabled": true,
+        "disabledTools": [
+          "divide"
+        ]
+      },
+      "username": {
+        "enabled": true
+      }
+    }
+  }
+}

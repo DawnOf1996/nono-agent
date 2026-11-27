@@ -13,12 +13,17 @@ dependencies = [
     "anthropic>=0.39",
     "openai>=1.50",
     "structlog>=24.0",
-    "typer>=0.12",
-    "rich>=13.0",
-    "fastapi>=0.115",
-    "uvicorn>=0.32",
-    "sse-starlette>=2.0",
     "aiofiles>=24.0",
+    "pyyaml>=6.0",
+    "zstandard>=0.23",
+    "mcp>=2.0,<3",
+    # 上下文占用的 token 估算。缺了会退回 len//4，对工具 JSON schema 低估 ~40%，
+    # 面板上的「上下文已用」会明显偏小。见 nono_agent/utils/tokens.py。
+    "tiktoken>=0.7",
+    # HTML → Markdown 转换。Rust 核心 + Python 绑定（cp310-abi3 平台 wheel，
+    # 零 Python 依赖）：网页动辄几百 KB，纯 Python 解析太慢。
+    # 见 nono_agent/utils/html_to_markdown.py。
+    "html-to-markdown>=3.19",
 ]
 
 [project.optional-dependencies]
@@ -28,22 +33,51 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.8",
     "mypy>=1.13",
+    "types-PyYAML>=6.0",
+    "nono-app-cli",
+    "nono-app-server",
+]
+
+[tool.uv.sources]
+nono-app-cli = { path = "apps/cli", editable = true }
+nono-app-server = { path = "apps/server", editable = true }
+
+# 文档站：docs-site/mkdocs.yml
+#   uv sync --extra dev --group docs
+#   uv run mkdocs serve -f docs-site/mkdocs.yml
+# 注意 --extra dev 不能省：uv sync 是精确同步，只同步 docs 会把 pytest/ruff/mypy 卸掉。
+# 预览端口是 8001（mkdocs.yml 的 dev_addr），避开 sidecar 的 8000。
+[dependency-groups]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocs-glightbox>=0.4",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+# 显式列出包目录：toolplugins 的 plugin.json 随包分发，漏掉它内置工具
+# 在安装后就整体失效（开发态从源码树跑是发现不了的）。
+packages = ["nono_agent"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["apps/server", "apps/cli"]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# 打包产物（PyInstaller 收进来的第三方库）不是本仓源码，不参与 lint
+extend-exclude = ["apps/desktop/release", "apps/desktop/resources"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nono_agent", "nono_app_cli", "nono_app_server", "tests"]
 
 [tool.mypy]
 python_version = "3.11"

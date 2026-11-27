@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 import uuid as _uuid
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -90,29 +90,33 @@ class RedactedThinkingBlock(BaseModel):
 
 
 # 所有内容块的联合类型 —— 一个 AssistantMessage 的 content 字段就是 list[ContentBlock]
-ContentBlock = Union[
-    TextBlock,
-    ToolUseBlock,
-    ToolResultContentBlock,
-    ThinkingBlock,
-    RedactedThinkingBlock,
-]
+ContentBlock = (
+    TextBlock
+    | ToolUseBlock
+    | ToolResultContentBlock
+    | ThinkingBlock
+    | RedactedThinkingBlock
+)
 
 
 # ---------------------------------------------------------------------------
 # Usage — Token 用量统计
 # ---------------------------------------------------------------------------
-# 每次 API 响应都会返回 usage 信息，引擎通过 CostTracker 累积统计。
+# 每次 API 响应都会返回 usage 信息，引擎通过 TokenTracker 累积统计。
 
 
 class Usage(BaseModel):
     """Token 用量计数器 —— 跟踪每次 API 调用的四类 token 消耗。
 
-    四类 token：
-    - input_tokens: 普通输入 token
+    四类 token 为**互不重叠**的四桶（全 provider 统一口径，对齐 Anthropic）：
+    - input_tokens: 未命中缓存的「新鲜」输入 token（普通输入）
     - output_tokens: 输出 token（最贵）
     - cache_read_input_tokens: 命中 prompt cache 的 token（最便宜）
     - cache_creation_input_tokens: 创建 prompt cache 的 token（略贵于普通输入）
+
+    注意：OpenAI 系（Chat Completions / Responses）原生上报的
+    ``prompt_tokens`` / ``input_tokens`` 是「含缓存的总输入」，Provider 层已换算为
+    ``input_tokens = 总输入 - cached``、``cache_read = cached``，保证四桶语义一致。
     """
 
     input_tokens: int = 0
@@ -183,7 +187,8 @@ class AssistantMessage(BaseModel):
     type: Literal["assistant"] = "assistant"
     uuid: str = Field(default_factory=_new_uuid)
     timestamp: float = Field(default_factory=_now_ms)
-    message: dict[str, Any]  # {"role": "assistant", "content": [...], "usage": {...}, "stop_reason": ...}
+    # {"role": "assistant", "content": [...], "usage": {...}, "stop_reason": ...}
+    message: dict[str, Any]
     api_error: str | None = None            # API 调用出错时的错误信息
     is_api_error_message: bool = False      # 是否是 API 错误重试时生成的占位消息
 
@@ -199,15 +204,23 @@ class SystemMessage(BaseModel):
     """
 
     type: Literal["system"] = "system"
-    subtype: str = ""  # 消息子类型: "compact_boundary", "api_error", "api_retry", "tool_result", "loop_terminal" 等
+    # 消息子类型: "compact_boundary", "api_error", "api_retry",
+    # "tool_result", "loop_terminal" 等
+    subtype: str = ""
     uuid: str = Field(default_factory=_new_uuid)
     timestamp: float = Field(default_factory=_now_ms)
     content: str = ""                          # 消息文本内容
-    compact_metadata: dict[str, Any] | None = None  # 压缩操作的元数据（原始消息数、节省 token 数等）
+    # 压缩操作的元数据（原始消息数、节省 token 数等）
+    compact_metadata: dict[str, Any] | None = None
     retry_attempt: int | None = None           # API 重试当前次数
     max_retries: int | None = None             # API 最大重试次数
     retry_in_ms: int | None = None             # 重试等待时间
     error: dict[str, Any] | None = None        # 错误详情
+    # subtype="tool_result" 时带上这次调用的结果，客户端（对话 UI）据此把
+    # 结果挂到正在跑的那次工具调用上，不必等整轮结束再回放事件流。
+    tool_use_id: str | None = None
+    tool_result: str | None = None
+    tool_is_error: bool = False
 
 
 class AttachmentMessage(BaseModel):
@@ -228,22 +241,43 @@ class ProgressMessage(BaseModel):
     content: str = ""
 
 
+class UIToolResultMessage(BaseModel):
+    """工具结果给 UI 的附件 —— 只走事件流，绝不进模型上下文。
+
+    工具把结构化结果（现在是文件的前后差异）放在 ``ToolResult.ui`` 里，loop 在
+    工具跑完后 yield 本消息，引擎据此落一条 ``ignorable`` 事件并推给客户端。
+
+    为什么不塞进 ToolResult.content：那份内容是要喂给模型的，多一行就是多一份
+    token；而行号只有客户端需要。本消息既不入 store（不进上下文），
+    ``message_to_derived`` 也不认它（不参与重建），所以对模型完全不可见。
+    """
+
+    type: Literal["ui_tool_result"] = "ui_tool_result"
+    uuid: str = Field(default_factory=_new_uuid)
+    timestamp: float = Field(default_factory=_now_ms)
+    tool_use_id: str = ""
+    tool_name: str = ""
+    ui: dict[str, Any] = Field(default_factory=dict)
+
+
 # 所有内部消息类型的联合类型 —— agentic loop 操作的消息都是 Message
 # 通过 type 字段判别具体类型，避免 isinstance 链
-Message = Union[
-    UserMessage,
-    AssistantMessage,
-    SystemMessage,
-    AttachmentMessage,
-    ProgressMessage,
-]
+Message = (
+    UserMessage
+    | AssistantMessage
+    | SystemMessage
+    | AttachmentMessage
+    | ProgressMessage
+    | UIToolResultMessage
+)
 
 
 # ---------------------------------------------------------------------------
 # Stream Events — 流式事件序列
 # ---------------------------------------------------------------------------
 # LLM 流式响应期间产生的事件序列，遵循 Anthropic 的 SSE 事件协议：
-#   message_start -> [content_block_start -> delta* -> content_block_stop]* -> message_delta -> message_stop
+#   message_start -> [content_block_start -> delta* -> content_block_stop]*
+#   -> message_delta -> message_stop
 # 引擎将这些事件透传给 CLI/Server 适配器，实现实时流式输出。
 
 
@@ -267,7 +301,9 @@ class ContentBlockDeltaEvent(BaseModel):
 
     type: Literal["content_block_delta"] = "content_block_delta"
     index: int                  # 对应内容块索引
-    delta: dict[str, Any]       # 增量内容: {"type": "text_delta", "text": "..."} 或 {"type": "input_json_delta", ...}
+    # 增量内容: {"type": "text_delta", "text": "..."} 或
+    # {"type": "input_json_delta", ...}
+    delta: dict[str, Any]
 
 
 class ContentBlockStopEvent(BaseModel):
@@ -292,14 +328,14 @@ class MessageStopEvent(BaseModel):
 
 
 # 所有流式事件的联合类型
-StreamEvent = Union[
-    MessageStartEvent,
-    ContentBlockStartEvent,
-    ContentBlockDeltaEvent,
-    ContentBlockStopEvent,
-    MessageDeltaEvent,
-    MessageStopEvent,
-]
+StreamEvent = (
+    MessageStartEvent
+    | ContentBlockStartEvent
+    | ContentBlockDeltaEvent
+    | ContentBlockStopEvent
+    | MessageDeltaEvent
+    | MessageStopEvent
+)
 
 
 class RequestStartEvent(BaseModel):
@@ -324,6 +360,15 @@ class ToolResult(BaseModel):
     content: str | list[dict[str, Any]]
     is_error: bool = False
     tool_name: str = ""
+    # 只给客户端 UI 的结构化附件，**不进 content**，所以永远不会进模型上下文。
+    # 目前只有文件工具用：整文件的前后差异（真实行号），对话里的 diff 卡片靠它渲染。
+    ui: dict[str, Any] | None = None
+    # 给**模型**看的图片。与 ``ui`` 相反：它会进上下文。
+    #
+    # 为什么不塞进 content：OpenAI 的 tool role 与 Responses 的
+    # function_call_output 只收字符串，图片塞进去三家就不通用了。引擎会把
+    # 这里的图片块单独作为一条 user 消息发出 —— 那是三家都认的形状。
+    images: list[dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +448,9 @@ class SDKSystemMessage(BaseModel):
     """SDK 协议格式的系统消息 —— 通知客户端会话状态变化。"""
 
     type: Literal["system"] = "system"
-    subtype: str  # 子类型: "init"(会话初始化), "compact_boundary"(压缩边界), "api_retry"(重试通知), "request_start"
+    # 子类型: "init"(会话初始化), "compact_boundary"(压缩边界),
+    # "api_retry"(重试通知), "request_start"
+    subtype: str
     session_id: str
     uuid: str = Field(default_factory=_new_uuid)
     # 以下字段根据 subtype 可选填充
@@ -414,6 +461,21 @@ class SDKSystemMessage(BaseModel):
     error_status: int | None = None
     error: str | None = None
     content: str | None = None  # 系统消息内容（如 tool_result 完成通知）
+    # subtype="tool_result" 时的工具结果三件套（见 SystemMessage 同名字段）
+    tool_use_id: str | None = None
+    tool_result: str | None = None
+    tool_is_error: bool = False
+
+
+class SDKUIToolResultMessage(BaseModel):
+    """SDK 协议格式的 UI 附件消息 —— 工具结果给界面的结构化数据。"""
+
+    type: Literal["ui_tool_result"] = "ui_tool_result"
+    session_id: str
+    uuid: str = Field(default_factory=_new_uuid)
+    tool_use_id: str = ""
+    tool_name: str = ""
+    ui: dict[str, Any] = Field(default_factory=dict)
 
 
 class SDKToolUseSummary(BaseModel):
@@ -429,12 +491,14 @@ class SDKToolUseSummary(BaseModel):
 class SDKResultMessage(BaseModel):
     """SDK 协议格式的最终结果消息 —— 每轮 submit_message() 的最后一条消息。
 
-    包含完整的统计信息：耗时、轮数、成本、token 用量、错误列表。
+    包含完整的统计信息：耗时、轮数、token 用量、错误列表。
     客户端收到此消息即知本轮对话已完成。
     """
 
     type: Literal["result"] = "result"
-    subtype: str  # "success" | "error_max_turns" | "error_max_budget_usd" | "error_during_execution" 等
+    # "success" | "error_max_turns" | "error_task_budget_exhausted" |
+    # "error_during_execution" 等
+    subtype: str
     is_error: bool = False             # 是否为错误结束
     duration_ms: float = 0             # 总耗时（毫秒）
     duration_api_ms: float = 0         # API 调用耗时（毫秒，不含工具执行时间）
@@ -442,9 +506,10 @@ class SDKResultMessage(BaseModel):
     result: str = ""                   # 最终结果文本（从最后一条 assistant 消息提取）
     stop_reason: str | None = None     # 循环终止原因
     session_id: str = ""               # 所属会话 ID
-    total_cost_usd: float = 0          # 本轮累计美元费用
     usage: Usage = Field(default_factory=Usage)         # 累计 token 用量
     model_usage: dict[str, Any] = Field(default_factory=dict)  # 按模型分项的用量统计
+    # 当前上下文用量分析快照（analyze_context_usage 口径：总量/占比 + system/tools/messages 分项）
+    context_usage: dict[str, Any] | None = None
     permission_denials: list[dict[str, Any]] = Field(default_factory=list)  # 权限拒绝记录
     errors: list[str] = Field(default_factory=list)     # 错误信息列表
     structured_output: Any | None = None                # JSON Schema 结构化输出（如配置了）
@@ -452,14 +517,15 @@ class SDKResultMessage(BaseModel):
 
 
 # SDK 协议消息联合类型 —— QueryEngine.submit_message() 的返回类型
-SDKMessage = Union[
-    SDKAssistantMessage,
-    SDKUserMessageReplay,
-    SDKStreamEventMessage,
-    SDKSystemMessage,
-    SDKToolUseSummary,
-    SDKResultMessage,
-]
+SDKMessage = (
+    SDKAssistantMessage
+    | SDKUserMessageReplay
+    | SDKStreamEventMessage
+    | SDKSystemMessage
+    | SDKToolUseSummary
+    | SDKUIToolResultMessage
+    | SDKResultMessage
+)
 
 
 # ---------------------------------------------------------------------------
@@ -469,10 +535,10 @@ SDKMessage = Union[
 # QueryEngine 接收 InternalMessage 后通过 _to_sdk_messages() 转换为 SDKMessage。
 # 包含：普通消息、Tombstone、工具摘要、流式事件、请求开始信号。
 
-InternalMessage = Union[
-    Message,
-    TombstoneMessage,
-    ToolUseSummaryMessage,
-    StreamEvent,
-    RequestStartEvent,
-]
+InternalMessage = (
+    Message
+    | TombstoneMessage
+    | ToolUseSummaryMessage
+    | StreamEvent
+    | RequestStartEvent
+)

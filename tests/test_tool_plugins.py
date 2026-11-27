@@ -1,0 +1,1684 @@
+"""Tests for the toolplugins package (declarative tool plugins)."""
+
+from __future__ import annotations
+
+import asyncio
+import base64 as b64
+import json
+import re
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import httpx
+import pytest
+
+import nono_agent.toolplugins
+from nono_agent import paths as paths_module
+from nono_agent.plugins.manifest import load_manifest
+from nono_agent.providers.catalog import lookup_api_key, save_credential
+from nono_agent.settings.models import Settings
+from nono_agent.settings.sources import load_settings
+from nono_agent.shell.jobs import JobRegistry
+from nono_agent.toolplugins.config_schema import (
+    ConfigSchemaError,
+    get_option,
+    parse_config_schema,
+    set_option,
+)
+from nono_agent.toolplugins.http_json import (
+    HttpJsonTool,
+    _sniff_image_mime,
+    _sniff_suffix,
+    build_client,
+)
+from nono_agent.toolplugins.policy import resolve_tool_policy
+from nono_agent.toolplugins.registry import clear_plugin_dirs, registered_plugin_dirs
+from nono_agent.toolplugins.runtime import (
+    ToolPluginRuntime,
+    api_key_env_for,
+    builtin_plugin_dirs,
+    discover_plugins,
+    option_defaults,
+    start_tool_plugin_runtime,
+)
+from nono_agent.toolplugins.spec import ToolSpecError, parse_tool_specs
+from nono_agent.toolplugins.template import MISSING, TemplateError, render
+from nono_agent.tools.context import ToolUseContext
+from nono_app_server.features.toolplugins import register_builtin_plugins
+from nono_app_server.features.toolplugins.schemas import ToolPluginApiKey, ToolPluginUpsert
+from nono_app_server.features.toolplugins.service import (
+    apply_upsert,
+    public_tool_plugins,
+    save_api_key,
+)
+
+_ENV_KEY = "NONO_TOOLPLUGIN_TEST_KEY"
+_FAKE_PNG = b"\x89PNG\r\n\x1a\nfake"
+
+
+@pytest.fixture(autouse=True)
+def _product_plugins_registered():
+    """产品包的内置插件挂进引擎发现链 —— 与真实启动时 ``create_app()`` 做的一致。
+
+    引擎自己不提供插件，所以这里必须显式注册；漏了就会看到空目录。
+    """
+    register_builtin_plugins()
+    yield
+    clear_plugin_dirs()
+
+
+def _settings(values: dict[str, Any]) -> Settings:
+    return load_settings(".", user_settings=values, project_settings={})
+
+
+def _spec_dict(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "kind": "http_json",
+        "prefix": "demo",
+        "description": "demo tool",
+        "input_schema": {
+            "type": "object",
+            "properties": {"prompt": {"type": "string"}},
+            "required": ["prompt"],
+        },
+        "auth": {"type": "bearer", "api_key_env": _ENV_KEY},
+        "defaults": {"model": "image-01", "base_url": "https://example.com"},
+        "url": "${options.base_url}/v1/image_generation",
+        "headers": {"Content-Type": "application/json"},
+        "body": {
+            "model": "${options.model}",
+            "prompt": "${args.prompt}",
+            "n": "${args.n}",
+        },
+        "timeout_s": 5,
+        "result": {"kind": "text"},
+    }
+    base.update(overrides)
+    return base
+
+
+def _tool(client_factory: Any = None, **overrides: Any) -> HttpJsonTool:
+    spec = parse_tool_specs("demo", {"generate": _spec_dict(**overrides)})[0]
+    return HttpJsonTool(
+        spec, {}, "secret-key", client_factory=client_factory
+    )  # type: ignore[arg-type]
+
+
+def _stub_factory(handler: Any) -> Any:
+    """返回 httpx.MockTransport 支撑的客户端工厂（测试里替掉真实网络）。"""
+
+    def factory(timeout_s: float) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    return factory
+
+
+def _image_payload() -> dict[str, Any]:
+    return {
+        "data": {"image_base64": [b64.b64encode(_FAKE_PNG).decode()]},
+        "base_resp": {"status_code": 0},
+    }
+
+
+class TestTemplate:
+    def test_whole_string_preserves_type(self):
+        assert render("${args.n}", {"n": 3}, {}) == 3
+        assert render("${args.flag}", {"flag": True}, {}) is True
+
+    def test_missing_arg_drops_field(self):
+        body = render({"model": "${args.model}", "n": "${args.n}"}, {}, {})
+        assert body == {}  # 两个引用都缺 → 两个字段都消失，不送 null
+
+    def test_partial_substitution(self):
+        rendered = render("${options.base_url}/v1", {}, {"base_url": "https://a"})
+        assert rendered == "https://a/v1"
+
+    def test_partial_with_missing_drops_whole_string(self):
+        assert render("${options.b}/v1", {}, {}) is MISSING
+
+    def test_unknown_namespace_rejected(self):
+        with pytest.raises(TemplateError):
+            render("${env.SECRET}", {}, {})
+
+    def test_list_drops_missing_items(self):
+        assert render(["${args.a}", "static", "${args.b}"], {"a": "x"}, {}) == ["x", "static"]
+
+
+class TestSpec:
+    def test_http_tool_name(self):
+        spec = parse_tool_specs("demo", {"generate": _spec_dict()})[0]
+        assert spec.tool_name == "demo__generate"
+
+    def test_unknown_kind_rejected(self):
+        with pytest.raises(ToolSpecError):
+            parse_tool_specs("demo", {"generate": {"kind": "python"}})
+
+    def test_missing_url_rejected(self):
+        payload = _spec_dict()
+        del payload["url"]
+        with pytest.raises(ToolSpecError):
+            parse_tool_specs("demo", {"generate": payload})
+
+    def test_mcp_spec_requires_server(self):
+        with pytest.raises(ToolSpecError):
+            parse_tool_specs("demo", {"search": {"kind": "mcp"}})
+
+    def test_builtin_spec_requires_tool_name(self):
+        with pytest.raises(ToolSpecError):
+            parse_tool_specs("demo", {"open": {"kind": "builtin"}})
+
+    def test_builtin_spec_keeps_tool_name_verbatim(self):
+        """kind=builtin 不加前缀 —— 名字就是引擎里那个真工具的名字。
+
+        加了前缀的话工具名会在两边对不上：清单说 browser_open，装配出来却叫
+        browser_agent__open，权限策略按名字匹配就永远匹配不到。
+        """
+        spec = parse_tool_specs("demo", {"open": {"kind": "builtin", "tool": "browser_open"}})[0]
+        assert spec.tool_name == "browser_open"
+        assert spec.api_key_env == ""
+
+
+class TestPolicy:
+    def test_undeclared_is_disabled(self):
+        policy = resolve_tool_policy(_settings({}), "minimax-image")
+        assert policy.enabled is False
+
+    def test_enabled_with_options(self):
+        settings = _settings(
+            {"tools": {"minimax-image": {"enabled": True, "options": {"model": "x"}}}}
+        )
+        policy = resolve_tool_policy(settings, "minimax-image")
+        assert policy.enabled is True
+        assert policy.options == {"model": "x"}
+
+    def test_default_api_key_env_survives_missing_block(self):
+        policy = resolve_tool_policy(_settings({}), "minimax-image", default_api_key_env="E")
+        assert policy.api_key_env == "E"
+
+
+class TestHttpJsonTool:
+    async def test_optional_args_are_omitted_from_body(self):
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True})
+
+        tool = _tool(client_factory=_stub_factory(handler))
+        result = await tool.execute({"prompt": "a cat"}, ToolUseContext(cwd="."))
+        assert result.is_error is False
+        assert seen == {"model": "image-01", "prompt": "a cat"}
+
+    async def test_bearer_header_injected(self):
+        seen: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(request.headers)
+            return httpx.Response(200, json={})
+
+        tool = _tool(client_factory=_stub_factory(handler))
+        await tool.execute({"prompt": "x"}, ToolUseContext(cwd="."))
+        assert seen["authorization"] == "Bearer secret-key"
+
+    async def test_missing_required_arg_fails_closed(self):
+        tool = _tool()
+        result = await tool.execute({}, ToolUseContext(cwd="."))
+        assert result.is_error is True
+        assert "prompt" in result.content
+
+    async def test_missing_api_key_gives_actionable_error(self):
+        spec = parse_tool_specs("demo", {"generate": _spec_dict()})[0]
+        tool = HttpJsonTool(spec, {}, "")  # type: ignore[arg-type]
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd="."))
+        assert result.is_error is True
+        assert _ENV_KEY in result.content
+
+    async def test_api_key_never_echoed_on_error(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text="boom secret-key")
+
+        tool = _tool(client_factory=_stub_factory(handler))
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd="."))
+        assert result.is_error is True
+        assert "secret-key" not in result.content
+        assert "***" in result.content
+
+    async def test_api_error_code_translated(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"base_resp": {"status_code": 1004, "status_msg": "auth failed"}},
+            )
+
+        tool = _tool(client_factory=_stub_factory(handler))
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd="."))
+        assert result.is_error is True
+        assert "API key" in result.content
+
+    async def test_image_result_written_to_disk(self, tmp_path):
+        tool = _tool(
+            client_factory=_stub_factory(
+                lambda request: httpx.Response(200, json=_image_payload())
+            ),
+            result={
+                "kind": "save_images",
+                "base64_path": "data.image_base64",
+                "dir": ".nono-agent/images",
+            },
+        )
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd=str(tmp_path)))
+        assert result.is_error is False
+        saved = sorted((tmp_path / ".nono-agent" / "images").glob("*.png"))
+        assert len(saved) == 1
+        assert saved[0].read_bytes() == _FAKE_PNG
+        assert result.ui is not None and result.ui["kind"] == "image"
+
+    async def test_base64_suffix_follows_magic_not_png_default(self, tmp_path):
+        """厂商回 JPEG 时不能落一个装着 JPEG 字节的 .png。
+
+        早期版本无条件用 .png，于是这类文件再作为参考图传回去时，扩展名
+        和内容各说各话。
+        """
+        jpeg = b"\xff\xd8\xff\xe0" + b"fake-jpeg"
+        tool = _tool(
+            client_factory=_stub_factory(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "data": {"image_base64": [b64.b64encode(jpeg).decode()]},
+                        "base_resp": {"status_code": 0},
+                    },
+                )
+            ),
+            result={
+                "kind": "save_images",
+                "base64_path": "data.image_base64",
+                "dir": ".nono-agent/images",
+            },
+        )
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd=str(tmp_path)))
+        assert result.is_error is False
+        out = tmp_path / ".nono-agent" / "images"
+        assert not list(out.glob("*.png"))  # 没有冒充 PNG 的文件
+        saved = list(out.glob("*.jpg"))
+        assert len(saved) == 1 and saved[0].read_bytes() == jpeg
+
+    @pytest.mark.parametrize(
+        ("data", "suffix"),
+        [
+            (b"\x89PNG\r\n\x1a\n", ".png"),
+            (b"\xff\xd8\xff\xe0", ".jpg"),
+            (b"GIF89a", ".gif"),
+            (b"RIFF\x00\x00\x00\x00WEBPVP8 ", ".webp"),
+            (b"not an image at all", ".png"),  # 认不出就退回，行为同 _guess_suffix
+        ],
+    )
+    def test_sniff_suffix(self, data, suffix):
+        assert _sniff_suffix(data) == suffix
+
+    def test_input_mapper_accepts_only_vendor_supported_formats(self):
+        """入参侧按厂商收件标准拒收：H3-Image 收 JPG/PNG/WEBP/HEIC。"""
+        assert _sniff_image_mime(b"\x89PNG\r\n\x1a\n") == "image/png"
+        assert _sniff_image_mime(b"\xff\xd8\xff\xe0") == "image/jpeg"
+        assert _sniff_image_mime(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp"
+        assert _sniff_image_mime(b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00") == (
+            "image/heic"
+        )
+        # GIF 不在收件范围内
+        assert _sniff_image_mime(b"GIF89a") is None
+        assert _sniff_image_mime(b"nope") is None
+
+    async def test_image_url_result_downloaded(self, tmp_path, monkeypatch):
+        # cdn.example.com 解析不出来，SSRF 闸门（fail-closed）会挡下它；
+        # 这里只测「拿到 URL 之后确实下载落盘」，闸门本身另有一条用例。
+        monkeypatch.setattr(
+            "nono_agent.toolplugins.http_json.is_url_blocked", lambda *a, **k: False
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith(".png"):
+                return httpx.Response(
+                    200, content=_FAKE_PNG, headers={"content-type": "image/png"}
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "data": {"image_urls": ["https://cdn.example.com/a.png"]},
+                    "base_resp": {"status_code": 0},
+                },
+            )
+
+        tool = _tool(
+            client_factory=_stub_factory(handler),
+            result={"kind": "save_images", "urls_path": "data.image_urls"},
+        )
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd=str(tmp_path)))
+        assert result.is_error is False
+        assert len(list((tmp_path / ".nono-agent" / "images").glob("*.png"))) == 1
+
+    async def test_ssrf_guard_blocks_unreachable_host(self, tmp_path):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "data": {"image_urls": ["https://internal.invalid/a.png"]},
+                    "base_resp": {"status_code": 0},
+                },
+            )
+
+        tool = _tool(
+            client_factory=_stub_factory(handler),
+            result={"kind": "save_images", "urls_path": "data.image_urls"},
+        )
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd=str(tmp_path)))
+        assert result.is_error is True
+        assert "SSRF" in result.content
+
+    async def test_ssrf_guard_blocks_base_url_override(self, monkeypatch):
+        """options 可以改 base_url —— 因此每次请求都要重新过闸门。"""
+        monkeypatch.setattr(
+            "nono_agent.toolplugins.http_json.is_url_blocked", lambda *a, **k: True
+        )
+        called = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal called
+            called = True
+            return httpx.Response(200, json={})
+
+        tool = _tool(client_factory=_stub_factory(handler))
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd="."))
+        assert result.is_error is True
+        assert "SSRF" in result.content
+        assert called is False  # 闸门在前，网络层根本没被触达
+
+    async def test_sandbox_rejects_output_dir(self):
+        class _DenySandbox:
+            def validate(self, path: str) -> Path:
+                raise PermissionError("escapes workspace")
+
+        tool = _tool(
+            client_factory=_stub_factory(
+                lambda request: httpx.Response(200, json=_image_payload())
+            ),
+            result={"kind": "save_images", "base64_path": "data.image_base64"},
+        )
+        ctx = ToolUseContext(cwd=".", sandbox=_DenySandbox())  # type: ignore[arg-type]
+        result = await tool.execute({"prompt": "x"}, ctx)
+        assert result.is_error is True
+
+    def test_fail_closed_defaults(self):
+        spec = parse_tool_specs("demo", {"generate": _spec_dict()})[0]
+        tool = HttpJsonTool(spec, {})  # type: ignore[arg-type]
+        assert tool.is_concurrent_safe is False
+        assert tool.has_write_side_effects is True
+
+
+class TestImageInputMapper:
+    """图生图：本地路径 → data URL。"""
+
+    @staticmethod
+    def _i2i_tool(handler: Any, **overrides: Any) -> HttpJsonTool:
+        spec_dict = _spec_dict(
+            **{
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"prompt": {}, "reference_images": {}},
+                    "required": ["prompt", "reference_images"],
+                },
+                "body": {
+                    "model": "${options.model}",
+                    "subject_reference": "${args.reference_images}",
+                },
+                "inputs": {
+                    "kind": "image_data_urls",
+                    "arg": "reference_images",
+                    "type_arg": "subject_type",
+                    "max_count": 1,
+                },
+                "result": {"kind": "save_images", "base64_path": "data.image_base64"},
+                **overrides,
+            }
+        )
+        spec = parse_tool_specs("demo", {"edit": spec_dict})[0]
+        return HttpJsonTool(spec, {}, "k", client_factory=_stub_factory(handler))
+
+    async def test_local_file_becomes_data_url(self, tmp_path):
+        ref = tmp_path / "portrait.png"
+        ref.write_bytes(_FAKE_PNG)
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_image_payload())
+
+        tool = self._i2i_tool(handler)
+        result = await tool.execute(
+            {"prompt": "in a garden", "reference_images": ["portrait.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is False
+        refs = seen["subject_reference"]
+        assert len(refs) == 1
+        assert refs[0]["type"] == "character"
+        assert refs[0]["image_file"].startswith("data:image/png;base64,")
+        assert b64.b64decode(refs[0]["image_file"].split(",", 1)[1]) == _FAKE_PNG
+
+    async def test_https_url_passes_through_untouched(self, tmp_path):
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=_image_payload())
+
+        tool = self._i2i_tool(handler)
+        await tool.execute(
+            {"prompt": "x", "reference_images": ["https://cdn.example.com/a.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert seen["subject_reference"][0]["image_file"] == (
+            "https://cdn.example.com/a.png"
+        )
+
+    async def test_sandbox_blocks_reference_outside_workspace(self, tmp_path):
+        secret = tmp_path / "secret.png"
+        secret.write_bytes(_FAKE_PNG)
+
+        class _DenySandbox:
+            def validate(self, path: str) -> Path:
+                raise PermissionError("escapes workspace")
+
+        tool = self._i2i_tool(lambda request: httpx.Response(200, json=_image_payload()))
+        ctx = ToolUseContext(cwd=str(tmp_path), sandbox=_DenySandbox())  # type: ignore[arg-type]
+        result = await tool.execute(
+            {"prompt": "x", "reference_images": ["secret.png"]}, ctx
+        )
+        assert result.is_error is True
+        assert "outside the workspace" in result.content
+
+    async def test_non_image_file_rejected_by_magic_bytes(self, tmp_path):
+        fake = tmp_path / "actually-a-text.png"
+        fake.write_text("not an image at all", encoding="utf-8")
+
+        tool = self._i2i_tool(lambda request: httpx.Response(200, json=_image_payload()))
+        result = await tool.execute(
+            {"prompt": "x", "reference_images": ["actually-a-text.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is True
+        assert "not a JPG, PNG, WEBP or HEIC" in result.content
+
+    async def test_oversize_reference_rejected(self, tmp_path):
+        big = tmp_path / "big.png"
+        big.write_bytes(_FAKE_PNG + b"0" * 2048)
+        tool = self._i2i_tool(
+            lambda request: httpx.Response(200, json=_image_payload()),
+            inputs={
+                "kind": "image_data_urls",
+                "arg": "reference_images",
+                "max_count": 1,
+                "max_bytes": 512,
+            },
+        )
+        result = await tool.execute(
+            {"prompt": "x", "reference_images": ["big.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is True
+        assert "over the" in result.content
+
+    async def test_too_many_references_rejected(self, tmp_path):
+        ref = tmp_path / "p.png"
+        ref.write_bytes(_FAKE_PNG)
+        tool = self._i2i_tool(lambda request: httpx.Response(200, json=_image_payload()))
+        result = await tool.execute(
+            {"prompt": "x", "reference_images": ["p.png", "p.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is True
+        assert "at most 1" in result.content
+
+    async def test_missing_reference_fails_on_required_arg(self, tmp_path):
+        tool = self._i2i_tool(lambda request: httpx.Response(200, json=_image_payload()))
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd=str(tmp_path)))
+        assert result.is_error is True
+        assert "reference_images" in result.content
+
+    async def test_network_not_touched_when_input_invalid(self, tmp_path):
+        called = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal called
+            called = True
+            return httpx.Response(200, json=_image_payload())
+
+        tool = self._i2i_tool(handler)
+        result = await tool.execute(
+            {"prompt": "x", "reference_images": ["missing.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is True
+        assert called is False
+
+
+class TestH3ImageShapes:
+    """H3-Image 的请求/响应形状与旧版 image-01 完全不同，单独盯住。
+
+    旧版：``subject_reference: [{type, image_file}]`` ↔ ``data.image_base64``
+    新版：``images: [{image_url}]`` ↔ ``data[].url / data[].b64_json``
+    """
+
+    @staticmethod
+    def _edit_tool(handler: Any, **overrides: Any) -> HttpJsonTool:
+        spec_dict = _spec_dict(
+            **{
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"prompt": {}, "images": {}},
+                    "required": ["prompt", "images"],
+                },
+                "body": {
+                    "model": "${options.model}",
+                    "prompt": "${args.prompt}",
+                    "images": "${args.images}",
+                },
+                "inputs": {
+                    "kind": "image_data_urls",
+                    "arg": "images",
+                    "object_key": "image_url",
+                    "max_count": 16,
+                },
+                "result": {
+                    "kind": "save_images",
+                    "items_path": "data",
+                    "url_key": "url",
+                    "base64_key": "b64_json",
+                    "dir": ".nono-agent/images",
+                },
+                **overrides,
+            }
+        )
+        spec = parse_tool_specs("demo", {"edit": spec_dict})[0]
+        return HttpJsonTool(spec, {}, "k", client_factory=_stub_factory(handler))
+
+    @staticmethod
+    def _b64_payload(count: int = 1) -> dict[str, Any]:
+        return {
+            "data": [
+                {"b64_json": b64.b64encode(_FAKE_PNG).decode(), "size": "1024x1024"}
+                for _ in range(count)
+            ],
+            "usage": {"generated_images": count},
+        }
+
+    async def test_reference_becomes_image_url_object(self, tmp_path):
+        ref = tmp_path / "cat.png"
+        ref.write_bytes(_FAKE_PNG)
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json=self._b64_payload())
+
+        tool = self._edit_tool(handler)
+        result = await tool.execute(
+            {"prompt": "swap", "images": ["cat.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is False
+        images = seen["images"]
+        assert len(images) == 1
+        # 只有 image_url —— 旧版的 type/image_file 不该再出现
+        assert set(images[0]) == {"image_url"}
+        assert images[0]["image_url"].startswith("data:image/png;base64,")
+
+    async def test_more_than_sixteen_references_rejected(self, tmp_path):
+        ref = tmp_path / "p.png"
+        ref.write_bytes(_FAKE_PNG)
+        tool = self._edit_tool(
+            lambda request: httpx.Response(200, json=self._b64_payload())
+        )
+        result = await tool.execute(
+            {"prompt": "x", "images": ["p.png"] * 17},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is True
+        assert "at most 16" in result.content
+
+    async def test_total_size_limit_rejects_oversized_batch(self, tmp_path):
+        ref = tmp_path / "p.png"
+        ref.write_bytes(_FAKE_PNG)
+        tool = self._edit_tool(
+            lambda request: httpx.Response(200, json=self._b64_payload()),
+            inputs={
+                "kind": "image_data_urls",
+                "arg": "images",
+                "object_key": "image_url",
+                "max_count": 16,
+                "max_bytes": 1024,
+                "max_total_bytes": 12,
+            },
+        )
+        result = await tool.execute(
+            {"prompt": "x", "images": ["p.png", "p.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is True
+        assert "over the" in result.content
+
+    async def test_items_path_saves_base64_images(self, tmp_path):
+        tool = self._edit_tool(
+            lambda request: httpx.Response(200, json=self._b64_payload(2))
+        )
+        result = await tool.execute(
+            {"prompt": "x", "images": ["https://cdn.example.com/a.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is False
+        saved = sorted((tmp_path / ".nono-agent" / "images").glob("*.png"))
+        assert len(saved) == 2
+        assert result.ui is not None and result.ui["kind"] == "image"
+
+    async def test_items_path_saves_url_images(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "nono_agent.toolplugins.http_json.is_url_blocked", lambda *a, **k: False
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith(".png"):
+                return httpx.Response(
+                    200, content=_FAKE_PNG, headers={"content-type": "image/png"}
+                )
+            return httpx.Response(
+                200, json={"data": [{"url": "https://cdn.example.com/a.png"}]}
+            )
+
+        tool = self._edit_tool(handler)
+        result = await tool.execute(
+            {"prompt": "x", "images": ["https://cdn.example.com/a.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is False
+        assert len(list((tmp_path / ".nono-agent" / "images").glob("*.png"))) == 1
+
+    async def test_partial_failure_is_reported(self, tmp_path):
+        """一张没过内容安全检查、另一张照常出图 —— 失败不能被吞掉。"""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"b64_json": b64.b64encode(_FAKE_PNG).decode()},
+                        {
+                            "error": {
+                                "code": "1027",
+                                "message": "output image failed content safety check",
+                            }
+                        },
+                    ]
+                },
+            )
+
+        tool = self._edit_tool(handler)
+        result = await tool.execute(
+            {"prompt": "x", "images": ["https://cdn.example.com/a.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is False
+        assert "1027" in result.content
+        assert "content safety" in result.content
+        assert len(list((tmp_path / ".nono-agent" / "images").glob("*.png"))) == 1
+
+    async def test_all_images_failed_is_an_error(self, tmp_path):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"error": {"code": "1000", "message": "image generation failed"}}
+                    ]
+                },
+            )
+
+        tool = self._edit_tool(handler)
+        result = await tool.execute(
+            {"prompt": "x", "images": ["https://cdn.example.com/a.png"]},
+            ToolUseContext(cwd=str(tmp_path)),
+        )
+        assert result.is_error is True
+        assert "1000" in result.content
+
+    async def test_openai_style_error_envelope_is_unpacked(self):
+        """厂商的错误体是 {"type":"error","error":{...}} —— 要抽出那句话。"""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={
+                    "type": "error",
+                    "error": {
+                        "type": "bad_request_error",
+                        "message": "invalid params, size 4096x1024: aspect ratio (2013)",
+                        "http_code": "400",
+                    },
+                },
+            )
+
+        tool = _tool(client_factory=_stub_factory(handler))
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd="."))
+        assert result.is_error is True
+        assert "bad_request_error" in result.content
+        assert "aspect ratio" in result.content
+        # 别把整段 JSON 回显给模型
+        assert '"type": "error"' not in result.content
+
+
+class _DelayedTransport(httpx.AsyncBaseTransport):
+    """先 await 一段时间再回包。
+
+    MockTransport 的 handler 是**同步**的，在里面 sleep 会把事件循环一起冻住 ——
+    那就测不出「超时转后台」了。要测慢请求就得让延迟发生在 await 上。
+    """
+
+    def __init__(self, delay_s: float, payload: dict[str, Any]) -> None:
+        self._delay = delay_s
+        self._payload = payload
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(self._delay)
+        return httpx.Response(200, json=self._payload)
+
+
+def _h3_payload() -> dict[str, Any]:
+    """H3-Image 的响应形状：``data`` 是数组，每项一张图。"""
+    return {
+        "created": 1792308678,
+        "data": [{"b64_json": b64.b64encode(_FAKE_PNG).decode(), "size": "1024x1024"}],
+        "usage": {"generated_images": 1},
+    }
+
+
+def _job_id_of(text: str) -> str:
+    """从「转后台」那段话里把作业 id 抠出来。"""
+    match = re.search(r"job-[0-9a-f]{12}", text)
+    assert match is not None, text
+    return match.group(0)
+
+
+class TestBackgroundTool:
+    """长请求转后台：这一轮立刻放行，连接名额还给别的请求。
+
+    图像生成最长 600 秒。请求一直占着**对话那一条连接**时，浏览器同源的并发
+    连接（Chromium 上限 6）会被占满，文件树这类普通请求只能排队 —— 表现就是
+    「图片生成期间界面全卡住」。转后台后对话连接立刻释放。
+    """
+
+    @staticmethod
+    def _tool(
+        handler: Any, *, wait_s: Any = 0.2, factory: Any = None, **overrides: Any
+    ) -> HttpJsonTool:
+        spec_dict = _spec_dict(
+            **{
+                "body": {"model": "${options.model}", "prompt": "${args.prompt}"},
+                "result": {
+                    "kind": "save_images",
+                    "items_path": "data",
+                    "url_key": "url",
+                    "base64_key": "b64_json",
+                    "dir": ".nono-agent/images",
+                },
+                "background": {"wait_s": wait_s, "kind": "image", "title": "图片生成"},
+                **overrides,
+            }
+        )
+        spec = parse_tool_specs("demo", {"generate": spec_dict})[0]
+        return HttpJsonTool(
+            spec, {}, "k", client_factory=factory or _stub_factory(handler)
+        )
+
+    @staticmethod
+    def _delayed_factory(delay_s: float) -> Any:
+        def factory(timeout_s: float) -> httpx.AsyncClient:
+            return httpx.AsyncClient(transport=_DelayedTransport(delay_s, _h3_payload()))
+
+        return factory
+
+    async def test_fast_request_returns_inline(self, tmp_path):
+        """够快就还是老样子：直接给路径。"""
+        tool = self._tool(
+            lambda request: httpx.Response(200, json=_h3_payload()),
+            wait_s=5,
+        )
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd=str(tmp_path)))
+        assert result.is_error is False
+        assert "Saved 1 image(s)" in result.content
+        assert result.ui is not None and result.ui["kind"] == "image"
+
+    async def test_slow_request_returns_job_id_immediately(self, tmp_path):
+        """慢请求：这一轮立刻返回，作业 id 给模型去跟。"""
+        tool = self._tool(None, wait_s=0.05, factory=self._delayed_factory(0.6))
+        result = await tool.execute({"prompt": "x"}, ToolUseContext(cwd=str(tmp_path)))
+        assert result.is_error is False
+        assert "后台" in result.content
+        assert "job-" in result.content
+
+    async def test_background_job_finishes_and_saves_image(self, tmp_path):
+        """转后台之后，请求继续跑完，图片照样落盘，作业状态变成已完成。"""
+        registry = JobRegistry("s1")
+        tool = self._tool(None, wait_s=0.05, factory=self._delayed_factory(0.3))
+        context = ToolUseContext(cwd=str(tmp_path), shell_jobs=registry)
+        result = await tool.execute({"prompt": "x"}, context)
+        assert result.is_error is False
+
+        job_id = _job_id_of(result.content)
+        job = registry.get(job_id)
+        assert job is not None
+        assert job.status == "running"
+
+        for _ in range(60):
+            await asyncio.sleep(0.05)
+            if job.status != "running":
+                break
+        assert job.status == "completed"
+        saved = list((tmp_path / ".nono-agent" / "images").glob("*.png"))
+        assert len(saved) == 1
+
+    async def test_background_result_is_readable_by_job_output(self, tmp_path):
+        """模型用 job_output 能读到最终结果 —— 靠的是那个内存伪进程。"""
+        registry = JobRegistry("s1")
+        tool = self._tool(None, wait_s=0.02, factory=self._delayed_factory(0.2))
+        context = ToolUseContext(cwd=str(tmp_path), shell_jobs=registry)
+        result = await tool.execute({"prompt": "x"}, context)
+        job_id = _job_id_of(result.content)
+
+        for _ in range(60):
+            await asyncio.sleep(0.05)
+            job = registry.get(job_id)
+            if job is not None and job.status != "running":
+                break
+        delta = registry.read(job_id)
+        assert delta is not None
+        assert "Saved 1 image(s)" in delta.text
+
+    async def test_wait_s_can_come_from_options(self, tmp_path):
+        """wait_s 允许写成模板，配置面板能调。"""
+        spec_dict = _spec_dict(
+            **{
+                "body": {"prompt": "${args.prompt}"},
+                "result": {"kind": "text"},
+                "background": {"wait_s": "${options.wait_s}", "kind": "image"},
+            }
+        )
+        spec = parse_tool_specs("demo", {"generate": spec_dict})[0]
+        tool = HttpJsonTool(
+            spec, {"wait_s": 5}, "k", client_factory=_stub_factory(
+                lambda request: httpx.Response(200, json={"ok": True})
+            )
+        )
+        assert tool._resolve_wait_s(spec.background) == 5.0
+
+    async def test_cleared_wait_s_falls_back_to_default(self, tmp_path):
+        """配置面板把这一项清空了 —— 回落到工具声明的默认值。
+
+        不能因为清了一格就把后台化整个关掉：那等于把「占着对话连接」的老毛病
+        又放回来。
+        """
+        spec_dict = _spec_dict(
+            **{
+                "body": {"prompt": "${args.prompt}"},
+                "result": {"kind": "text"},
+                "defaults": {"image_wait_s": 15},
+                "background": {"wait_s": "${options.image_wait_s}", "kind": "image"},
+            }
+        )
+        spec = parse_tool_specs("demo", {"generate": spec_dict})[0]
+        tool = HttpJsonTool(
+            spec, {"image_wait_s": None}, "k", client_factory=_stub_factory(
+                lambda request: httpx.Response(200, json={"ok": True})
+            )
+        )
+        assert tool._resolve_wait_s(spec.background) == 15.0
+
+
+class TestBuiltinPlugins:
+    """内置插件属于**产品包**，引擎不打包它们 —— 这里验的是那条边界。"""
+
+    def test_engine_package_ships_no_concrete_plugins(self):
+        """引擎目录里不该再有 plugin.json：厂商集成是产品定义。"""
+        engine_dir = Path(nono_agent.toolplugins.__file__).parent
+        assert list(engine_dir.rglob("plugin.json")) == []
+
+    def test_product_plugin_dir_ships_three(self):
+        assert {p.name for p in builtin_plugin_dirs()} == {
+            "minimax_image",
+            "tavily",
+            "browser-agent",
+        }
+
+    def test_registration_is_idempotent(self):
+        before = len(registered_plugin_dirs())
+        register_builtin_plugins()
+        register_builtin_plugins()
+        assert len(registered_plugin_dirs()) == before
+
+    def test_minimax_declaration_parses(self):
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "minimax_image")
+        manifest = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+        assert manifest["name"] == "minimax-image"
+        specs = parse_tool_specs(manifest["name"], manifest["tools"])
+        assert [s.tool_name for s in specs] == [
+            "minimax__edit_image",
+            "minimax__generate_image",
+        ]
+        # 厂商数据值（端点、模型名、密钥变量名）归产品所有、随时会调，
+        # 这里只断言结构，不断言具体值 —— 写死值等于让插件一改就得改测试。
+        assert specs[1].defaults["model"]
+        assert specs[1].defaults["base_url"].startswith("https://")
+        assert specs[1].api_key_env.endswith("_API_KEY")
+
+    def test_minimax_image_to_image_declaration(self):
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "minimax_image")
+        manifest = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+        spec = parse_tool_specs(manifest["name"], manifest["tools"])[0]
+        assert spec.tool_name == "minimax__edit_image"
+        # 图片编辑走独立端点，参考图是 images[{image_url}]，不是旧的 subject_reference
+        assert spec.url.endswith("/v1/images/edits")
+        assert "images" in spec.body
+        assert "subject_reference" not in spec.body
+        assert spec.inputs["kind"] == "image_data_urls"
+        assert spec.inputs["arg"] == "images"
+        assert spec.inputs["object_key"] == "image_url"
+        assert spec.required_args() == ["prompt", "images"]
+
+    def test_minimax_generation_declaration(self):
+        """文生图与图片编辑是两个端点，别混。"""
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "minimax_image")
+        manifest = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+        specs = parse_tool_specs(manifest["name"], manifest["tools"])
+        generate = next(s for s in specs if s.tool_name == "minimax__generate_image")
+        assert generate.url.endswith("/v1/images/generations")
+        assert "images" not in generate.body
+        assert generate.required_args() == ["prompt"]
+        # 服务端最长等 600 秒 —— 客户端超时不能比它短，否则每次都在出图途中被掐断
+        assert generate.timeout_s >= 600
+
+    def test_tavily_declaration_parses(self):
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "tavily")
+        manifest = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+        specs = parse_tool_specs(manifest["name"], manifest["tools"])
+        assert specs[0].server == "tavily"
+        assert "tavily_search" in specs[0].allowed_tools
+        assert manifest["mcp"]["tavily"]["url"] == "https://mcp.tavily.com/mcp/"
+
+    def test_tavily_key_travels_in_header_not_url(self):
+        """密钥走 Authorization 头，不进 URL。
+
+        官方文档给的是 ``?tavilyApiKey=``，但同时也支持 Authorization 头。
+        选头是有意的：URL 会进服务端访问日志、浏览器历史、错误回显，
+        而 header 不会。实测远程网关认这个头（无凭证时回 401 + OAuth
+        挑战，带头则直接握手成功）。
+
+        这条断言是为了防止有人"照官方示例"把 Key 改回 URL —— 那是个安全
+        回退，功能上照样能跑。
+        """
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "tavily")
+        manifest = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+        spec = parse_tool_specs(manifest["name"], manifest["tools"])[0]
+        assert spec.auth.type == "bearer"
+        assert spec.auth.api_key_env.endswith("_API_KEY")
+        assert "tavilyApiKey" not in manifest["mcp"]["tavily"]["url"]
+        assert "tavilyApiKey" not in json.dumps(manifest)
+
+    def test_browser_agent_declaration_parses(self):
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "browser-agent")
+        manifest = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+        specs = parse_tool_specs(manifest["name"], manifest["tools"])
+        assert {s.tool_name for s in specs} == {
+            "browser_open",
+            "browser_tabs",
+            "browser_use",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_press",
+            "browser_read",
+            "browser_scroll",
+            "browser_navigate",
+        }
+        # 没有密钥 —— 浏览器控制要的是本机用户点一次头，不是厂商的 Key。
+        assert manifest.get("mcp") is None
+        assert api_key_env_for(load_manifest(directory)) == ""
+
+    def test_browser_agent_declares_restart_requirement(self):
+        """端口只能在 app ready 之前挂，清单必须自己说明「改了要重启」。
+
+        少了这两行，面板会以为开关立刻生效，用户重启前一直等。
+        """
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "browser-agent")
+        manifest = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+        assert manifest["config"]["needs_restart"] is True
+        assert manifest["config"]["restart_flag_env"] == "NONO_BROWSER_CDP_ENABLED"
+
+    def test_examples_parse_and_survive_junk(self, tmp_path):
+        """示例句是纯展示文案：写错一条不该让整个插件不可用。"""
+        directory = tmp_path / "sample"
+        directory.mkdir()
+        (directory / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "sample",
+                    "version": "1.0.0",
+                    "examples": ["好的例子", "   ", 42, None, " 另一个  "],
+                }
+            ),
+            encoding="utf-8",
+        )
+        manifest = load_manifest(directory)
+        assert manifest is not None
+        assert manifest.examples == ("好的例子", "另一个")
+
+    def test_examples_default_to_empty(self, tmp_path):
+        directory = tmp_path / "bare"
+        directory.mkdir()
+        (directory / "plugin.json").write_text(
+            json.dumps({"name": "bare", "version": "1.0.0"}), encoding="utf-8"
+        )
+        manifest = load_manifest(directory)
+        assert manifest is not None
+        assert manifest.examples == ()
+
+    def test_examples_are_not_a_list_of_lists(self, tmp_path):
+        """写成字符串（而不是数组）时按没写处理，不逐字符拆开。"""
+        directory = tmp_path / "wrong-type"
+        directory.mkdir()
+        (directory / "plugin.json").write_text(
+            json.dumps({"name": "wrong", "version": "1.0.0", "examples": "一条"}),
+            encoding="utf-8",
+        )
+        manifest = load_manifest(directory)
+        assert manifest is not None
+        assert manifest.examples == ()
+
+    def test_tavily_whitelist_is_deliberately_narrow(self):
+        """远程端点实际暴露 6 个工具，我们只放行 2 个。
+
+        tavily_feedback 是给人/评测用的反馈通道（描述里还要求"必须逐条打分"），
+        放进模型的工具表会让它去刷反馈调用；crawl/map/research 是重操作，
+        按需再放开。
+        """
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "tavily")
+        manifest = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+        spec = parse_tool_specs(manifest["name"], manifest["tools"])[0]
+        assert set(spec.allowed_tools) == {"tavily_search", "tavily_extract"}
+
+    def test_discovered_after_registration(self, tmp_path):
+        assert {m.name: source for m, source in discover_plugins(tmp_path)} == {
+            "minimax-image": "bundled",
+            "tavily": "bundled",
+            "browser-agent": "bundled",
+        }
+
+    def test_project_plugin_overrides_bundled(self, tmp_path):
+        plugin_dir = tmp_path / ".nono-agent" / "plugins" / "tavily"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text(
+            json.dumps({"name": "tavily", "version": "9.9.9"}), encoding="utf-8"
+        )
+        versions = {m.name: m.version for m, _ in discover_plugins(tmp_path)}
+        assert versions["tavily"] == "9.9.9"
+
+
+class TestRuntime:
+    async def test_disabled_plugin_registers_nothing(self, tmp_path):
+        runtime = await start_tool_plugin_runtime(tmp_path, settings=_settings({}))
+        assert runtime.tools == []
+        assert {s.id for s in runtime.statuses} == {
+            "minimax-image",
+            "tavily",
+            "browser-agent",
+        }
+        assert all(s.enabled is False for s in runtime.statuses)
+
+    async def test_builtin_plugin_gates_browser_tools(self, tmp_path):
+        """browser_* 只在插件开启时才进工具表。
+
+        这条是安全边界，不是偏好：它们背后是一条无认证的本机调试端口，
+        默认关闭意味着工具**压根不存在**，而不是「存在但一调用就报错」。
+        """
+        off = await start_tool_plugin_runtime(tmp_path, settings=_settings({}))
+        assert "browser_open" not in {t.name for t in off.tools}
+
+        on = await start_tool_plugin_runtime(
+            tmp_path, settings=_settings({"tools": {"browser-agent": {"enabled": True}}})
+        )
+        assert {t.name for t in on.tools} == {
+            "browser_open",
+            "browser_tabs",
+            "browser_use",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_press",
+            "browser_read",
+            "browser_scroll",
+            "browser_navigate",
+        }
+        status = next(s for s in on.statuses if s.id == "browser-agent")
+        assert status.error is None
+        assert status.running is True
+
+    async def test_builtin_plugin_reports_unknown_tool(self, tmp_path):
+        """清单点名一个不在白名单里的工具 → 状态里报错，不静默跳过。
+
+        静默跳过最坏：面板上显示插件已启用、工具列表却空着，用户无从判断
+        是没配好还是根本不支持。
+        """
+        plugin_dir = tmp_path / ".nono-agent" / "plugins" / "rogue"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "rogue",
+                    "version": "1.0.0",
+                    "description": "点一个白名单外的工具名试试",
+                    "tools": {"nuke": {"kind": "builtin", "tool": "definitely_not_a_tool"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        runtime = await start_tool_plugin_runtime(
+            tmp_path, settings=_settings({"tools": {"rogue": {"enabled": True}}})
+        )
+        assert runtime.tools == []
+        status = next(s for s in runtime.statuses if s.id == "rogue")
+        assert status.error is not None
+        assert "definitely_not_a_tool" in status.error
+
+    async def test_enabled_http_plugin_builds_tool(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(_ENV_KEY, raising=False)
+        settings = _settings(
+            {"tools": {"minimax-image": {"enabled": True, "api_key_env": _ENV_KEY}}}
+        )
+        runtime = await start_tool_plugin_runtime(tmp_path, settings=settings)
+        assert [t.name for t in runtime.tools] == [
+            "minimax__edit_image",
+            "minimax__generate_image",
+        ]
+        status = next(s for s in runtime.statuses if s.id == "minimax-image")
+        assert status.running is True
+        # 没给 Key 时工具仍注册 —— 失败点在调用时给出可执行的报错，
+        # 而不是「开关开了但工具凭空消失」。
+        assert status.configured is False
+
+    async def test_settings_override_api_key_env(self, tmp_path, monkeypatch):
+        """settings 里的 api_key_env 覆盖清单指针 —— 取值与报错都用它。"""
+        monkeypatch.setenv(_ENV_KEY, "from-override")
+        settings = _settings(
+            {"tools": {"minimax-image": {"enabled": True, "api_key_env": _ENV_KEY}}}
+        )
+        runtime = await start_tool_plugin_runtime(tmp_path, settings=settings)
+        status = next(s for s in runtime.statuses if s.id == "minimax-image")
+        assert status.api_key_env == _ENV_KEY
+        assert status.configured is True
+        assert runtime.tools[0]._api_key == "from-override"
+
+    async def test_enabled_mcp_plugin_without_key_is_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("NONO_TAVILY_API_KEY", raising=False)
+        settings = _settings(
+            {
+                "tools": {
+                    "tavily": {"enabled": True, "api_key_env": "NONO_TAVILY_API_KEY"}
+                }
+            }
+        )
+        runtime = await start_tool_plugin_runtime(tmp_path, settings=settings)
+        assert runtime.tools == []
+        status = next(s for s in runtime.statuses if s.id == "tavily")
+        assert status.error is not None
+        assert "NONO_TAVILY_API_KEY" in status.error
+
+    async def test_global_switch_disables_everything(self, tmp_path):
+        settings = _settings(
+            {"tools": {"enabled": False, "minimax-image": {"enabled": True}}}
+        )
+        runtime = await start_tool_plugin_runtime(tmp_path, settings=settings)
+        assert runtime.enabled is False
+        assert runtime.tools == []
+
+    async def test_options_override_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(_ENV_KEY, raising=False)
+        settings = _settings(
+            {
+                "tools": {
+                    "minimax-image": {
+                        "enabled": True,
+                        "api_key_env": _ENV_KEY,
+                        "options": {"model": "MiniMax-H3-Image-Highspeed"},
+                    }
+                }
+            }
+        )
+        runtime = await start_tool_plugin_runtime(tmp_path, settings=settings)
+        options = runtime.tools[0]._options
+        assert options["model"] == "MiniMax-H3-Image-Highspeed"
+        # 未覆盖的键仍取清单里的默认值
+        assert options["base_url"].startswith("https://")
+
+    async def test_bad_declaration_isolated(self, tmp_path):
+        plugin_dir = tmp_path / ".nono-agent" / "plugins" / "broken"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "broken",
+                    "version": "1.0.0",
+                    "tools": {"t": {"kind": "http_json"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        settings = _settings({"tools": {"broken": {"enabled": True}}})
+        runtime = await start_tool_plugin_runtime(tmp_path, settings=settings)
+        assert runtime.tools == []
+        status = next(s for s in runtime.statuses if s.id == "broken")
+        assert status.error is not None and "url" in status.error
+
+    async def test_close_is_idempotent(self):
+        runtime = ToolPluginRuntime()
+        await runtime.close()
+        assert runtime.tools == []
+
+
+class TestClientFactory:
+    async def test_default_client_does_not_follow_redirects(self):
+        client = build_client(1.0)
+        try:
+            assert client.follow_redirects is False
+        finally:
+            await client.aclose()
+
+
+class TestConfigSchema:
+    """配置面板 schema：清单声明怎么渲染，值从 settings/defaults 回落。"""
+
+    def test_parse_fields_and_choices(self):
+        schema = parse_config_schema(
+            {
+                "api_key": {"label": "API Key", "hint": "去官网拿"},
+                "fields": [
+                    {"key": "model", "label": "模型", "type": "string"},
+                    {
+                        "key": "server.transport",
+                        "label": "连接方式",
+                        "type": "enum",
+                        "choices": [
+                            {"value": "http", "label": "远程"},
+                            {"value": "stdio", "label": "本地"},
+                        ],
+                    },
+                ],
+            }
+        )
+        assert [f.key for f in schema.fields] == ["model", "server.transport"]
+        assert schema.fields[1].choices == (("http", "远程"), ("stdio", "本地"))
+        assert schema.api_key_label == "API Key"
+        assert schema.api_key_hint == "去官网拿"
+
+    def test_unknown_type_rejected(self):
+        with pytest.raises(ConfigSchemaError):
+            parse_config_schema({"fields": [{"key": "a", "type": "color-picker"}]})
+
+    def test_coerce_number_and_enum(self):
+        schema = parse_config_schema(
+            {"fields": [{"key": "n", "type": "number"}, {"key": "t", "type": "enum"}]}
+        )
+        assert schema.fields[0].coerce("3") == 3
+        with pytest.raises(ConfigSchemaError):
+            schema.fields[0].coerce("three")
+
+    def test_dotted_option_read_write(self):
+        options: dict[str, Any] = {}
+        set_option(options, "server.transport", "stdio")
+        assert options == {"server": {"transport": "stdio"}}
+        assert get_option(options, "server.transport") == "stdio"
+        assert get_option(options, "server.url", "fallback") == "fallback"
+        assert get_option(options, "missing", "d") == "d"
+
+    def test_option_defaults_merged_from_tool_specs(self):
+        directory = next(p for p in builtin_plugin_dirs() if p.name == "minimax_image")
+        manifest = load_manifest(directory)
+        assert manifest is not None
+        defaults = option_defaults(manifest)
+        # 两个工具声明同一组默认值，面板只应看到一份
+        assert defaults["model"] == "MiniMax-H3-Image"
+        assert defaults["output_dir"] == ".nono-agent/images"
+
+
+class TestConfigPanelPayload:
+    """服务端出参：面板拿到的就是它要渲染的全部信息。"""
+
+    def _snapshot(self, tmp_path: Any) -> dict[str, Any]:
+        manager = MagicMock()
+        manager.sessions = {}
+        return public_tool_plugins(str(tmp_path), manager)
+
+    def test_fields_carry_resolved_values(self, tmp_path):
+        payload = self._snapshot(tmp_path)
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        values = {f["key"]: f["value"] for f in plugin["fields"]}
+        # 没写过任何配置时回落到工具声明的 defaults（具体值由产品定义决定）
+        assert set(values) == {
+            "model",
+            "area",
+            "output_format",
+            "response_format",
+            "image_wait_s",
+            "base_url",
+            "output_dir",
+        }
+        assert all(value not in (None, "") for value in values.values())
+        assert plugin["api_key"]["env"].endswith("_API_KEY")
+        assert "value" not in plugin["api_key"]  # 密钥只报"配没配"
+
+    def test_settings_value_overrides_default(self, tmp_path):
+        (tmp_path / ".nono-agent").mkdir()
+        (tmp_path / ".nono-agent" / "settings.json").write_text(
+            json.dumps(
+                {
+                    "tools": {
+                        "minimax-image": {"options": {"model": "MiniMax-H3-Image-Highspeed"}}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        payload = self._snapshot(tmp_path)
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        values = {f["key"]: f["value"] for f in plugin["fields"]}
+        assert values["model"] == "MiniMax-H3-Image-Highspeed"
+        # 没配的键仍回落默认值（具体值由产品定义决定，这里只验"有值且未被覆盖"）
+        assert isinstance(values["base_url"], str) and values["base_url"]
+
+    def test_ordinary_plugin_needs_no_restart(self, tmp_path):
+        plugin = next(
+            p for p in self._snapshot(tmp_path)["plugins"] if p["id"] == "minimax-image"
+        )
+        assert plugin["needs_restart"] is False
+        # 没声明 restart_flag_env 就没有「本次运行 vs 配置」这回事，按已生效算。
+        assert plugin["live"] is True
+
+    def test_browser_agent_reports_pending_restart(self, tmp_path, monkeypatch):
+        """用户开了开关但还没重启 → live=False，面板据此显示「重启后生效」。"""
+        monkeypatch.delenv("NONO_BROWSER_CDP_ENABLED", raising=False)
+        (tmp_path / ".nono-agent").mkdir()
+        (tmp_path / ".nono-agent" / "settings.json").write_text(
+            json.dumps({"tools": {"browser-agent": {"enabled": True}}}),
+            encoding="utf-8",
+        )
+        plugin = next(
+            p for p in self._snapshot(tmp_path)["plugins"] if p["id"] == "browser-agent"
+        )
+        assert plugin["needs_restart"] is True
+        assert plugin["enabled"] is True
+        assert plugin["live"] is False
+
+        # 重启之后主进程把这个变量带进 sidecar，两边就对上了。
+        monkeypatch.setenv("NONO_BROWSER_CDP_ENABLED", "1")
+        plugin = next(
+            p for p in self._snapshot(tmp_path)["plugins"] if p["id"] == "browser-agent"
+        )
+        assert plugin["live"] is True
+
+    def test_browser_agent_reports_pending_shutdown(self, tmp_path, monkeypatch):
+        """反过来也要成立：用户关了但还没重启，端口此刻仍然开着。"""
+        monkeypatch.setenv("NONO_BROWSER_CDP_ENABLED", "1")
+        plugin = next(
+            p for p in self._snapshot(tmp_path)["plugins"] if p["id"] == "browser-agent"
+        )
+        assert plugin["enabled"] is False
+        assert plugin["live"] is False
+
+    def test_payload_keys_match_frontend_contract(self, tmp_path):
+        """出参的键名必须与 @nono/protocol 的类型对得上，否则前端静默拿到 undefined。"""
+        payload = self._snapshot(tmp_path)
+        assert set(payload) == {"enabled", "credentials_path", "settings_path", "plugins"}
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert set(plugin) == {
+            "id",
+            "version",
+            "description",
+            "examples",
+            "source",
+            "enabled",
+            "needs_restart",
+            "live",
+            "api_key",
+            "fields",
+            "project_owned",
+            "tools",
+            "running",
+            "error",
+        }
+        assert set(plugin["api_key"]) == {
+            "env",
+            "required",
+            "configured",
+            "label",
+            "hint",
+            "placeholder",
+        }
+        assert set(plugin["fields"][0]) == {
+            "key",
+            "label",
+            "type",
+            "hint",
+            "placeholder",
+            "choices",
+            "value",
+        }
+
+    def test_secret_never_present_in_payload(self, tmp_path):
+        # 先真的写进去一把钥匙，再断言接口出参里没有它
+        save_credential("NONO_TAVILY_API_KEY", "tvly-SUPERSECRET-VALUE")
+        payload = self._snapshot(tmp_path)
+        text = json.dumps(payload, ensure_ascii=False)
+        assert "tvly-SUPERSECRET-VALUE" not in text
+        plugin = next(p for p in payload["plugins"] if p["id"] == "tavily")
+        assert plugin["api_key"]["configured"] is True   # 只回答配没配
+        assert plugin["api_key"]["env"] == "NONO_TAVILY_API_KEY"
+
+
+class TestConfigPanelWrites:
+    """面板的写路径：开关 / 参数 / 密钥三条。"""
+
+    async def _manager(self) -> Any:
+        manager = MagicMock()
+        manager.sessions = {}
+        manager.reload_extensions_for_cwd = AsyncMock()
+        manager.reload_extensions_all = AsyncMock()
+        return manager
+
+    @staticmethod
+    def _user_settings() -> dict[str, Any]:
+        # 走模块属性而不是 import 进来的符号 —— conftest 的 user_home 隔离
+        # 是 monkeypatch 到模块上的，import 时取到的是真实 HOME。
+        path = paths_module.user_home() / "settings.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    async def test_toggle_and_options_persist(self, tmp_path):
+        manager = await self._manager()
+        payload = await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(
+                cwd=str(tmp_path),
+                enabled=True,
+                options={"model": "MiniMax-H3-Image-Highspeed"},
+            ),
+            manager,
+        )
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["enabled"] is True
+        values = {f["key"]: f["value"] for f in plugin["fields"]}
+        assert values["model"] == "MiniMax-H3-Image-Highspeed"
+
+        saved = self._user_settings()["tools"]["minimax-image"]
+        assert saved["enabled"] is True
+        # 面板这次只提交了 model，base_url 仍走默认 —— 不该被写成空值
+        assert saved["options"] == {"model": "MiniMax-H3-Image-Highspeed"}
+        manager.reload_extensions_all.assert_awaited_once()
+
+    async def test_toggle_written_to_user_config_not_workspace(self, tmp_path):
+        """开关是全局的 —— 落用户级配置，且**不碰**工作区 settings。"""
+        manager = await self._manager()
+        await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(cwd=str(tmp_path), enabled=True),
+            manager,
+        )
+        assert self._user_settings()["tools"]["minimax-image"]["enabled"] is True
+        assert not (tmp_path / ".nono-agent" / "settings.json").exists()
+
+    async def test_toggle_applies_across_workspaces(self, tmp_path):
+        """在 A 目录打开的插件，到 B 目录也该是开的 —— 这就是「全局」。"""
+        manager = await self._manager()
+        await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(cwd=str(tmp_path / "workspace-a"), enabled=True),
+            manager,
+        )
+        other = tmp_path / "workspace-b"
+        other.mkdir()
+        payload = public_tool_plugins(str(other), manager)
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["enabled"] is True
+
+    async def test_toggle_without_cwd_still_writes(self, tmp_path):
+        """cwd 为空不再静默丢弃 —— 以前这种请求返回 200 却什么都没改。"""
+        manager = await self._manager()
+        payload = await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(cwd="", enabled=True),
+            manager,
+        )
+        assert self._user_settings()["tools"]["minimax-image"]["enabled"] is True
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["enabled"] is True
+        manager.reload_extensions_all.assert_awaited_once()
+
+    async def test_project_settings_still_override(self, tmp_path):
+        """工作区里手写的 tools.<id> 是逃生舱，优先级高于用户级全局开关。"""
+        project = tmp_path / ".nono-agent" / "settings.json"
+        project.parent.mkdir(parents=True)
+        project.write_text(
+            json.dumps({"tools": {"minimax-image": {"enabled": False}}}),
+            encoding="utf-8",
+        )
+        manager = await self._manager()
+        await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(cwd=str(tmp_path), enabled=True),
+            manager,
+        )
+        payload = public_tool_plugins(str(tmp_path), manager)
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        # 全局是开的，但这个工作区显式关了 —— 如实报告，并标出被谁盖住
+        assert plugin["enabled"] is False
+        assert plugin["project_owned"] == ["enabled"]
+
+    async def test_project_owned_reports_only_overridden_keys(self, tmp_path):
+        project = tmp_path / ".nono-agent" / "settings.json"
+        project.parent.mkdir(parents=True)
+        project.write_text(
+            json.dumps(
+                {
+                    "tools": {
+                        "minimax-image": {"options": {"model": "MiniMax-H3-Image-Highspeed"}}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        manager = MagicMock()
+        manager.sessions = {}
+        payload = public_tool_plugins(str(tmp_path), manager)
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["project_owned"] == ["model"]
+        # 没被覆盖的键不该出现
+        assert "base_url" not in plugin["project_owned"]
+        assert "enabled" not in plugin["project_owned"]
+
+    async def test_global_toggle_marks_nothing_as_project_owned(self, tmp_path):
+        manager = await self._manager()
+        payload = await apply_upsert(
+            "minimax-image",
+            ToolPluginUpsert(
+                cwd=str(tmp_path),
+                enabled=True,
+                options={"model": "MiniMax-H3-Image-Highspeed"},
+            ),
+            manager,
+        )
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["project_owned"] == []
+
+    async def test_dotted_option_key_nests(self, tmp_path):
+        manager = await self._manager()
+        await apply_upsert(
+            "tavily",
+            ToolPluginUpsert(
+                cwd=str(tmp_path), enabled=True, options={"server.transport": "stdio"}
+            ),
+            manager,
+        )
+        saved = self._user_settings()["tools"]["tavily"]
+        # 扁平键会存进去但运行时读不到 —— 必须是嵌套的
+        assert saved["options"] == {"server": {"transport": "stdio"}}
+
+    async def test_enum_value_outside_choices_rejected(self, tmp_path):
+        manager = await self._manager()
+        with pytest.raises(ValueError, match="候选列表"):
+            await apply_upsert(
+                "tavily",
+                ToolPluginUpsert(cwd=str(tmp_path), options={"server.transport": "carrier-pigeon"}),
+                manager,
+            )
+
+    async def test_secret_looking_option_rejected(self, tmp_path):
+        manager = await self._manager()
+        with pytest.raises(ValueError, match="api-key endpoint"):
+            await apply_upsert(
+                "minimax-image",
+                ToolPluginUpsert(cwd=str(tmp_path), options={"api_key": "sk-oops"}),
+                manager,
+            )
+
+    async def test_api_key_written_without_settings_entry(self, tmp_path):
+        """首次配置时 settings 里还没有任何东西 —— 密钥指针要从清单回落。"""
+        manager = await self._manager()
+        payload = await save_api_key(
+            "minimax-image",
+            ToolPluginApiKey(cwd=str(tmp_path), api_key="key-from-panel"),
+            manager,
+        )
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["api_key"]["configured"] is True
+        assert "key-from-panel" not in json.dumps(payload)
+        # 写进了清单声明的那个凭据名（产品可改名，测试不该钉死）
+        assert lookup_api_key(plugin["api_key"]["env"]) == "key-from-panel"
+
+    async def test_api_key_clear(self, tmp_path):
+        manager = await self._manager()
+        await save_api_key(
+            "minimax-image",
+            ToolPluginApiKey(cwd=str(tmp_path), api_key="to-be-cleared"),
+            manager,
+        )
+        payload = await save_api_key(
+            "minimax-image",
+            ToolPluginApiKey(cwd=str(tmp_path), api_key=""),
+            manager,
+        )
+        plugin = next(p for p in payload["plugins"] if p["id"] == "minimax-image")
+        assert plugin["api_key"]["configured"] is False

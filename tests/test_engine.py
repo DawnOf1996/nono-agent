@@ -1,10 +1,11 @@
 """Tests for the core engine and agentic loop."""
 
-import pytest
 import asyncio
-from nono_agent.adapters.testing import create_test_engine, MockTool
-from nono_agent.core.config import EngineConfig
-from nono_agent.core.types import SDKResultMessage, SDKAssistantMessage
+
+import pytest
+
+from nono_agent.core.types import SDKResultMessage, ToolResult
+from tests.helpers import MockTool, create_test_engine
 
 
 @pytest.fixture
@@ -74,8 +75,76 @@ class TestQueryEngine:
             assert isinstance(result, SDKResultMessage)
 
     @pytest.mark.asyncio
-    async def test_abort(self):
-        """Test that abort stops the loop."""
+    async def test_tool_result_progress_carries_result(self):
+        """工具跑完的进度帧要带上结果 —— 客户端据此把输出贴回工具行。"""
+        tool = MockTool(name="calculator", response="42")
+        engine = create_test_engine(
+            responses=[
+                {
+                    "text": "",
+                    "tool_calls": [
+                        {"name": "calculator", "id": "tc_1", "input": {"query": "6*7"}}
+                    ],
+                },
+                {"text": "done", "tool_calls": []},
+            ],
+            tools=[tool],
+        )
+
+        async with engine:
+            messages = [msg async for msg in engine.submit_message("What is 6*7?")]
+
+        notices = [
+            msg
+            for msg in messages
+            if msg.type == "system" and msg.subtype == "tool_result"
+        ]
+        assert len(notices) == 1
+        assert notices[0].tool_use_id == "tc_1"
+        assert notices[0].tool_result == "42"
+        assert notices[0].tool_is_error is False
+
+    @pytest.mark.asyncio
+    async def test_tool_result_progress_marks_error(self):
+        """失败的工具在进度帧里标出 is_error。"""
+
+        class FailingTool(MockTool):
+            async def execute(self, input_params, context):
+                self.call_count += 1
+                return ToolResult(
+                    tool_use_id="", content="boom", is_error=True, tool_name=self.name
+                )
+
+        tool = FailingTool(name="flaky", response="unused")
+        engine = create_test_engine(
+            responses=[
+                {"text": "", "tool_calls": [{"name": "flaky", "id": "tc_2", "input": {}}]},
+                {"text": "done", "tool_calls": []},
+            ],
+            tools=[tool],
+        )
+
+        async with engine:
+            messages = [msg async for msg in engine.submit_message("go")]
+
+        notices = [
+            msg
+            for msg in messages
+            if msg.type == "system" and msg.subtype == "tool_result"
+        ]
+        assert len(notices) == 1
+        assert notices[0].tool_result == "boom"
+        assert notices[0].tool_is_error is True
+
+    @pytest.mark.asyncio
+    async def test_abort_before_query_does_not_leak_into_next_query(self):
+        """查询开始前的 abort 不能污染下一次查询。
+
+        每次查询开头都会重置取消控制器（防止上一轮的 aborted 状态粘住）。
+        这条以前叫 test_abort，但它在 submit_message **之前** abort、断言只有
+        ``len(messages) > 0`` —— 无论中止是否生效都会通过，中止功能因此长期
+        没有真实覆盖（真场景见 tests/test_abort.py）。
+        """
         engine = create_test_engine(
             responses=[
                 {"text": "This should be interrupted.", "tool_calls": []},
@@ -89,8 +158,8 @@ class TestQueryEngine:
             async for msg in engine.submit_message("Long task"):
                 messages.append(msg)
 
-            # Should still get a result (even if aborted)
-            assert len(messages) > 0
+        result = next(m for m in messages if isinstance(m, SDKResultMessage))
+        assert result.subtype == "success"
 
     @pytest.mark.asyncio
     async def test_session_id(self):
@@ -102,8 +171,8 @@ class TestQueryEngine:
             assert len(engine.session_id) > 0
 
     @pytest.mark.asyncio
-    async def test_cost_tracking(self):
-        """Test that cost tracking accumulates."""
+    async def test_token_tracking(self):
+        """Test that token tracking accumulates."""
         engine = create_test_engine(
             responses=[
                 {"text": "Response 1", "tool_calls": []},
@@ -114,8 +183,9 @@ class TestQueryEngine:
             async for _ in engine.submit_message("Hello"):
                 pass
 
-            usage = engine.cost_tracker.get_total_usage()
+            usage = engine.token_tracker.get_total_usage()
             assert usage.input_tokens >= 0
+            assert engine.token_tracker.get_total_tokens() >= 0
             assert usage.output_tokens >= 0
 
 
@@ -123,9 +193,34 @@ class TestMockProvider:
     """Test the mock provider directly."""
 
     @pytest.mark.asyncio
+    async def test_result_carries_context_usage(self):
+        """结果消息与 token tracker 均携带上下文用量分析快照。"""
+        engine = create_test_engine(
+            responses=[{"text": "Hello!", "tool_calls": []}],
+        )
+
+        async with engine:
+            messages = []
+            async for msg in engine.submit_message("Hi"):
+                messages.append(msg)
+
+            result = messages[-1]
+            assert isinstance(result, SDKResultMessage)
+            ctx_usage = result.context_usage
+            assert ctx_usage is not None
+            # analyze_context_usage 口径：窗口 + 分项齐全
+            assert ctx_usage["context_window"] == 200_000  # 测试引擎未配置 model_context
+            assert ctx_usage["total_tokens"] > 0
+            assert ctx_usage["message_count"] >= 1
+            assert ctx_usage["system_prompt_tokens"] > 0
+            # tracker 侧：latest + 历史同步
+            assert engine.token_tracker.get_context_usage() == ctx_usage
+            assert len(engine.token_tracker.get_context_usage_history()) == 1
+
+    @pytest.mark.asyncio
     async def test_default_response(self):
         """Test that default response is returned when no scripts."""
-        from nono_agent.adapters.testing import MockProvider
+        from tests.helpers import MockProvider
         provider = MockProvider()
 
         events = []
@@ -141,7 +236,7 @@ class TestMockProvider:
     @pytest.mark.asyncio
     async def test_scripted_responses(self):
         """Test that scripted responses are returned in order."""
-        from nono_agent.adapters.testing import MockProvider
+        from tests.helpers import MockProvider
         provider = MockProvider(
             responses=[
                 {"text": "First", "tool_calls": []},

@@ -1,0 +1,1060 @@
+@import "tailwindcss";
+/* KaTeX 自带的字体和排版规则。必须放 tailwindcss 之后：它的 preflight 会重置字体，
+   让 katex 的样式后加载才能压住。 */
+@import "katex/dist/katex.min.css";
+
+@theme {
+  /* 纯系统字体栈，不加载任何 Web 字体。Windows 上拉丁落到 Segoe UI，中文逐字回退到微软雅黑。 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  /* 等宽栈末尾的 PingFang SC / Microsoft YaHei 不能省：代码里的中文不在任何等宽字体里，
+     没有它们兜底就会一路落到通用 monospace，在 Windows 上掉回宋体（衬线、笔画粗重）。
+     通用 monospace 仍留在最后，只为覆盖 Linux 上没装上面任何一款的情况。 */
+  --font-mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", "IBM Plex Mono", Consolas,
+    Menlo, "PingFang SC", "Microsoft YaHei", monospace;
+
+  /* ---- 外观：这里是浅色的一套，深色的一套在下面的 :root[data-theme="dark"] ---- */
+  --color-bg: #ffffff;
+  --color-sidebar: #f6f7f9;
+  --color-ink: #0f1115;
+  --color-muted: #6b7280;
+  --color-faint: #9aa0ab;
+  --color-line: #e7e9ee;
+  --color-line-strong: #d7dbe3;
+  --color-hover: #eef0f4;
+  --color-active: #e7eaf0;
+  --color-card: #f4f5f7;
+  --color-danger: #d94841;
+  --color-accent: #111827;
+  /* 拖拽落点线：与中性墨色区分开，拖动时一眼能看见插在哪。 */
+  --color-drag: #4176e6;
+
+  /* accent 在深色下会翻成浅色，所以"压在实心块上的文字"必须另有一个 token，
+     不能写死 text-white —— 否则深色下是白底白字。 */
+  --color-on-accent: #ffffff;
+  --color-accent-hover: #000000;
+  --color-on-danger: #ffffff;
+
+  /* 代码区。行内代码比整块代码再浅一点，浅色下靠底色差拉开层次。 */
+  --color-code: #f6f7f9;
+  --color-code-inline: #f1f2f5;
+
+  /* 语义色。diff 的增删、状态标签、提示条全走这里，深浅两套各自调过对比度。 */
+  --color-add: #2f8a4c;
+  --color-add-soft: #e9f7ee;
+  /* 行号槽那一格：整行底色太淡，压不住数字，要比 -soft 再重一档。 */
+  --color-add-deep: #d5efdd;
+  --color-add-deep-ink: #3f7d52;
+  --color-del: #c4403f;
+  --color-del-soft: #fdeeee;
+  --color-del-deep: #f9dcdc;
+  --color-del-deep-ink: #a2474a;
+  --color-warn: #7a5b12;
+  --color-warn-soft: #fdf6e3;
+  --color-warn-line: #f0dca8;
+  --color-warn-hover: #f5e7bf;
+  --color-warn-strong: #5f460d;
+  --color-on-warn: #ffffff;
+  --color-info: #2a4ea3;
+  --color-info-soft: #e8eefc;
+  --color-modified: #b7791f;
+  --color-rename: #3366cc;
+  --color-ok: #22c55e;
+
+  /* GitHub Alert 的五种配色。ink 是图标和标题的颜色，soft 是块底色 —— 抄 GitHub
+     自己那套，看到仓库 README 里的 [!NOTE] 时不用重新认一遍。
+     soft 压得很淡是故意的：正文要压在它上面，染太重就看不清字了。 */
+  --color-alert-note: #0969da;
+  --color-alert-note-soft: #ddf4ff;
+  --color-alert-tip: #1a7f37;
+  --color-alert-tip-soft: #e2f7e9;
+  --color-alert-important: #8250df;
+  --color-alert-important-soft: #f1e9fd;
+  --color-alert-warning: #9a6700;
+  --color-alert-warning-soft: #fff8c5;
+  --color-alert-caution: #cf222e;
+  --color-alert-caution-soft: #ffebe9;
+
+  /* 编辑器 / diff 里那些"底色提示"：行高亮、斑马纹、查找命中、行内改动。 */
+  --color-sunken: #f6f7f9;
+  --color-zebra: #eef0f4;
+  --color-find-match: #dbe4f5;
+  --color-selection-match: #eef2d6;
+  --color-inline-change: #b7d4ff;
+  --color-diff-head: #f3f6fb;
+  --color-diff-head-line: #e3e8f2;
+  --color-diff-head-ink: #5b6b8c;
+
+  /* CodeMirror 的语法色。defaultHighlightStyle 是一套写死给浅底的颜色，深色下关键字和
+     字符串会糊进背景里，所以自己定义一份，颜色全走 var() 跟着主题切。 */
+  --color-syntax-keyword: #cf222e;
+  --color-syntax-string: #0a3069;
+  --color-syntax-number: #0550ae;
+  --color-syntax-comment: #6e7781;
+  --color-syntax-type: #953800;
+  --color-syntax-func: #8250df;
+}
+
+/* 阴影颜色也随主题走：深色底上再叠一层近黑阴影等于没叠，弹窗/浮层会糊在背景里分不出来。
+   会话正文字号写在本机 localStorage：index.html 里的首屏脚本先把它读出来写进
+   --content-font-size（避免首屏先按默认值渲染再跳一下），React 起来后由
+   lib/content-font-size.ts 继续维护同一个变量。
+   默认 14px：中文在这个尺寸下笔画最匀，15px 起微软雅黑就明显发粗、显大。 */
+:root {
+  --shadow-color-soft: rgb(15 17 21 / 0.06);
+  --shadow-color: rgb(15 17 21 / 0.12);
+  --shadow-color-strong: rgb(15 17 21 / 0.24);
+  --term-selection: rgba(17, 24, 39, 0.16);
+  /* 失焦时的选区：终端失焦、或者右键菜单开着的时候用它。要比常态淡，但还得看得见，
+     否则用户点"复制"时选区已经没了。 */
+  --term-selection-inactive: rgba(17, 24, 39, 0.09);
+  --content-font-size: 14px;
+  color-scheme: light;
+}
+
+/* 深色一套。冷灰基调，贴着浅色那套的色温走，不做成纯黑 —— 纯黑和纯白对比过强，长时间读代码刺眼。
+   用 :root[data-theme=...] 而不是 [data-theme=...]：选择器权重比 Tailwind 生成的 :root 高一档，
+   不依赖"谁写在后面"这种顺序去赢。 */
+:root[data-theme="dark"] {
+  --color-bg: #16181d;
+  --color-sidebar: #1a1d23;
+  --color-ink: #e6e8ec;
+  --color-muted: #9aa2b1;
+  --color-faint: #6b7383;
+  --color-line: #262a32;
+  --color-line-strong: #363c48;
+  --color-hover: #22262e;
+  --color-active: #2b303a;
+  --color-card: #1f232b;
+  --color-danger: #f0736c;
+  --color-accent: #e6e8ec;
+  --color-drag: #6f9bff;
+
+  --color-on-accent: #16181d;
+  --color-accent-hover: #c9ced8;
+  --color-on-danger: #2a1214;
+
+  --color-code: #1c1f26;
+  --color-code-inline: #24272f;
+
+  /* 深色下饱和度要压、亮度要抬：同样一个绿，直接搬 #2f8a4c 上去会糊成一团分不出笔画。 */
+  --color-add: #5fbf7f;
+  --color-add-soft: #16261c;
+  --color-add-deep: #1d3326;
+  --color-add-deep-ink: #8fd3a6;
+  --color-del: #f08a88;
+  --color-del-soft: #2a1719;
+  --color-del-deep: #3a1e20;
+  --color-del-deep-ink: #f5a9a7;
+  --color-warn: #e0bd77;
+  --color-warn-soft: #2a2313;
+  --color-warn-line: #4a3d1c;
+  --color-warn-hover: #3a3018;
+  --color-warn-strong: #b3924c;
+  --color-on-warn: #2a2313;
+  --color-info: #8fb0ff;
+  --color-info-soft: #18213a;
+  --color-modified: #d9a441;
+  --color-rename: #7aa7ff;
+  --color-ok: #4ade80;
+
+  /* Alert 的深色版：饱和度压下来、亮度抬上去，和上面那批语义色一个路子。
+     soft 换成深色底上的暗染色，不是浅色的浅底 —— 那样在深色主题里会亮得刺眼。 */
+  --color-alert-note: #58a6ff;
+  --color-alert-note-soft: #121d2f;
+  --color-alert-tip: #3fb950;
+  --color-alert-tip-soft: #0f2a17;
+  --color-alert-important: #d2a8ff;
+  --color-alert-important-soft: #241a3d;
+  --color-alert-warning: #e3b341;
+  --color-alert-warning-soft: #2a2213;
+  --color-alert-caution: #f85149;
+  --color-alert-caution-soft: #2d1517;
+
+  --color-sunken: #1a1d23;
+  --color-zebra: #1d212a;
+  --color-find-match: #3a4a2a;
+  --color-selection-match: #3d4526;
+  --color-inline-change: #2a3f63;
+  --color-diff-head: #1a1f28;
+  --color-diff-head-line: #2b3140;
+  --color-diff-head-ink: #93a2bd;
+
+  --color-syntax-keyword: #ff7b72;
+  --color-syntax-string: #a5d6ff;
+  --color-syntax-number: #79c0ff;
+  --color-syntax-comment: #8b949e;
+  --color-syntax-type: #ffa657;
+  --color-syntax-func: #d2a8ff;
+
+  --shadow-color-soft: rgb(0 0 0 / 0.4);
+  --shadow-color: rgb(0 0 0 / 0.55);
+  --shadow-color-strong: rgb(0 0 0 / 0.7);
+  --term-selection: rgba(154, 162, 177, 0.3);
+  --term-selection-inactive: rgba(154, 162, 177, 0.18);
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 拖拽期间（lib/drag-session.ts 挂上的标记）内嵌页面一律不接指针事件。
+   侧边浏览器的 <webview> 和 HTML 预览的 <iframe> 都跑在各自的渲染进程里：指针一进去，
+   后续的 pointermove / pointerup 就归访客了，宿主上分隔条的拖拽会当场卡住，松手也没人
+   复原。关掉它们的命中测试，事件就回到宿主文档，拖拽才拖得完。 */
+html[data-drag-session] iframe,
+html[data-drag-session] webview,
+html[data-drag-session] embed,
+html[data-drag-session] object {
+  pointer-events: none;
+}
+
+/* 标准属性一旦不是 initial，Chromium 就会整个忽略 ::-webkit-scrollbar 伪元素
+   （CSSWG 2024-04 决议：scrollbar-width / scrollbar-color 优先于 legacy 伪元素），
+   滚动条会退回 Fluent 细条，下面 webkit 的 4px 永远不生效。
+   所以这两条只能关进 Firefox 分支：它不认 ::-webkit-scrollbar，@supports not 成立。 */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--color-faint) 55%, transparent) transparent;
+  }
+
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-faint) 50%, transparent);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--color-muted) 42%, transparent);
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+/* 侧边栏里能点的东西一律"伸手"：光标变小手是最便宜的可点击反馈。
+   会话/工作区那几行可拖拽，光标要留给 grab 抓手，所以把它们排除在外。 */
+.sidebar button:not(:disabled):not([draggable="true"]) {
+  cursor: pointer;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.prose-md {
+  font-size: var(--content-font-size, 14px);
+  line-height: 1.72;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+
+.prose-md > :first-child {
+  margin-top: 0;
+}
+
+.prose-md > :last-child {
+  margin-bottom: 0;
+}
+
+.prose-md p + p,
+.prose-md p + ul,
+.prose-md p + ol,
+.prose-md ul + p,
+.prose-md ol + p {
+  margin-top: 0.85em;
+}
+
+.prose-md h1,
+.prose-md h2,
+.prose-md h3,
+.prose-md h4 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  margin: 1.1em 0 0.45em;
+}
+
+.prose-md h1 {
+  font-size: 1.35em;
+}
+
+.prose-md h2 {
+  font-size: 1.18em;
+}
+
+.prose-md h3,
+.prose-md h4 {
+  font-size: 1.05em;
+}
+
+.prose-md ul,
+.prose-md ol {
+  margin: 0.6em 0;
+  padding-left: 1.35em;
+}
+
+.prose-md ul {
+  list-style: disc;
+}
+
+.prose-md ol {
+  list-style: decimal;
+}
+
+.prose-md li + li {
+  margin-top: 0.35em;
+}
+
+.prose-md li > ul,
+.prose-md li > ol {
+  margin: 0.25em 0;
+}
+
+.prose-md strong {
+  font-weight: 600;
+}
+
+/* 正文里的链接：颜色走 --color-info（深浅两套各自调过对比度），比 inherit 更容易
+   扫读时认出"这里能点"。锚点（#标题）留在原地，不染色 —— 那是目录跳转，不是导航出去。
+
+   下划线用 currentColor 而不是固定色：悬停变深时线跟着一起深，不会留下一道浅线。 */
+.prose-md a {
+  color: var(--color-info);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  border-radius: 3px;
+  /* 链接本身也可聚焦：键盘 Tab 过来时必须有明确的落点，否则读屏用户无从判断读到哪了。 */
+  transition: color 120ms ease, text-decoration-color 120ms ease, background-color 120ms ease;
+}
+
+.prose-md a:hover {
+  text-decoration-color: currentColor;
+  background-color: color-mix(in srgb, var(--color-info) 8%, transparent);
+}
+
+/* 焦点环跟全站按钮一致（focus-visible:ring-2 ring-ink/15），这里用 outline 实现 ——
+   正文是流式重绘的，box-shadow 会跟着每一行重算，outline 只画一次外框。 */
+.prose-md a:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-ink) 15%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* 页内锚点不该看起来像"要去别处"：不着色、不加底色，交给浏览器自己跳。
+   仍然保留可见的焦点环，键盘用户才知道自己停在了一个锚点上。 */
+.prose-md a.md-anchor {
+  color: inherit;
+  text-decoration-color: color-mix(in srgb, currentColor 30%, transparent);
+}
+
+.prose-md a.md-anchor:hover {
+  background-color: transparent;
+  text-decoration-color: currentColor;
+}
+
+/* 文件链接：留在应用内开预览，用 --color-muted 的下划线 + 一个等宽的文件字形，
+   和"跳去外网"的蓝链接一眼分开。鼠标停在上面时给出「可以打开」的暗示。 */
+.prose-md a.md-file {
+  color: inherit;
+  text-decoration-color: color-mix(in srgb, var(--color-muted) 55%, transparent);
+  text-decoration-style: dotted;
+}
+
+.prose-md a.md-file:hover {
+  color: var(--color-ink);
+  background-color: var(--color-hover);
+  text-decoration-color: currentColor;
+  text-decoration-style: solid;
+}
+
+/* 裸网址（正文里直接贴出来的链接，常无锚文本）：让它在段末可断行，否则一个长 URL
+   会把整段的版心撑歪。break-word 只在"这个词自己都放不下"时断，断点仍在词边界。 */
+.prose-md a.md-web {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.prose-md blockquote {
+  margin: 0.75em 0;
+  border-left: 2px solid var(--color-line-strong);
+  padding-left: 0.85em;
+  color: var(--color-muted);
+}
+
+/* GitHub Alert：> [!NOTE] 这类块引用渲染成的提示块（见 markdown/AlertBlock.tsx）。
+   左侧色条 + 一行带图标的标题，正文照常按 .prose-md 排版；
+   两种色的具体取值由下面的类型类名给，--alert-ink / --alert-soft 是本块内部的中转名。 */
+.markdown-alert {
+  --alert-ink: var(--color-alert-note);
+  --alert-soft: var(--color-alert-note-soft);
+  margin: 0.9em 0;
+  padding: 0.65em 0.9em;
+  border-left: 3px solid var(--alert-ink);
+  border-radius: 0 8px 8px 0;
+  background: var(--alert-soft);
+  /* 正文用正文色，不跟 blockquote 那样压成 muted：提示块是当正文读的。 */
+  color: var(--color-ink);
+}
+
+.markdown-alert-tip {
+  --alert-ink: var(--color-alert-tip);
+  --alert-soft: var(--color-alert-tip-soft);
+}
+
+.markdown-alert-important {
+  --alert-ink: var(--color-alert-important);
+  --alert-soft: var(--color-alert-important-soft);
+}
+
+.markdown-alert-warning {
+  --alert-ink: var(--color-alert-warning);
+  --alert-soft: var(--color-alert-warning-soft);
+}
+
+.markdown-alert-caution {
+  --alert-ink: var(--color-alert-caution);
+  --alert-soft: var(--color-alert-caution-soft);
+}
+
+/* 标题独占一行，图标跟着基线走。em 高由标题字号定，所以图标用 em 跟着缩放，
+   换主题字号时不用回来改这里。 */
+.markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  margin: 0 0 0.45em;
+  color: var(--alert-ink);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.markdown-alert-icon {
+  width: 1.15em;
+  height: 1.15em;
+  flex: none;
+}
+
+/* 只有标题没有正文时别在底部留一段空行。 */
+.markdown-alert-title:last-child {
+  margin-bottom: 0;
+}
+
+/* 容器有 padding，末块的 margin-bottom 不会被折进去，白留一块空当。 */
+.markdown-alert > :last-child {
+  margin-bottom: 0;
+}
+
+.prose-md hr {
+  border: 0;
+  border-top: 1px solid var(--color-line);
+  margin: 1.1em 0;
+}
+
+.prose-md code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--color-code-inline);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+.prose-md pre {
+  margin: 0.75em 0;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--color-code);
+  padding: 0.85em 1em;
+}
+
+.prose-md pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.84em;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.prose-md .code-fence pre {
+  margin: 0;
+  overflow: auto;
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 14px 14px;
+}
+
+/* 代码块固定 13px，不随会话字号缩放：正文放大到 22px 时，一块 22px 的代码会把版面撑散。 */
+.prose-md .code-fence pre code {
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+/* 表格只留横线、不画框。竖线和表头底色去掉之后，长表扫读时眼睛不会被一格一格的
+   边框绊住，跟引用块、分割线是同一套语言：细线 + 留白。 */
+.prose-md .table-scroll {
+  margin: 0.85em 0;
+  overflow-x: auto;
+  /* 表格横滚到头时别把滚动"传"给外层消息列表，否则整个会话会跟着横向晃一下。 */
+  overscroll-behavior-x: contain;
+}
+
+/* 表格铺满正文列（width: 100%），跟正文左右缘对齐。宽度不够分时才在格内折行，
+   折点交给浏览器按词/CJK 边界找：下面那条 break-word 就是为此准备的。
+   外层 .table-scroll 只是兜底 —— 列多到 min-content 加起来都超过列宽时（每格一个
+   长标识符），表格会溢出，那时横滚，别让溢出顶到消息列表上。 */
+.prose-md table {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  border-spacing: 0;
+  font-size: 0.92em;
+}
+
+.prose-md th,
+.prose-md td {
+  border: 0;
+  border-bottom: 1px solid var(--color-line);
+  padding: 0.5em 1.15em 0.5em 0;
+  text-align: left;
+  vertical-align: top;
+  /* 正文那条 anywhere 会把 min-content 压到 0，列就被挤扁、词被从中间劈开；
+     break-word 只在"这个词自己都放不下"时才断，断点落在词与词之间。 */
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.prose-md th {
+  border-bottom-color: var(--color-line-strong);
+  background: transparent;
+  font-weight: 600;
+}
+
+/* 末列不留右内边距：表格右缘跟正文右缘齐平，横向滚动时不会拖着一截空白。 */
+.prose-md th:last-child,
+.prose-md td:last-child {
+  padding-right: 0;
+}
+
+/* 表格正文走等宽：文件路径、字段名、命令这类内容和正文混排时，等宽才分得清哪个是标识符。
+   中文不受影响（--font-mono 末尾兜底到雅黑，和正文同一款）；不想要这层"终端表格"观感
+   就删掉这一行。 */
+.prose-md td {
+  font-family: var(--font-mono);
+}
+
+/* ---- frontmatter（YAML 头）卡片 ----
+   聊天和预览共用一套：字段名是标识符，走等宽；值回到正文字体。两列固定表头宽度，
+   值列 minmax(0,1fr) —— 少了这个，长描述（URL、路径）会把 key 列顶开。 */
+.md-frontmatter {
+  /* margin-top 自己写死 0：.prose-md > :first-child 也给 0，但卡片不该依赖父级规则 ——
+     聊天里它可能不是第一个子节点（比如被 reasoning 行挡着）。 */
+  margin: 0 0 1.1em;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-code) 60%, transparent);
+  padding: 0.45em 0.75em 0.6em;
+  font-size: 0.88em;
+}
+
+.md-frontmatter-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  min-width: 0;
+}
+
+.md-frontmatter-toggle {
+  display: inline-flex;
+  min-width: 0;
+  /* 不许收缩：标题里的中文是逐字可断的，一旦被压到 0 宽，"看原文" 会一个汉字一行
+     竖着排出来，还溢出卡片右缘。 */
+  flex: 0 0 auto;
+  cursor: pointer;
+  align-items: center;
+  gap: 0.35em;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.md-frontmatter-toggle:hover {
+  color: var(--color-ink);
+}
+
+.md-frontmatter-caret {
+  width: 0.85em;
+  height: 0.85em;
+  flex-shrink: 0;
+  transition: transform 140ms ease;
+}
+
+/* 展开时转 90°。不换图标：箭头变形比换字形稳，两张图都得留在资源里。 */
+.md-frontmatter-caret-open {
+  transform: rotate(90deg);
+}
+
+.md-frontmatter-label {
+  font-family: var(--font-mono);
+  color: var(--color-muted);
+}
+
+.md-frontmatter-count {
+  color: var(--color-faint);
+  font-size: 0.9em;
+}
+
+/* 摘要只在一行里截断：name · description 可能很长，让它撑开会把「看原文」挤出可视区。 */
+.md-frontmatter-summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-faint);
+}
+
+.md-frontmatter-source {
+  margin-left: auto;
+  /* 同上：宁可让中间的摘要先让位，也不能把这个按钮压成竖排。 */
+  flex: 0 0 auto;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  padding: 0.1em 0.4em;
+  font-size: 0.9em;
+  color: var(--color-faint);
+}
+
+.md-frontmatter-source:hover {
+  background: var(--color-hover);
+  color: var(--color-ink);
+}
+
+.md-frontmatter-fields {
+  margin: 0.5em 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+}
+
+.md-frontmatter-row {
+  display: grid;
+  grid-template-columns: minmax(4.5em, 9em) minmax(0, 1fr);
+  align-items: start;
+  gap: 0.6em;
+}
+
+.md-frontmatter dt {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--color-faint);
+  /* 字段名本身长（allowed-tools）时按 - 断，别把整行撑歪。 */
+  overflow-wrap: anywhere;
+}
+
+.md-frontmatter dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--color-ink);
+}
+
+/* 值保留换行：YAML 双引号标量里的 \n 是真的换行，压成一行会读不出原意。 */
+.md-frontmatter-value {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.md-frontmatter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3em;
+}
+
+.md-frontmatter-chip {
+  border: 1px solid var(--color-line);
+  border-radius: 5px;
+  background: var(--color-bg);
+  padding: 0 0.4em;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  color: var(--color-muted);
+}
+
+/* 没硬解出来的字段（嵌套 map、块标量）：原样贴着，跟「看原文」里看到的一致。 */
+.md-frontmatter-raw {
+  margin: 0;
+  overflow-x: auto;
+  border-left: 2px solid var(--color-line);
+  padding-left: 0.6em;
+  font-family: var(--font-mono);
+  /* 固定 12.5px，不跟会话字号缩放：跟 .prose-md pre 同一条理由，正文放到 22px 时
+     一块跟着变大的等宽文本会把版面撑散。 */
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre;
+  color: var(--color-muted);
+}
+
+.md-frontmatter-empty {
+  color: var(--color-faint);
+}
+
+/* 「看原文」那块代码块在卡片里，去掉外边距免得卡片底部多出一截空。 */
+.md-frontmatter .code-fence {
+  margin: 0.5em 0 0;
+}
+
+/* 目录按钮：锚条只负责吸顶，按钮自己绝对定位。
+   高度 0 是关键 —— 原来那条 sticky 栏是 h-8 配 -mb-8 抵消高度，视觉上不占位，
+   但它仍然压在正文第一行上，顶部也就多出一条看不见的让位。
+   现在锚条一行都不占，按钮浮在正文上方，放哪儿由人拖（MdToc.tsx 里处理吸附）。 */
+.md-toc {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 10;
+  height: 0;
+  pointer-events: none;
+}
+
+/* 目录按钮默认就停在面板右上角，而 frontmatter 卡片这一行的「看原文」也在右上角。
+   不让开的话两者叠在一起，点「看原文」弹出来的是目录 —— 这是真的点不到，不是挡一下好看。
+   给这一行右边留出按钮的宽度。按钮被拖到左边之后这块会空着，只是留白，不影响别的。
+   只作用于预览：聊天里没有目录按钮。 */
+.file-preview .md-frontmatter-bar {
+  padding-right: 2.5rem;
+}
+
+/* 聊天里的那一行：比预览轻一档。聊天中出现 YAML 头基本都是模型在贴文件全文，
+   用户要的是正文，元信息不该跟正文抢层级。 */
+.prose-md .md-frontmatter-compact {
+  background: none;
+  padding: 0 0.15em;
+}
+
+.md-frontmatter-empty-block {
+  color: var(--color-faint);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+/* 文件预览是"读文档"，不是"看对话"，固定 14px：跟着会话字号走，README 会跟着忽大忽小。 */
+.file-preview .prose-md {
+  font-size: 14px;
+  overflow-wrap: break-word;
+}
+
+.file-preview .prose-md details {
+  margin: 0.8em 0;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  padding: 0.35em 0.75em;
+}
+
+.file-preview .prose-md summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+/* diff 里左右两半对不齐的空白格：斜纹条提示"这里没有对应行"，
+   底色跟主题走，所以走 class 而不是 Tailwind 的任意值（那里面塞不下两个 var）。 */
+/* 字号滑块。原生 range 控件在深浅两套下都太糙：轨道是系统灰、拇指是个方角小块。
+   这里把轨道压细、已走过的部分填成墨色、拇指做成空心圆点。
+   --pct 由组件按当前值算好写在行内 —— 原生 range 没有"只给已选段上色"的接口。 */
+.font-size-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.font-size-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--color-accent) 0 var(--pct, 33%),
+    var(--color-line-strong) var(--pct, 33%) 100%
+  );
+}
+
+.font-size-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5.5px;
+  border-radius: 999px;
+  background: var(--color-bg);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 1px 3px var(--shadow-color);
+}
+
+/* Firefox 没有 :-webkit-slider-progress 之外的"已选段"伪元素，:moz-range-progress 正好对应。 */
+.font-size-slider::-moz-range-track {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-line-strong);
+}
+
+.font-size-slider::-moz-range-progress {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
+.font-size-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--color-bg);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 1px 3px var(--shadow-color);
+}
+
+.font-size-slider:focus-visible {
+  outline: none;
+}
+
+.font-size-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.font-size-slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.diff-zebra {
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--color-sunken),
+    var(--color-sunken) 4px,
+    var(--color-zebra) 4px,
+    var(--color-zebra) 8px
+  );
+}
+
+.terminal-host .xterm {
+  height: 100%;
+}
+
+.mermaid-diagram svg,
+.svg-figure svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.svg-figure svg {
+  width: 100%;
+  text-rendering: optimizeLegibility;
+}
+
+.svg-zoom svg {
+  display: block;
+  width: auto;
+  max-width: none;
+  height: auto;
+}
+
+/* 预览画布（图片、图表放大框）：按住拖动平移时不该顺手选中文本，SVG 里的 <text> 是可选中的。 */
+.pan-zoom {
+  cursor: grab;
+  touch-action: none;
+  overscroll-behavior: contain;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pan-zoom-target {
+  transform-origin: center;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 只在拖拽过程中提层：位移交给合成器，大图和节点多的 SVG 都不用每帧重新栅格化；
+   松手就撤掉，滚轮改缩放时浏览器仍会按新倍率重新采样。 */
+.pan-zoom[data-panning="true"] {
+  cursor: grabbing;
+}
+
+.pan-zoom[data-panning="true"] .pan-zoom-target {
+  will-change: transform;
+}
+
+/* 次级行（摘要、引用、元信息）永远比正文小一档，宽度一变层级就还在。 */.prose-md-muted {
+  font-size: calc(var(--content-font-size, 14px) - 1px);
+  line-height: 1.6;
+  color: var(--color-muted);
+}
+
+.prose-md-muted h1,
+.prose-md-muted h2,
+.prose-md-muted h3,
+.prose-md-muted h4,
+.prose-md-muted strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.prose-md-muted pre,
+.prose-md-muted code {
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+}
+
+/* 次级行里的链接要跟着这一行的层级一起降下来：摘要里夹着的地址多半是过程说明，
+   不该和正文里的引用一样抢视线。字号、对比度都压一档，但保持可点、可辨。 */
+.prose-md-muted a {
+  color: color-mix(in srgb, var(--color-info) 78%, var(--color-muted));
+}
+
+.prose-md-muted a.md-file {
+  color: var(--color-muted);
+}
+
+.prose-md-muted .code-fence pre,
+.prose-md-muted .code-fence pre code {
+  background: transparent;
+}
+
+@keyframes chat-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.chat-history-reveal .chat-msg {
+  animation: chat-message-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-history-reveal .chat-msg {
+    animation: none;
+  }
+}
+
+/* toast 从下方 8px 浮上来。位移刻意压得比聊天消息那条小：toast 是突然冒出来
+   的，位移太大人会盯着它看，反而显得吵闹。 */
+@keyframes nono-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.nono-toast {
+  animation: nono-toast-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nono-toast {
+    animation: none;
+  }
+}
+
+/* ---- 桌面端自绘标题栏 ----
+   Electron 用 titleBarStyle:'hidden' 把原生标题栏让给了页面，窗口顶部就分成两段：
+
+   .titlebar-drag —— 顶上那一整条空带（h-9 = 36px，和 desktop/src/main.js 的
+   TITLEBAR_HEIGHT 必须一致），唯一的职责就是让用户抓着窗口走。上面刻意不放任何
+   内容：Windows 那三个系统窗口按钮以 overlay 形式正好浮在它的右上角，空着才不
+   打架。底色跟左侧菜单栏一致（bg-sidebar → --color-sidebar，见 App.tsx），
+   头部与菜单拼成同一个 L 形色块，视觉上才是一体的。
+   鼠标划上去给一点底色，是"这条能拖"的提示 —— 不然一条纯空白在顶上，
+   用户跟当初一样不知道该抓哪儿。
+
+   .titlebar —— 它下面那行 h-10 的页头（Sidebar 表头、对话页头、文件页头），
+   内容上是正经表头，但顺带也能拖，纯属手大时的保险。里面能点的元素用 no-drag
+   白名单拿回自己的鼠标事件，否则点按钮会变成拖窗口，而不是被点击。
+
+   纯 web（浏览器里直接打开）不解析这两个属性，等于没写，不用为它做分支。 */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+
+.titlebar-drag:hover {
+  background: var(--color-hover);
+}
+
+.titlebar {
+  -webkit-app-region: drag;
+}
+
+.titlebar button,
+.titlebar a,
+.titlebar input,
+.titlebar textarea,
+.titlebar select,
+.titlebar label,
+.titlebar [role="button"],
+/* 文件栏页头那排标签要单独拎出来：可点单元是 div[role=tab] 而不是 button（选中、
+   双击重命名、中键关闭、HTML5 拖拽排序都挂在它上面），标签条本身还要把竖向滚轮
+   转成横向滚动。两条都 no-drag，否则点标签会变成拖窗口，标签之间也没法再排序。 */
+.titlebar [role="tablist"],
+.titlebar [role="tab"] {
+  -webkit-app-region: no-drag;
+}

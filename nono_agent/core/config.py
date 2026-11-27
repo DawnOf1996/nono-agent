@@ -4,6 +4,7 @@
 - EngineConfig: 不可变配置，构造时设定，跨轮次持久化
 - QueryConfig: 运行时快照，在每次 submit_message() 入口冻结环境状态
 - ProviderConfig: LLM Provider 初始化配置
+- ShellConfig: bash 工具的执行参数
 
 设计意图：将“不变”和“可变”分离，避免循环体内读取到变化的环境状态。
 """
@@ -11,9 +12,13 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Callable
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from nono_agent.core.input_types import normalize_input_types
+from nono_agent.paths import resolve_session_cwd
+from nono_agent.utils.tokens import resolve_context_window
 
 
 def _gen_session_id() -> str:
@@ -24,33 +29,53 @@ def _gen_session_id() -> str:
 class ProviderConfig(BaseModel):
     """LLM Provider 初始化配置 —— 用于创建 Provider 实例。
 
-    配置驱动适配器选择（原厂 vs 兼容，见 docs/ROADMAP.md §2.6）：
-    - adapter: anthropic | messages_compatible | openai | responses | responses_compatible
+    配置驱动适配器选择（按 API 协议，不区分原厂 / 其他供应商）：
+    - adapter: openai_chat_completions | openai_responses | anthropic_messages
     - extra_body: 每次请求时深度合并到请求体中的额外参数
-    
+    - 供应商由 api_key + base_url 决定；三类协议一律走对应 SDK client
+
     用法示例::
 
-        # MiniMax 通过 OpenAI Chat Completions 兼容 API
+        # MiniMax 通过 OpenAI Chat Completions 协议
         ProviderConfig(
             model_id="MiniMax-M3",
-            adapter="openai",
+            adapter="openai_chat_completions",
             api_key="your-key",
             base_url="https://api.minimax.chat/v1",
             extra_body={"reasoning_split": True},
         )
-
-        # 非原厂 Anthropic Messages 兼容网关（规划：adapter="messages_compatible"）
-        # ProviderConfig(model_id="...", adapter="messages_compatible", base_url="...")
     """
 
     model_id: str                              # 模型 ID（如 "claude-sonnet-4-20250514"）
-    adapter: str | None = None                 # API 协议: anthropic | messages_compatible | openai | responses | responses_compatible
+    # 模型上下文窗口大小（token 数）。压缩管线按此值计算触发阈值；
+    # 未配置时回退 DEFAULT_CONTEXT_WINDOW（不做模型前缀猜测）。
+    model_context: int | None = None
+    # API 协议: openai_chat_completions | openai_responses | anthropic_messages
+    adapter: str | None = None
     api_key: str = ""                          # API 密钥
     base_url: str | None = None                # 自定义 API 端点（代理/厂商地址）
     extra_headers: dict[str, str] = Field(default_factory=dict)  # 额外 HTTP 头
     extra_body: dict[str, Any] = Field(default_factory=dict)     # 额外请求体参数（深度合并）
     timeout: float = 600.0                     # 请求超时时间（秒）
     max_retries: int = 3                       # 最大重试次数
+    # 单次补全 max tokens；未配置时由各协议实现自己的默认值
+    max_tokens: int | None = None
+    # 模型接受的输入模态（``text`` / ``image``），由目录里的 ``input_types`` 带入。
+    # 发图片前会先比对这里，模型没声明 image 就不放行（见 engine.submit_message）。
+    input_types: list[str] = Field(default_factory=lambda: ["text"])
+    # 是否在 SDK 发 HTTP 前把请求 params 打到日志（默认关；体积大，可能含提示词）
+    log_api_requests: bool = False
+
+    @field_validator("input_types", mode="before")
+    @classmethod
+    def _normalize_input_types(cls, value: object) -> list[str]:
+        if value is None:
+            return ["text"]
+        return normalize_input_types(value)
+
+    @property
+    def supports_image(self) -> bool:
+        return "image" in self.input_types
 
 
 class ThinkingConfig(BaseModel):
@@ -60,6 +85,63 @@ class ThinkingConfig(BaseModel):
     budget_tokens: int | None = None  # 思考 token 上限（None 表示不限制）
 
 
+class ShellConfig(BaseModel):
+    """bash 工具的执行参数。
+
+    方言（``dialect``）决定命令交给哪个 shell 解析：``auto`` 在 Windows 上
+    优先 pwsh 7、退回 Windows PowerShell 5.1，在 POSIX 上用 sh。显式指定
+    ``cmd`` 可退回改动前的行为。
+
+    ``max_output_chars`` 是送给模型的内存上限，超出部分落盘（见
+    ``nono_agent.shell.spill``）并把路径回报给模型，因此**不设上限也不会丢失
+    内容**，只是模型默认看不到。
+    """
+
+    dialect: Literal["auto", "powershell", "pwsh", "cmd", "bash", "sh"] = "auto"
+
+    # 前台命令的等待上限（秒）。与 max_timeout_s 共同构成调用方可请求的范围。
+    timeout_s: float = 120.0
+    # 模型单次可请求的超时上限（秒）—— 防止一次调用把会话挂住一小时。
+    max_timeout_s: float = 600.0
+
+    # 送给模型的每条流内存上限（字节）。超出落盘。
+    max_output_bytes: int = 30_000
+    # 落盘上限（字节）。超出后停止写并在结果里标明。
+    max_spill_bytes: int = 64 * 1024 * 1024
+
+    # stderr 是否并入 stdout。默认分离 —— 合并后模型无法区分命令的正常输出
+    # 与诊断信息。保留此项是为了兼容依赖合并输出的旧提示词。
+    merge_streams: bool = False
+
+    # 超时后是否把仍在运行的命令转为后台作业（而不是直接杀掉）。
+    # 关掉即退回「超时即终止」的行为。
+    promote_on_timeout: bool = True
+
+    # 叠加到执行环境上的变量（NO_COLOR / PAGER 等由 shell.env_overrides 兜底）。
+    env_overrides: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("max_timeout_s")
+    @classmethod
+    def _max_timeout_not_below_default(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError(f"max_timeout_s must be positive, got {value}")
+        return value
+
+    @field_validator("max_output_bytes", "max_spill_bytes")
+    @classmethod
+    def _positive_sizes(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("shell size limits must be positive")
+        return value
+
+    def clamp_timeout(self, requested: float | None) -> float:
+        """把模型请求的超时夹到 ``(0, max_timeout_s]``。缺省用 ``timeout_s``。"""
+        value = self.timeout_s if requested is None else float(requested)
+        if value <= 0:
+            value = self.timeout_s
+        return min(value, self.max_timeout_s)
+
+
 class EngineConfig(BaseModel):
     """QueryEngine 不可变配置 —— 构造时设定，跨轮次持久化。
 
@@ -67,19 +149,27 @@ class EngineConfig(BaseModel):
     每次 submit_message() 会基于此创建 QueryConfig 快照。
     """
 
-    # 工具执行的工作目录
+    # 工具执行的工作目录（构造时收成绝对路径，禁止 ``.`` 进入会话 header）
     cwd: str = "."
+
+    @field_validator("cwd")
+    @classmethod
+    def _absolute_cwd(cls, value: str) -> str:
+        return resolve_session_cwd(value or ".")
 
     # 主模型和备用模型（主模型不可用时切换）
     model: str = "claude-sonnet-4-20250514"
     fallback_model: str | None = None
 
-    # Provider 配置（可选，不填则根据 model 前缀自动路由）
+    # 模型上下文窗口大小（token 数）—— provider.model_context 未配置时的兜底配置。
+    # 未配置任何值时回退 DEFAULT_CONTEXT_WINDOW；不再基于模型 ID 前缀匹配。
+    model_context: int | None = None
+
+    # Provider 配置（库用法直接构造；CLI 从 YAML 目录 resolve）
     provider: ProviderConfig | None = None
 
     # 运行限制
     max_turns: int | None = None                  # 最大循环轮次（None 表示不限制）
-    max_budget_usd: float | None = None           # 最大美元预算
     task_budget: dict[str, float] | None = None   # Token 预算: {"total": 100000}
 
     # 扩展思考配置
@@ -91,8 +181,15 @@ class EngineConfig(BaseModel):
     # 追加系统提示（拼接到默认/自定义提示后面）
     append_system_prompt: str | None = None
 
+    # 输出风格（concise/detailed/explanatory）；None=不注入
+    output_style: str | None = None
+
     # 结构化输出 JSON Schema（配置后 LLM 会返回符合 schema 的 JSON）
     json_schema: dict[str, Any] | None = None
+
+    # ContextCollapse 默认 summarizer（§3.3）：启用后把 LLM 摘要折叠加入默认管线
+    context_collapse_enabled: bool = False
+    context_collapse_model: str | None = None  # 摘要用模型（None=主模型）
 
     # 详细日志
     verbose: bool = False
@@ -106,8 +203,42 @@ class EngineConfig(BaseModel):
     # 会话 ID（不填则自动生成）
     session_id: str = Field(default_factory=_gen_session_id)
 
-    class Config:
-        frozen = True  # 不可变，防止运行期意外修改配置
+    # 记忆作用域：所属 agent（None=不按 agent 隔离；小镇场景每个 NPC 一个 id）
+    agent_id: str | None = None
+
+    # 记忆检索预算（对齐 MemoryManager.retrieve 的 top-k / token 上限）
+    memory_retrieval_k: int = 10
+    memory_retrieval_token_budget: int = 2000
+
+    # 会话日志一致性门禁：每次 LLM 请求前校验「事件流重建 == 运行时消息状态」
+    # - strict: 不一致则终止本轮（log_reconstruction_desync）
+    # - warn:   只记日志与指标，不打断
+    # - off:    不校验（长会话省一次全量事件读取）
+    session_invariant: Literal["strict", "warn", "off"] = "strict"
+
+    # 是否把流式增量（assistant/chunk）写入事件流。
+    # 开启后可在不调 LLM 的情况下逐字回放 UI，代价是事件量随输出 token 线性增长；
+    # 关闭为降级模式，只保留合并后的 assistant/message。
+    log_assistant_chunks: bool = True
+
+    # 是否在 SDK 发 HTTP 前把请求 params 打到日志（默认关）。
+    # 记录协议转换与 extra_body 合并后的请求体，不写入会话事件流。
+    # CLI：``--log-api-requests`` 或环境变量 ``NONO_LOG_API_REQUESTS=1``。
+    log_api_requests: bool = False
+
+    # bash 工具的执行参数（方言、超时、输出预算、后台晋升）
+    shell: ShellConfig = Field(default_factory=ShellConfig)
+
+    model_config = ConfigDict(frozen=True)  # 不可变，防止运行期意外修改配置
+
+    def provider_config_for_api(self) -> ProviderConfig | None:
+        """resolve Provider 时使用的配置：把引擎级 ``log_api_requests`` 拷到 Provider。"""
+        pc = self.provider
+        if pc is None:
+            return None
+        if self.log_api_requests and not pc.log_api_requests:
+            return pc.model_copy(update={"log_api_requests": True})
+        return pc
 
     @property
     def effective_model(self) -> str:
@@ -115,6 +246,17 @@ class EngineConfig(BaseModel):
         if self.provider:
             return self.provider.model_id
         return self.model
+
+    @property
+    def effective_model_context(self) -> int:
+        """生效的模型上下文窗口大小（token 数）。
+
+        解析顺序：provider.model_context > model_context > DEFAULT_CONTEXT_WINDOW。
+        压缩管线的全部触发阈值均基于此值计算。
+        """
+        if self.provider and self.provider.model_context:
+            return resolve_context_window(self.provider.model_context)
+        return resolve_context_window(self.model_context)
 
 
 class RuntimeGates(BaseModel):
@@ -139,5 +281,4 @@ class QueryConfig(BaseModel):
     session_id: str                              # 所属会话 ID
     gates: RuntimeGates = Field(default_factory=RuntimeGates)  # 特性门控快照
 
-    class Config:
-        frozen = True  # 不可变，保证循环体内看到的状态一致
+    model_config = ConfigDict(frozen=True)  # 不可变，保证循环体内看到的状态一致

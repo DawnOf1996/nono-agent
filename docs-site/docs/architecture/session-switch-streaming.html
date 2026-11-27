@@ -1,0 +1,870 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>会话切换下的流式输出 — 设计与调用示例</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+:root{
+  --bg:#f7f5f0;
+  --card:#ffffff;
+  --line:#e9e3d6;
+  --line-soft:#f0ece2;
+  --ink:#14171e;
+  --ink2:#3a4256;
+  --muted:#7c7a72;
+  --primary:#2f6f5e;
+  --primary-soft:#eaf2ef;
+  --primary-line:#cfe0da;
+  --live:#c97b3f;
+  --live-soft:#f9f0e5;
+  --live-line:#ecdac4;
+  --sans:'Outfit','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  --serif:'DM Serif Display','Songti SC','Noto Serif CJK SC','SimSun',serif;
+  --mono:'JetBrains Mono','Cascadia Code','Consolas','Courier New',monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:15px;
+  line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:"";
+  position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(760px 420px at 12% -6%, rgba(47,111,94,.07), transparent 62%),
+    radial-gradient(700px 380px at 92% 4%, rgba(201,123,63,.06), transparent 60%);
+}
+.wrap{position:relative;z-index:1;max-width:1040px;margin:0 auto;padding:0 24px 96px}
+@media (max-width:768px){.wrap{padding:0 18px 64px}}
+
+/* ---------- hero ---------- */
+header.hero{padding:72px 0 44px}
+.eyebrow{
+  display:inline-flex;align-items:center;gap:8px;
+  font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--primary);font-weight:600;margin-bottom:20px;
+}
+.eyebrow svg{width:14px;height:14px}
+h1{
+  font-family:var(--serif);font-weight:400;font-size:38px;line-height:1.22;
+  letter-spacing:-.005em;margin:0 0 18px;max-width:20ch;
+}
+@media (max-width:768px){h1{font-size:29px}}
+.lede{font-size:16.5px;color:var(--ink2);max-width:62ch;margin:0}
+.lede code{font-family:var(--mono);font-size:.88em;background:var(--primary-soft);padding:2px 6px;border-radius:5px;color:var(--primary)}
+
+/* ---------- pillars (flow strip, not cards) ---------- */
+.pillars{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:stretch;gap:0;margin:36px 0 0}
+@media (max-width:860px){.pillars{grid-template-columns:1fr;gap:14px}.pillars .arw{display:none}}
+.pillar{
+  background:var(--card);border:1px solid var(--line);border-radius:16px;
+  padding:18px 20px;box-shadow:0 2px 8px rgba(0,0,0,.04);
+}
+.pillar .n{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;border-radius:7px;background:var(--primary);color:#fff;
+  font-size:12px;font-weight:600;margin-bottom:10px;
+}
+.pillar h3{font-size:15.5px;margin:0 0 6px;font-weight:600;letter-spacing:-.01em}
+.pillar p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.55}
+.pillar .loc{display:block;margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--primary)}
+.arw{display:flex;align-items:center;justify-content:center;padding:0 14px;color:var(--primary)}
+.arw svg{width:18px;height:18px}
+
+/* ---------- sections ---------- */
+section{margin-top:64px}
+.sec-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.sec-head svg{width:17px;height:17px;color:var(--primary)}
+h2{font-family:var(--serif);font-weight:400;font-size:25px;margin:0;letter-spacing:-.005em}
+.sec-sub{color:var(--muted);font-size:14px;margin:8px 0 24px;max-width:70ch}
+
+/* ---------- figure ---------- */
+figure{margin:0}
+.fig{
+  background:var(--card);border:1px solid var(--line);border-radius:20px;
+  padding:26px;box-shadow:0 4px 16px -2px rgba(0,0,0,.06);
+}
+.fig-cap{font-size:12.5px;color:var(--muted);margin-top:14px;line-height:1.55}
+/* ---------- 四层结构 ---------- */
+.layers{display:flex;flex-direction:column}
+.layer{
+  display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;
+  background:#fbfaf7;border:1px solid var(--line);border-radius:14px;padding:12px 16px;
+}
+.layer .lyr-tag{font-size:12px;font-weight:600;color:var(--primary);letter-spacing:.03em}
+.layer .lyr-body{display:flex;flex-wrap:wrap;gap:8px}
+.chip{
+  font-size:12px;background:#fff;border:1px solid var(--line);border-radius:999px;
+  padding:5px 12px;color:var(--ink2);line-height:1.5;
+}
+.chip code{font-family:var(--mono);font-size:11.5px;color:var(--primary)}
+.chip.hi{border-color:#2f6f5e;background:#eaf2ef}
+.chip.hi code{color:#2f6f5e;font-weight:500}
+.lyr-flow{display:flex;align-items:center;justify-content:center;gap:8px;padding:7px 0;font-size:11.5px;color:var(--muted)}
+.lyr-flow::before{content:"↑";color:var(--primary);font-weight:700;font-size:13px}
+@media (max-width:640px){.layer{grid-template-columns:1fr;gap:8px}}
+
+/* ---------- 分流决策图 ---------- */
+.decide{margin:24px auto 0;max-width:380px}
+.decide svg{display:block;width:100%;height:auto}
+.conseq{list-style:none;margin:18px 0 0;padding:0;display:grid;gap:9px;max-width:620px;margin-left:auto;margin-right:auto}
+.conseq li{display:flex;align-items:flex-start;gap:9px;font-size:13.5px;color:var(--ink2);line-height:1.6}
+.conseq code{font-family:var(--mono);font-size:12px;color:var(--ink)}
+.dot{width:9px;height:9px;border-radius:50%;flex:none;margin-top:7px}
+.dot.green{background:#2f6f5e}
+.dot.amber{background:#c97b3f}
+
+/* ---------- code ---------- */
+.code{
+  background:var(--ink);border-radius:16px;overflow:hidden;
+  box-shadow:0 10px 30px -12px rgba(20,23,30,.45);
+}
+.code-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:11px 18px;background:#1d212a;color:#9aa1ae;
+  font-family:var(--mono);font-size:11.5px;border-bottom:1px solid #2a2f3a;
+}
+.code-bar .file{color:#e8e4d9}
+.code pre{
+  margin:0;padding:16px 18px;overflow-x:auto;
+  font-family:var(--mono);font-size:12.5px;line-height:1.75;color:#dfe3ea;
+}
+.code .k{color:#7fd1c4}.code .s{color:#e6b877}.code .c{color:#6d7484;font-style:italic}
+.code .f{color:#c4a7e7}.code .p{color:#9fd0e8}.code .n{color:#e6b877}
+.code .g{color:#8fb7ff}.code .hl{background:rgba(201,123,63,.16);display:block;margin:0 -18px;padding:0 18px;border-left:2px solid var(--live)}
+.code .num{color:#4e5563;user-select:none}
+
+/* ---------- call chain table ---------- */
+.tbl{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 4px 16px -2px rgba(0,0,0,.06)}
+.tbl th{
+  text-align:left;font-weight:600;font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);padding:13px 18px;background:#fbfaf7;border-bottom:1px solid var(--line);
+}
+.tbl td{padding:13px 18px;border-bottom:1px solid var(--line-soft);vertical-align:top;font-size:13.5px}
+.tbl tr:last-child td{border-bottom:0}
+.tbl code{font-family:var(--mono);font-size:12px;color:var(--ink)}
+.pill{
+  display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;
+  white-space:nowrap;border:1px solid transparent;
+}
+.pill.fe{background:var(--primary-soft);color:var(--primary);border-color:var(--primary-line)}
+.pill.be{background:var(--live-soft);color:var(--live);border-color:var(--live-line)}
+.arrow-cell{color:var(--muted);font-family:var(--mono);font-size:12px;white-space:nowrap}
+@media (max-width:768px){
+  .tbl thead{display:none}
+  .tbl tr{display:grid;grid-template-columns:1fr;gap:4px;padding:12px 16px;border-bottom:1px solid var(--line-soft)}
+  .tbl td{border:0;padding:0}
+  .tbl td[data-l]::before{content:attr(data-l) " ";color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+}
+
+/* ---------- interactive demo ---------- */
+.demo{
+  background:var(--card);border:1px solid var(--line);border-radius:20px;overflow:hidden;
+  box-shadow:0 6px 22px -4px rgba(0,0,0,.08);
+}
+.demo-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+  padding:13px 18px;background:#fbfaf7;border-bottom:1px solid var(--line);
+}
+.demo-bar .left{display:flex;align-items:center;gap:10px}
+.demo-bar h3{margin:0;font-size:13.5px;font-weight:600}
+.demo-actions{display:flex;gap:8px}
+button{font-family:inherit;cursor:pointer}
+.btn{
+  border:1px solid var(--line);background:#fff;color:var(--ink2);
+  border-radius:9px;padding:7px 14px;font-size:13px;font-weight:500;
+  transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease, background .15s ease;
+}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px -3px rgba(0,0,0,.12);border-color:var(--primary-line)}
+.btn:active{transform:translateY(0)}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn.primary:hover{box-shadow:0 6px 16px -6px rgba(47,111,94,.65)}
+.btn[disabled]{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+
+.stage{display:grid;grid-template-columns:196px minmax(0,1fr) 236px;gap:0}
+@media (max-width:1000px){.stage{grid-template-columns:1fr}}
+.stage>aside,.stage>main{border-right:1px solid var(--line)}
+.stage>aside:last-child{border-right:0}
+@media (max-width:1000px){.stage>aside,.stage>main{border-right:0;border-bottom:1px solid var(--line)}}
+
+.sb{padding:14px 12px;background:#fbfaf7}
+.sb-title{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:0 6px 10px}
+.sb-row{
+  display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+  padding:9px 10px;border-radius:11px;border:1px solid transparent;background:transparent;
+  margin-bottom:4px;transition:background .15s ease,border-color .15s ease;
+}
+.sb-row:hover{background:#f2efe7}
+.sb-row.active{background:#fff;border-color:var(--primary-line);box-shadow:0 2px 8px rgba(0,0,0,.05)}
+.sb-dot{width:7px;height:7px;border-radius:50%;background:#cfd4dc;flex:none}
+.sb-row.active .sb-dot{background:var(--primary)}
+.sb-name{font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sb-row.active .sb-name{font-weight:600}
+.sb-badge{
+  font-size:10px;font-weight:600;padding:2px 7px;border-radius:999px;
+  background:var(--live-soft);color:var(--live);border:1px solid var(--live-line);
+  display:inline-flex;align-items:center;gap:5px;white-space:nowrap;
+}
+.sb-badge[hidden]{display:none}
+.spin{
+  width:9px;height:9px;border-radius:50%;border:1.6px solid currentColor;
+  border-right-color:transparent;animation:spin .7s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.sb-note{font-size:11px;color:var(--muted);padding:10px 6px 0;line-height:1.5;font-family:var(--mono)}
+.sb-note b{color:var(--primary);font-weight:500}
+
+.dm{padding:0;display:flex;flex-direction:column;min-height:340px}
+.dm-tabs{display:flex;gap:4px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.tab{
+  border:1px solid transparent;background:transparent;color:var(--muted);
+  padding:6px 13px;border-radius:9px;font-size:13px;transition:all .15s ease;
+}
+.tab:hover{background:#f2efe7;color:var(--ink2)}
+.tab.active{background:#fff;border-color:var(--primary-line);color:var(--primary);font-weight:600}
+.thread{flex:1;padding:18px 16px;display:flex;flex-direction:column;gap:12px}
+.bub{
+  max-width:92%;padding:11px 14px;border-radius:14px;font-size:13.5px;line-height:1.65;
+  white-space:pre-wrap;word-break:break-word;
+}
+.bub-user{align-self:flex-end;background:var(--primary);color:#fff;border-bottom-right-radius:5px}
+.bub-ai{align-self:flex-start;background:#fbfaf7;border:1px solid var(--line);border-bottom-left-radius:5px}
+.fresh{animation:flash 1.1s ease-out;border-radius:4px;background:rgba(201,123,63,.22)}
+@keyframes flash{0%{background:rgba(201,123,63,.42)}100%{background:rgba(201,123,63,0)}}
+.caret{
+  display:inline-block;width:7px;height:14px;margin-left:3px;vertical-align:-2px;
+  background:var(--live);border-radius:2px;animation:blink 1s steps(2,start) infinite;
+}
+@keyframes blink{50%{opacity:0}}
+.empty{color:var(--muted);font-size:13px;text-align:center;padding:40px 10px}
+.bg-note{
+  align-self:center;font-size:12px;color:var(--live);background:var(--live-soft);
+  border:1px solid var(--live-line);padding:5px 12px;border-radius:999px;
+  display:inline-flex;align-items:center;gap:7px;
+}
+.skel{padding:16px}
+.skel span{display:block;height:11px;border-radius:6px;background:linear-gradient(90deg,#f0ece2 25%,#e6e1d5 37%,#f0ece2 63%);background-size:400% 100%;animation:sh 1.4s ease infinite;margin-bottom:9px}
+.skel span:nth-child(2){width:78%}.skel span:nth-child(3){width:52%}
+@keyframes sh{0%{background-position:100% 50%}100%{background-position:0 50%}}
+.rebuild-note{margin-top:10px;font-size:12px;color:var(--muted);font-family:var(--mono)}
+.dm-foot{padding:9px 16px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);font-family:var(--mono);min-height:34px}
+
+.pb{padding:14px 14px 16px;background:#fbfaf7}
+.pb-title{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+.kv{display:grid;grid-template-columns:auto 1fr;row-gap:7px;column-gap:10px;margin:0;font-family:var(--mono);font-size:11.5px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;color:var(--ink);text-align:right;font-weight:500;word-break:break-all}
+.kv dd.on{color:var(--live)}
+.kv dd.off{color:var(--muted);font-weight:400}
+.pb-log{margin-top:14px;border-top:1px dashed var(--line);padding-top:10px;font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);max-height:150px;overflow:hidden}
+.pb-log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pb-log .y{color:var(--primary)}
+.pb-log .n{color:var(--live)}
+
+/* ---------- edges ---------- */
+.edges{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media (max-width:860px){.edges{grid-template-columns:1fr}}
+.edge{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:20px 22px;box-shadow:0 4px 16px -2px rgba(0,0,0,.06)}
+.edge h3{margin:0 0 8px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
+.edge h3 svg{width:16px;height:16px;color:var(--live);flex:none}
+.edge p{margin:0;font-size:13.5px;color:var(--ink2)}
+.edge .fix{margin-top:12px;padding-top:12px;border-top:1px dashed var(--line);font-size:13px;color:var(--muted)}
+.edge .fix b{color:var(--ink2);font-weight:600}
+
+footer{
+  margin-top:72px;padding-top:22px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--muted);display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;
+}
+footer code{font-family:var(--mono);font-size:11.5px;color:var(--ink2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10h10M7 14h6"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>
+      apps/web/src/store/chat.ts · 架构说明
+    </div>
+    <h1>会话切换后，仍能接着看到流式输出</h1>
+    <p class="lede">
+      这套能力靠三件事协同：流的运行态<strong>按会话隔离存储</strong>、SSE 连接在切换时<strong>不关闭</strong>、
+      切回时<strong>不做重置</strong>。枢纽是一行条件判断 —— <code>patchRun()</code> 里的 <code>activeKey(state) === key</code>。
+    </p>
+
+    <div class="pillars">
+      <div class="pillar">
+        <span class="n">1</span>
+        <h3>运行态按会话隔离</h3>
+        <p>每个会话一份独立的 <code>runs[id]</code>，UI 读的是当前会话的顶层镜像。</p>
+        <span class="loc">chat.ts:208 · 371 · 380</span>
+      </div>
+      <div class="arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+      <div class="pillar">
+        <span class="n">2</span>
+        <h3>连接不随切换关闭</h3>
+        <p><code>postChat()</code> 是裸 fetch，没有 AbortSignal；消费循环活在闭包里。</p>
+        <span class="loc">client.ts:470 · chat.ts:1397</span>
+      </div>
+      <div class="arw"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+      <div class="pillar">
+        <span class="n">3</span>
+        <h3>切回不重置</h3>
+        <p><code>openSession()</code> 发现该会话在流，就复用内存态并跳过历史重载。</p>
+        <span class="loc">chat.ts:997 · 1023</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ================= 架构分层图 ================= -->
+  <section>
+    <div class="sec-head">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg>
+      <h2>分层与数据流</h2>
+    </div>
+    <p class="sec-sub">
+      一条箭头从下往上贯穿四层：<b>连接不关</b>（网络层）→ <b>帧回流</b>（服务端）→ <b>写回发起会话</b>（Store）→ <b>同步顶层镜像</b>（UI）。
+      橙色那条是「条件」箭头，它只在被浏览的会话就是本轮发起方时才走。
+    </p>
+
+    <figure>
+      <div class="fig">
+        <div class="layers">
+          <div class="layer">
+            <div class="lyr-tag">浏览器 UI 层</div>
+            <div class="lyr-body">
+              <span class="chip"><code>MessageList.tsx</code> · 读顶层镜像 messages / streaming</span>
+              <span class="chip"><code>Sidebar.tsx</code> · 读 runs[sid].streaming</span>
+            </div>
+          </div>
+          <div class="lyr-flow">读取</div>
+          <div class="layer">
+            <div class="lyr-tag">Zustand Store 层</div>
+            <div class="lyr-body">
+              <span class="chip"><code>state.runs{}</code> · 每会话一份运行态</span>
+              <span class="chip"><code>state.messages</code> · 顶层镜像</span>
+              <span class="chip hi"><code>patchRun()</code> · 分流判定</span>
+            </div>
+          </div>
+          <div class="lyr-flow">帧回流 · postChat() 是裸 fetch，切换不关闭连接</div>
+          <div class="layer">
+            <div class="lyr-tag">网络层</div>
+            <div class="lyr-body">
+              <span class="chip"><code>POST /chat</code> · 每轮一条 SSE · <code>parseSse(response)</code></span>
+            </div>
+          </div>
+          <div class="lyr-flow">SSE 帧</div>
+          <div class="layer">
+            <div class="lyr-tag">服务端层</div>
+            <div class="lyr-body">
+              <span class="chip"><code>chat.py</code> → <code>engine.submit_message()</code></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="decide">
+          <svg viewBox="0 0 360 306" role="img" aria-label="patchRun 分流决策图">
+            <defs>
+              <marker id="arwP2" markerWidth="9" markerHeight="9" refX="7.2" refY="4.5" orient="auto"><path d="M0 0 L8 4.5 L0 9 z" fill="#2f6f5e"/></marker>
+              <marker id="arwL2" markerWidth="9" markerHeight="9" refX="7.2" refY="4.5" orient="auto"><path d="M0 0 L8 4.5 L0 9 z" fill="#c97b3f"/></marker>
+            </defs>
+            <rect x="70" y="10" width="220" height="56" rx="10" fill="#ffffff" stroke="#cfe0da"/>
+            <text x="180" y="36" font-size="12.5" fill="#14171e" text-anchor="middle" font-family="'JetBrains Mono',Consolas,monospace">patchDraft(runKey)</text>
+            <text x="180" y="55" font-size="10" fill="#7c7a72" text-anchor="middle">一次分片写入</text>
+            <path d="M180 66 V88" fill="none" stroke="#2f6f5e" stroke-width="1.6" marker-end="url(#arwP2)"/>
+
+            <rect x="46" y="88" width="268" height="86" rx="10" fill="#eaf2ef" stroke="#2f6f5e" stroke-width="1.4"/>
+            <text x="180" y="116" font-size="12" fill="#2f6f5e" text-anchor="middle" font-family="'JetBrains Mono',Consolas,monospace">patchRun(state, key, patch)</text>
+            <text x="180" y="138" font-size="11" fill="#3a4256" text-anchor="middle" font-family="'JetBrains Mono',Consolas,monospace">activeKey(state) === key ?</text>
+            <text x="180" y="159" font-size="9.5" fill="#7c7a72" text-anchor="middle">分流判定</text>
+
+            <path d="M140 174 V194 H95 V208" fill="none" stroke="#2f6f5e" stroke-width="1.6" marker-end="url(#arwP2)"/>
+            <text x="117" y="188" font-size="10" fill="#2f6f5e" text-anchor="middle">总是写</text>
+            <path d="M220 174 V194 H265 V208" fill="none" stroke="#c97b3f" stroke-width="1.6" marker-end="url(#arwL2)"/>
+            <text x="243" y="188" font-size="10" fill="#c97b3f" text-anchor="middle">条件同步</text>
+
+            <rect x="10" y="208" width="160" height="88" rx="10" fill="#ffffff" stroke="#cfe0da"/>
+            <text x="90" y="236" font-size="13" fill="#14171e" text-anchor="middle" font-family="'JetBrains Mono',Consolas,monospace">runs[key]</text>
+            <text x="90" y="257" font-size="10.5" fill="#3a4256" text-anchor="middle">每会话一份</text>
+            <text x="90" y="276" font-size="9" fill="#7c7a72" text-anchor="middle" font-family="'JetBrains Mono',Consolas,monospace">messages/streaming</text>
+
+            <rect x="190" y="208" width="160" height="88" rx="10" fill="#ffffff" stroke="#ecdac4"/>
+            <text x="270" y="236" font-size="13" fill="#14171e" text-anchor="middle">顶层镜像</text>
+            <text x="270" y="257" font-size="10.5" fill="#3a4256" text-anchor="middle">当前会话一份</text>
+            <text x="270" y="276" font-size="9" fill="#7c7a72" text-anchor="middle" font-family="'JetBrains Mono',Consolas,monospace">state.messages</text>
+          </svg>
+        </div>
+
+        <ul class="conseq">
+          <li><i class="dot green"></i><span><b>切走到别的会话</b>：<code>key ≠ activeKey</code> → 只写 <code>runs[key]</code>，后台的流不会污染当前视图</span></li>
+          <li><i class="dot amber"></i><span><b>切回来</b>：<code>key === activeKey</code> → 顶层镜像恢复同步 → 接着看到流</span></li>
+        </ul>
+
+        <p class="fig-cap">
+          两条写路径<strong>不对称</strong>：<code>runs[key]</code> 永远写，顶层镜像只在 <code>key===activeKey</code> 时写。
+          这一条不对称，就是"切走不串台、切回能接上"的全部秘密。
+        </p>
+
+      </div>
+    </figure>
+  </section>
+
+  <!-- ================= 交互演示 ================= -->
+  <section>
+    <div class="sec-head">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 3 14 9-14 9V3Z"/></svg>
+      <h2>交互演示：切走 → 后台跑 → 切回</h2>
+    </div>
+    <p class="sec-sub">
+      这段演示<strong>复刻了真实 store 的写入语义</strong>（<code>runs[key]</code> 总是写、顶层镜像条件同步）。
+      点「发送一轮」让会话 A 开始流式输出，过程中随时切到 B —— A 的流不会断；切回 A 可以看到内容接着长。
+      想看清分流判定，先点「暂停流」再发送，然后切会话、点「继续流」。
+    </p>
+
+    <div class="demo">
+      <div class="demo-bar">
+        <div class="left">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2f6f5e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <h3>会话切换模拟器</h3>
+        </div>
+        <div class="demo-actions">
+          <button class="btn primary" id="sendBtn">发送一轮</button>
+          <button class="btn" id="pauseBtn">暂停流</button>
+          <button class="btn" id="resetBtn">重置</button>
+        </div>
+      </div>
+
+      <div class="stage">
+        <aside class="sb">
+          <div class="sb-title">会话</div>
+          <button class="sb-row active" data-sid="A">
+            <span class="sb-dot"></span>
+            <span class="sb-name">会话 A · 设计评审</span>
+            <span class="sb-badge" hidden><span class="spin"></span>运行中</span>
+          </button>
+          <button class="sb-row" data-sid="B">
+            <span class="sb-dot"></span>
+            <span class="sb-name">会话 B · 需求梳理</span>
+            <span class="sb-badge" hidden><span class="spin"></span>运行中</span>
+          </button>
+          <div class="sb-note">侧栏读 <b>runs[sid].streaming</b><br />后台会话也在转圈</div>
+        </aside>
+
+        <main class="dm">
+          <div class="dm-tabs">
+            <button class="tab active" data-sid="A">会话 A</button>
+            <button class="tab" data-sid="B">会话 B</button>
+          </div>
+          <div class="thread" id="thread"></div>
+          <div class="dm-foot" id="foot"></div>
+        </main>
+
+        <aside class="pb">
+          <div class="pb-title">状态探针</div>
+          <dl class="kv">
+            <dt>activeKey</dt><dd id="pActive">A</dd>
+            <dt>runs[A].streaming</dt><dd id="pA">false</dd>
+            <dt>runs[B].streaming</dt><dd id="pB">false</dd>
+            <dt>顶层镜像同步</dt><dd id="pSync">—</dd>
+            <dt>最近一次写入</dt><dd id="pWrite">—</dd>
+          </dl>
+          <div class="pb-log" id="log"></div>
+        </aside>
+      </div>
+    </div>
+    <p class="fig-cap">
+      观察点：切到 B 后，探针里 <code>runs[A].streaming</code> 仍为 true，但「顶层镜像同步」变为否 —— 说明 A 的分片在写自己的运行态；
+      切回 A 时同步立刻恢复为是，后续分片开始实时反映到界面。
+      想慢慢看，用「暂停流」把流冻在原地，切完会话再点「继续流」。
+    </p>
+  </section>
+
+  <!-- ================= 调用链 ================= -->
+  <section>
+    <div class="sec-head">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></svg>
+      <h2>调用链</h2>
+    </div>
+    <p class="sec-sub">一次「发送 + 切换 + 切回」的完整调用顺序。前端是 zustand store，后端是 FastAPI 路由与核心引擎。</p>
+
+    <table class="tbl">
+      <thead>
+        <tr><th style="width:74px">侧</th><th style="width:280px">调用</th><th>作用</th><th style="width:190px">代码位置</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td data-l="侧"><span class="pill fe">前端</span></td>
+          <td data-l="调用"><code>send()</code> → <code>activeKey()</code></td>
+          <td>取当前会话的运行态键；闭包捕获 <code>runKey</code>，此后所有写入都以它为准</td>
+          <td data-l="位置"><code>chat.ts:1212</code></td>
+        </tr>
+        <tr>
+          <td data-l="侧"><span class="pill fe">前端</span></td>
+          <td data-l="调用"><code>postChat()</code></td>
+          <td>建立 SSE 连接。<strong>裸 fetch，无 AbortSignal</strong> —— 切换会话不会关闭它</td>
+          <td data-l="位置"><code>client.ts:470</code></td>
+        </tr>
+        <tr>
+          <td data-l="侧"><span class="pill be">后端</span></td>
+          <td data-l="调用"><code>chat()</code> → <code>engine.submit_message()</code></td>
+          <td>启动本轮，产出 SDK 消息流；<code>EventSourceResponse</code> 逐帧下发</td>
+          <td data-l="位置"><code>chat.py:51</code></td>
+        </tr>
+        <tr>
+          <td data-l="侧"><span class="pill fe">前端</span></td>
+          <td data-l="调用"><code>for await (parseSse(response))</code></td>
+          <td>消费帧循环，活在 <code>send()</code> 闭包内，与当前 UI 聚焦无关</td>
+          <td data-l="位置"><code>chat.ts:1397</code></td>
+        </tr>
+        <tr>
+          <td data-l="侧"><span class="pill fe">前端</span></td>
+          <td data-l="调用"><code>patchDraft()</code> → <code>patchRun(state, runKey, …)</code></td>
+          <td>分片写回<strong>发起这一轮的会话</strong>；仅当它正被浏览才同步顶层镜像</td>
+          <td data-l="位置"><code>chat.ts:1266</code> / <code>380</code></td>
+        </tr>
+        <tr>
+          <td data-l="侧"><span class="pill fe">前端</span></td>
+          <td data-l="调用"><code>openSession(sid)</code> → <code>live</code> 判断</td>
+          <td>切回正在流的会话：复用内存态并 <code>return</code>，跳过历史重载</td>
+          <td data-l="位置"><code>chat.ts:997</code> / <code>1023</code></td>
+        </tr>
+        <tr>
+          <td data-l="侧"><span class="pill fe">前端</span></td>
+          <td data-l="调用"><code>fetchSessionEvents()</code> → <code>messagesFromEvents()</code></td>
+          <td>非 live 分支：从服务端事件日志重建该会话的历史</td>
+          <td data-l="位置"><code>chat.ts:1031</code> / <code>sse.ts:493</code></td>
+        </tr>
+        <tr>
+          <td data-l="侧"><span class="pill be">后端</span></td>
+          <td data-l="调用"><code>GET /session/{id}/events</code></td>
+          <td>事件日志通道，<code>after_seq</code> 游标 + <code>follow</code>，供历史重建与可观测性</td>
+          <td data-l="位置"><code>sessions.py:155</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ================= 核心代码 ================= -->
+  <section>
+    <div class="sec-head">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></svg>
+      <h2>两段决定成败的代码</h2>
+    </div>
+    <p class="sec-sub">其余逻辑都是常规实现，真正撑住「切换不断流」的是这两处。</p>
+
+    <div class="edges">
+      <div class="code">
+        <div class="code-bar"><span class="file">apps/web/src/store/chat.ts</span><span>380 – 388</span></div>
+<pre><span class="num">380</span><span class="k">function</span> <span class="f">patchRun</span>(
+<span class="num">381</span>  state: <span class="p">ChatState</span>,
+<span class="num">382</span>  key: <span class="k">string</span>,
+<span class="num">383</span>  patch: <span class="k">Partial</span>&lt;<span class="p">SessionRun</span>&gt;,
+<span class="num">384</span>): <span class="k">Partial</span>&lt;<span class="p">ChatState</span>&gt; {
+<span class="num">385</span>  <span class="k">const</span> next: <span class="p">SessionRun</span> = { ...<span class="f">runAt</span>(state, key), ...patch };
+<span class="num">386</span>  <span class="k">const</span> runs = { ...state.runs, [key]: next };
+<span class="hl"><span class="num">387</span>  <span class="k">return</span> <span class="f">activeKey</span>(state) === key ? { runs, ...next } : { runs };</span>
+<span class="num">388</span>}</pre>
+      </div>
+
+      <div class="code">
+        <div class="code-bar"><span class="file">apps/web/src/store/chat.ts</span><span>997 – 1023</span></div>
+<pre><span class="num">997</span>  <span class="k">const</span> live = <span class="k">Boolean</span>(<span class="f">get</span>().runs[sessionId]?.streaming);
+<span class="num">998</span>  <span class="f">set</span>((state) =&gt; {
+<span class="num">999</span>    <span class="k">const</span> previous = state.runs[sessionId];
+<span class="num">1000</span>   <span class="c">// 正在流式输出的会话：保住现场，不清空也不重拉历史。</span>
+<span class="num">1001</span>    <span class="k">const</span> run: <span class="p">SessionRun</span> = live
+<span class="num">1002</span>      ? (previous <span class="k">as</span> <span class="p">SessionRun</span>)
+<span class="num">1003</span>      : { ...<span class="p">EMPTY_RUN</span>, historyLoading: <span class="k">true</span> };
+<span class="num">1004</span>    <span class="k">return</span> {
+<span class="num">1005</span>      sessionId,
+<span class="num">1015</span>      runs: { ...state.runs, [sessionId]: run },
+<span class="num">1016</span>      ...run,
+<span class="num">1017</span>    };
+<span class="num">1018</span>  });
+<span class="num">1023</span>  <span class="k">if</span> (live) <span class="k">return</span>;   <span class="c">// ← 切回正在流的会话：跳过历史重载</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 边界 ================= -->
+  <section>
+    <div class="sec-head">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <h2>两个边界</h2>
+    </div>
+    <p class="sec-sub">这套设计覆盖的是「同一次页面生命周期内的会话切换」。下面两种情况不在保证范围内。</p>
+
+    <div class="edges">
+      <div class="edge">
+        <h3>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+          刷新页面无法无缝续流
+        </h3>
+        <p><code>runs</code> 是内存态，F5 后丢失。此时 <code>openSession()</code> 走非 live 分支，从事件日志重建 —— 拿到的是已落盘的<strong>快照</strong>，不是续上的实时流。</p>
+        <div class="fix"><b>要真续流</b>，得让前端改用 <code>GET /session/{id}/events?follow=true&amp;after_seq=N</code> 订阅，服务端那条通道本来就是支持的。</div>
+      </div>
+      <div class="edge">
+        <h3>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          真断开连接会截断那一轮
+        </h3>
+        <p>客户端断开时 <code>chat.py</code> 的 <code>finally</code> 会 <code>cancel()</code> 掉 drain 任务，生成器随之取消，而引擎没有把这种取消转成 <code>abort()</code>。</p>
+        <div class="fix"><b>表现</b>是流被截断而非标记 aborted —— 这正是「切换会话必须保持连接、不能关 SSE」的原因。</div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>来源：<code>apps/web/src/store/chat.ts</code> · <code>apps/web/src/api/{client,sse}.ts</code> · <code>apps/server/.../engine/routers/chat.py</code></span>
+    <span>设计出处：commit <code>5984926</code> 「支持多会话并发」</span>
+  </footer>
+</div>
+
+<script>
+(function(){
+  var SCRIPTS = {
+    A: [
+      "先说结论：整套机制靠三件事协同——",
+      "① 流的运行态按会话隔离存储；",
+      "② SSE 连接在切换时不关闭；",
+      "③ 切回时不重置运行态。",
+      "枢纽是第一点：runs 这张表按会话 ID 索引，",
+      "每个会话一份独立的运行态，UI 读的是它的顶层镜像。",
+      "接下来看第二点——postChat() 是裸 fetch，没有 AbortSignal，",
+      "所以切走只是换了个视图，连接和消费循环照跑。"
+    ],
+    B: [
+      "会话 B 这边是另一条完全独立的运行态。",
+      "它和 A 互不干扰：各自的 streaming 标记各自维护，",
+      "切来切去不会串台。",
+      "就算 A 正在后台输出，B 依然可以正常发送。"
+    ]
+  };
+
+  function mkRun(){ return { user:null, chunks:[], streaming:false }; }
+  var state = {
+    sessionId:'A',
+    runs:{ A:mkRun(), B:mkRun() },
+    mirror:null,
+    rebuilding:null,
+    freshSid:null,
+    freshIdx:-1,
+    lastWrite:null,
+    logs:[]
+  };
+
+  var timers = { A:null, B:null };
+  var resumers = { A:null, B:null };
+  var freshTimer = null;
+  var paused = false;
+
+  function esc(s){
+    return String(s).replace(/[&<>"]/g, function(c){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c];
+    });
+  }
+  function activeKey(){ return state.sessionId; }
+  function chars(run){ return run.chunks.join('').length; }
+
+  // 复刻 patchRun 的写入语义：runs[key] 总是写；顶层镜像仅在 key===activeKey 时同步
+  function writeRun(sid, patch, note){
+    var run = state.runs[sid];
+    Object.keys(patch).forEach(function(k){ run[k] = patch[k]; });
+    var synced = (activeKey() === sid);
+    if (synced) state.mirror = { user:run.user, chunks:run.chunks.slice(), streaming:run.streaming };
+    state.lastWrite = { sid:sid, synced:synced };
+    pushLog(sid, synced, note);
+  }
+
+  function pushLog(sid, synced, note){
+    var t = 'patchRun("' + sid + '")';
+    var a = 'runs[' + sid + '] ✔';
+    var b = synced ? '顶层镜像 ✔' : '顶层镜像 ✖（当前看 ' + activeKey() + '）';
+    state.logs.unshift({ t:t, a:a, b:b, note:note || '' });
+    if (state.logs.length > 7) state.logs.length = 7;
+    renderLog();
+  }
+
+  function startTurn(sid){
+    var run = state.runs[sid];
+    if (run.streaming) return;
+    run.user = '把「会话切换保持流式输出」的实现讲清楚';
+    run.chunks = [];
+    writeRun(sid, { user:run.user, streaming:true }, '发送一轮');
+    render();
+    var list = SCRIPTS[sid];
+    var i = 0;
+    function tick(){
+      if (paused) return;                 // 暂停：停在原地，等用户点「继续流」
+      if (i >= list.length){
+        writeRun(sid, { streaming:false }, '本轮结束');
+        render();
+        return;
+      }
+      run.chunks.push(list[i]);
+      i++;
+      writeRun(sid, {}, '分片 +1');
+      state.freshSid = sid;
+      state.freshIdx = run.chunks.length - 1;
+      if (freshTimer) clearTimeout(freshTimer);
+      freshTimer = setTimeout(function(){ state.freshSid = null; render(); }, 720);
+      render();
+      timers[sid] = setTimeout(tick, 520);
+    }
+    resumers[sid] = function(){ timers[sid] = setTimeout(tick, 320); };
+    tick();
+  }
+
+  /** 暂停 / 继续：把流冻在原地，方便切会话后观察探针里的分流结果。 */
+  function togglePause(){
+    paused = !paused;
+    if (!paused){
+      ['A','B'].forEach(function(sid){
+        if (!state.runs[sid].streaming) return;
+        if (timers[sid]) clearTimeout(timers[sid]);
+        if (resumers[sid]) resumers[sid]();
+      });
+    }
+    render();
+  }
+
+  function switchSession(sid){
+    if (sid === state.sessionId) return;
+    state.sessionId = sid;
+    var run = state.runs[sid];
+    // 真实 openSession() 切过去时会把该会话的运行态整体拷进顶层镜像（...run）。
+    state.mirror = { user:run.user, chunks:run.chunks.slice(), streaming:run.streaming };
+    if (!run.streaming && run.chunks.length){
+      // 非 live 分支：切过去要重新从事件日志拉历史
+      state.rebuilding = sid;
+      render();
+      setTimeout(function(){ state.rebuilding = null; render(); }, 620);
+    } else {
+      render();
+    }
+  }
+
+  function renderThread(){
+    var el = document.getElementById('thread');
+    var run = state.runs[state.sessionId];
+    if (state.rebuilding === state.sessionId){
+      el.innerHTML = '<div class="skel"><span></span><span></span><span></span></div>' +
+        '<div class="rebuild-note">从服务端事件日志重建历史…</div>';
+      return;
+    }
+    if (!run.user){
+      el.innerHTML = '<div class="empty">这个会话还没有内容。点「发送一轮」开始。</div>';
+      return;
+    }
+    var chunks = run.chunks.map(function(c, i){
+      var fresh = (state.freshSid === state.sessionId && i === state.freshIdx) ? ' class="fresh"' : '';
+      return '<span' + fresh + '>' + esc(c) + '</span>';
+    }).join('');
+    var caret = run.streaming ? '<span class="caret"></span>' : '';
+    el.innerHTML =
+      '<div class="bub bub-user">' + esc(run.user) + '</div>' +
+      '<div class="bub bub-ai">' + chunks + caret + '</div>';
+  }
+
+  function renderSidebar(){
+    Array.prototype.forEach.call(document.querySelectorAll('.sb-row'), function(row){
+      var sid = row.getAttribute('data-sid');
+      var run = state.runs[sid];
+      row.classList.toggle('active', sid === state.sessionId);
+      var badge = row.querySelector('.sb-badge');
+      if (run.streaming){ badge.hidden = false; }
+      else { badge.hidden = true; }
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function(t){
+      t.classList.toggle('active', t.getAttribute('data-sid') === state.sessionId);
+    });
+  }
+
+  function renderProbe(){
+    document.getElementById('pActive').textContent = activeKey();
+    document.getElementById('pA').textContent = String(state.runs.A.streaming);
+    document.getElementById('pB').textContent = String(state.runs.B.streaming);
+    var sync = document.getElementById('pSync');
+    if (!state.lastWrite){ sync.textContent = '—'; sync.className = 'off'; }
+    else {
+      // 此刻再写一次，会不会同步到顶层镜像？—— 由 activeKey 与写入目标决定。
+      var wouldSync = (activeKey() === state.lastWrite.sid);
+      sync.textContent = wouldSync ? '是' : '否';
+      sync.className = wouldSync ? '' : 'on';
+    }
+    var w = document.getElementById('pWrite');
+    w.textContent = state.lastWrite ? ('runs[' + state.lastWrite.sid + ']') : '—';
+  }
+
+  function renderFoot(){
+    var foot = document.getElementById('foot');
+    var parts = [];
+    ['A','B'].forEach(function(sid){
+      var run = state.runs[sid];
+      if (run.streaming && sid !== state.sessionId){
+        parts.push('会话 ' + sid + ' 仍在后台输出（已 ' + chars(run) + ' 字）');
+      }
+    });
+    if (!parts.length){
+      var cur = state.runs[state.sessionId];
+      parts.push(cur.user ? ('当前会话 ' + state.sessionId + ' · 已输出 ' + chars(cur) + ' 字' + (cur.streaming ? ' · 流式中' : ' · 已结束')) : '空闲');
+    }
+    if (paused) parts.push('已暂停（点「继续流」恢复）');
+    foot.textContent = parts.join('   |   ');
+  }
+
+  function renderLog(){
+    var el = document.getElementById('log');
+    el.innerHTML = state.logs.map(function(l){
+      return '<div><span class="y">' + esc(l.t) + '</span> · <span class="y">' + esc(l.a) + '</span> · <span class="' + (l.b.indexOf('✔') > -1 ? 'y' : 'n') + '">' + esc(l.b) + '</span></div>';
+    }).join('');
+  }
+
+  function render(){
+    renderSidebar();
+    renderThread();
+    renderProbe();
+    renderFoot();
+    renderLog();
+    var pb = document.getElementById('pauseBtn');
+    if (pb) pb.textContent = paused ? '继续流' : '暂停流';
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('.sb-row, .tab'), function(el){
+    el.addEventListener('click', function(){ switchSession(el.getAttribute('data-sid')); });
+  });
+
+  document.getElementById('sendBtn').addEventListener('click', function(){
+    startTurn(state.sessionId);
+  });
+
+  document.getElementById('pauseBtn').addEventListener('click', togglePause);
+
+  document.getElementById('resetBtn').addEventListener('click', function(){
+    paused = false;
+    ['A','B'].forEach(function(sid){
+      if (timers[sid]) { clearTimeout(timers[sid]); timers[sid] = null; }
+      state.runs[sid] = mkRun();
+    });
+    state.mirror = null;
+    state.rebuilding = null;
+    state.lastWrite = null;
+    state.logs = [];
+    renderLog();
+    render();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

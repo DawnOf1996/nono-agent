@@ -1,6 +1,6 @@
 """Agentic Loop 状态机类型定义。
 
-定义了循环“为什么继续”(TransitionReason, 7种) 和“为什么结束”(TerminalReason, 10种)，
+定义了循环“为什么继续”(TransitionReason, 7种) 和“为什么结束”(TerminalReason, 11种)，
 以及 LoopState —— 不可变的跨迭代状态，每次 continue 时构造新实例。
 
 设计亮点：
@@ -15,7 +15,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from nono_agent.tools.context import ToolUseContext
+    pass
 
 
 class TransitionReason(Enum):
@@ -47,7 +47,7 @@ class TransitionReason(Enum):
 
 
 class TerminalReason(Enum):
-    """循环终止的原因 —— 10 种可能的终止场景。"""
+    """循环终止的原因 —— 11 种可能的终止场景。"""
 
     COMPLETED = auto()             # 正常完成 (stop_reason="end_turn")
     ABORTED_STREAMING = auto()     # 流式传输期间被用户取消
@@ -59,6 +59,20 @@ class TerminalReason(Enum):
     STOP_HOOK_PREVENTED = auto()   # stop hook 明确阻止继续
     HOOK_STOPPED = auto()          # middleware 在 on_transition 中否决继续
     MAX_TURNS = auto()             # 达到最大轮次限制
+    TASK_BUDGET_EXHAUSTED = auto() # 超出 token 预算 (task_budget)
+
+
+# **用户主动按停止**的终态，不算失败。
+#
+# 把它们算成错误会造成两处具体的错：失败率统计里混进「用户提前收工」，
+# 以及 CLI/界面打出红字 —— 但用户是自己点的停止，那里根本没有故障。
+#
+# 判定用字符串而非枚举成员：``SDKResultMessage`` 的 subtype 是从终止原因的
+# 名字派生的，这一份就是那个名字集合。
+ABORTED_TERMINALS = frozenset({
+    TerminalReason.ABORTED_STREAMING.name,   # "ABORTED_STREAMING"
+    TerminalReason.ABORTED_TOOLS.name,       # "ABORTED_TOOLS"
+})
 
 
 @dataclass(frozen=True)
@@ -94,7 +108,8 @@ class LoopState:
 
     关键设计：
     - frozen=True 保证不可变性，每次状态转移必须构造新实例
-    - 这解决了 TS 版的常见 bug: 漏写某个字段的更新
+    - 于是所有状态转移收敛为 loop.py 里可 grep 的若干构造点，便于审计
+    - 注意边界：frozen 防的是「就地改」，不防「构造时漏传字段」（漏传会取默认值）
     - 每个字段都有明确的转移规则（在 loop.py 的 _apply_recovery 和主循环中）
     """
 

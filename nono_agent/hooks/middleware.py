@@ -255,12 +255,13 @@ class MiddlewareChain:
         """Run on_transition through all middleware. Returns None if any middleware vetoes."""
         for mw in self._middlewares:
             try:
-                transition = await mw.on_transition(
+                result = await mw.on_transition(
                     transition=transition,
                     state=state,
                 )
-                if transition is None:
+                if result is None:
                     return None  # Vetoed
+                transition = result
             except Exception:
                 logger.exception("Middleware '%s' on_transition failed", mw.name)
         return transition

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nono Agent · Session Viewer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◫</span>
+      <h1>Nono Agent <em>Session Viewer</em></h1>
+    </div>
+
+    <div class="controls">
+      <div class="field session-field">
+        <input id="session-id" type="text" placeholder="session_id（如 00a1…）" spellcheck="false" />
+        <button id="load-session" class="btn primary">加载会话</button>
+      </div>
+      <div class="field">
+        <button id="open-file" class="btn">打开离线文件</button>
+        <input id="file-input" type="file" accept=".jsonl,.jsonl.zst,.ndjson,application/json" hidden />
+        <button id="list-sessions" class="btn ghost">会话列表</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="drop-hint" class="drop-hint hidden">松开以载入 .jsonl / .jsonl.zst 会话文件</div>
+
+  <section id="summary" class="summary hidden"></section>
+
+  <nav class="tabs">
+    <button class="tab active" data-view="trajectory">轨迹 Timeline</button>
+    <button class="tab" data-view="conversation">对话 Chat</button>
+  </nav>
+
+  <div id="locate-bar" class="locate-bar hidden">
+    <button id="fold-all" class="btn small" type="button" title="展开所有 Turn / Step">全部展开</button>
+    <span class="locate-sep" aria-hidden="true"></span>
+    <span class="locate-label">按事件定位</span>
+    <select id="locate-type" title="选择事件类型，定位到该类型的第一个节点"></select>
+    <button id="locate-prev" class="btn ghost small" type="button" title="上一个">上一个</button>
+    <span id="locate-status" class="locate-status">0 / 0</span>
+    <button id="locate-next" class="btn ghost small" type="button" title="下一个">下一个</button>
+  </div>
+
+  <main class="content">
+    <section id="trajectory" class="view active"></section>
+    <section id="conversation" class="view"></section>
+    <aside id="inspector" class="inspector hidden">
+      <div class="inspector-head">
+        <span id="inspector-title">事件详情</span>
+        <button id="inspector-close" class="btn ghost small">×</button>
+      </div>
+      <div id="inspector-body" class="inspector-body"></div>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

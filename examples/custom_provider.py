@@ -1,5 +1,8 @@
 """Custom Provider Example — How to implement and register your own LLM provider.
 
+Run with:
+    uv run python examples/custom_provider.py
+
 This example shows how to:
 1. Implement the LLMProvider Protocol
 2. Register it with the ProviderRegistry
@@ -10,7 +13,8 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from nono_agent import QueryEngine, EngineConfig, LLMProvider, ProviderRegistry
+from nono_agent import EngineConfig, ProviderRegistry, QueryEngine
+from nono_agent.core.config import ThinkingConfig
 from nono_agent.core.types import (
     AssistantMessage,
     ContentBlockDeltaEvent,
@@ -21,9 +25,7 @@ from nono_agent.core.types import (
     MessageStartEvent,
     MessageStopEvent,
     StreamEvent,
-    Usage,
 )
-from nono_agent.core.config import ThinkingConfig
 
 
 class MyCustomProvider:
@@ -67,7 +69,8 @@ class MyCustomProvider:
         4. Yield a final AssistantMessage with complete content
         """
         # Step 1: Convert messages to your API format
-        api_messages = self.normalize_messages(messages)
+        # (in this simulated example we don't send the messages anywhere)
+        _ = self.normalize_messages(messages)
 
         # Step 2: Call your API (example using httpx)
         # In this example, we simulate a response
